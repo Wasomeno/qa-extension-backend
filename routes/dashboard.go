@@ -92,10 +92,13 @@ func GetDashboardStats(ginContext *gin.Context) {
     }
     recentIssues, _, _ := gitlabClient.Issues.ListIssues(recentOpts)
 
+    recentActivities := ConcurrentFeedAggregator(gitlabClient, recentIssues)
+
     ginContext.JSON(http.StatusOK, gin.H{
-        "open_issues":   openCount,
-        "closed_today":  closedCount,
-        "this_week":     weekCount,
-        "recent_issues": recentIssues,
+        "open_issues":       openCount,
+        "closed_today":      closedCount,
+        "this_week":         weekCount,
+        "recent_issues":     recentIssues,
+        "recent_activities": recentActivities,
     })
 }
