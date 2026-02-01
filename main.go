@@ -53,6 +53,7 @@ func main() {
 		protected.GET("/issues/:id", routes.GetIssue)
 		protected.GET("/issues/open-ai-test", routes.SmartAutoCompleteIssueDescription)
 		protected.GET("/dashboard", routes.GetDashboardStats)
+		protected.GET("/debug/notes/:project_id/:issue_iid", routes.DebugIssueNotes)
 	}
 
 	router.Run(":3000")
