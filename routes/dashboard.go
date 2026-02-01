@@ -3,8 +3,6 @@ package routes
 import (
     "context"
     "net/http"
-    "time"
-    "log"
 
     "qa-extension-backend/client"
     authHandler "qa-extension-backend/handlers"
@@ -29,56 +27,7 @@ func GetDashboardStats(ginContext *gin.Context) {
         return
     }
 
-    now := time.Now()
-    startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-
-    offset := int(now.Weekday()) - 1
-    if offset < 0 {
-        offset = 6
-    }
-    startOfWeek := startOfDay.AddDate(0, 0, -offset)
-
     scope := "assigned_to_me"
-    openedState := "opened"
-    closedState := "closed"
-
-    openOpts := &gitlab.ListIssuesOptions{
-        State: &openedState,
-        Scope: &scope,
-        ListOptions: gitlab.ListOptions{
-            PerPage: 1,
-        },
-    }
-
-    closedOpts := &gitlab.ListIssuesOptions{
-        State:        &closedState,
-        UpdatedAfter: &startOfDay,
-        Scope:        &scope,
-        ListOptions: gitlab.ListOptions{
-            PerPage: 1,
-        },
-    }
-
-    weekOpts := &gitlab.ListIssuesOptions{
-        CreatedAfter: &startOfWeek,
-        Scope:        &scope,
-        ListOptions: gitlab.ListOptions{
-            PerPage: 1,
-        },
-    }
-
-    getCount := func(opts *gitlab.ListIssuesOptions) int {
-        _, resp, err := gitlabClient.Issues.ListIssues(opts)
-        if err != nil {
-            log.Printf("Error fetching stats: %v", err)
-            return 0
-        }
-        return int(resp.TotalItems)
-    }
-
-    openCount := getCount(openOpts)
-    closedCount := getCount(closedOpts)
-    weekCount := getCount(weekOpts)
 
     // Fetch Recent Issues
     recentOpts := &gitlab.ListIssuesOptions{
@@ -95,9 +44,6 @@ func GetDashboardStats(ginContext *gin.Context) {
     recentActivities := ConcurrentFeedAggregator(gitlabClient, recentIssues)
 
     ginContext.JSON(http.StatusOK, gin.H{
-        "open_issues":       openCount,
-        "closed_today":      closedCount,
-        "this_week":         weekCount,
         "recent_issues":     recentIssues,
         "recent_activities": recentActivities,
     })
