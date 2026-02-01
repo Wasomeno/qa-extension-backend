@@ -50,8 +50,8 @@ func GetClient(ctx context.Context, token *oauth2.Token, saver TokenSaver) (*git
 	return client, nil
 }
 
-// FetchLastActivityNote retrieves the most recent note (system or user) for an issue.
-func FetchLastActivityNote(client *gitlab.Client, projectID int, issueID int) (*gitlab.Note, error) {
+// FetchRecentIssueNotes retrieves the last N notes for an issue.
+func FetchRecentIssueNotes(client *gitlab.Client, projectID int, issueID int, limit int) ([]*gitlab.Note, error) {
 	orderBy := "created_at"
 	sort := "desc"
 	opt := &gitlab.ListIssueNotesOptions{
@@ -59,7 +59,7 @@ func FetchLastActivityNote(client *gitlab.Client, projectID int, issueID int) (*
 		Sort:    &sort,
 		ListOptions: gitlab.ListOptions{
 			Page:    1,
-			PerPage: 1,
+			PerPage: int64(limit),
 		},
 	}
 
@@ -68,9 +68,5 @@ func FetchLastActivityNote(client *gitlab.Client, projectID int, issueID int) (*
 		return nil, err
 	}
 
-	if len(notes) == 0 {
-		return nil, nil
-	}
-
-	return notes[0], nil
+	return notes, nil
 }

@@ -2,6 +2,7 @@ package routes
 
 import (
 	"log"
+	"strings"
 	"sync"
 
 	"qa-extension-backend/client"
@@ -31,24 +32,31 @@ func ConcurrentFeedAggregator(gitlabClient *gitlab.Client, issues []*gitlab.Issu
 				item.CreatedAt = *iss.UpdatedAt
 			}
 
-			note, err := client.FetchLastActivityNote(gitlabClient, int(iss.ProjectID), int(iss.IID))
+			// Fetch batch of recent notes (limit 20)
+			notes, err := client.FetchRecentIssueNotes(gitlabClient, int(iss.ProjectID), int(iss.IID), 20)
+			
+			var bestNote *gitlab.Note
 			if err != nil {
 				// Fallback: log error but return basic item
 				log.Printf("Failed to fetch activity for issue %d: %v", iss.IID, err)
 				item.ActionType = "issue_update"
 				item.Description = "Activity fetch failed"
-			} else if note != nil {
+			} else {
+				bestNote = SelectBestNote(notes)
+			}
+
+			if bestNote != nil {
 				item.ActionType = "comment"
-				if note.System {
+				if bestNote.System {
 					item.ActionType = "system_note"
 				}
-				item.ActorName = note.Author.Name
-				item.ActorAvatar = note.Author.AvatarURL
-				item.Description = note.Body
-				if note.CreatedAt != nil {
-					item.CreatedAt = *note.CreatedAt
+				item.ActorName = bestNote.Author.Name
+				item.ActorAvatar = bestNote.Author.AvatarURL
+				item.Description = bestNote.Body
+				if bestNote.CreatedAt != nil {
+					item.CreatedAt = *bestNote.CreatedAt
 				}
-			} else {
+			} else if err == nil {
 				// No note found, assume standard update
 				item.ActionType = "issue_update"
 				item.Description = "No recent activity"
@@ -60,4 +68,45 @@ func ConcurrentFeedAggregator(gitlabClient *gitlab.Client, issues []*gitlab.Issu
 
 	wg.Wait()
 	return results
+}
+
+// SelectBestNote applies heuristics to pick the most relevant note from a batch.
+// Priority: User Comment > Important System Event > Newest System Event (Fallback)
+func SelectBestNote(notes []*gitlab.Note) *gitlab.Note {
+	if len(notes) == 0 {
+		return nil
+	}
+
+	for _, note := range notes {
+		if !note.System {
+			return note // User comment found!
+		}
+		if isImportantSystemNote(note) {
+			return note // Important system event found!
+		}
+	}
+
+	// Fallback: return the newest note (index 0) if it exists
+	return notes[0]
+}
+
+func isImportantSystemNote(note *gitlab.Note) bool {
+	body := strings.ToLower(note.Body)
+	// Check for closure/reopening
+	if strings.Contains(body, "closed") || strings.Contains(body, "reopened") {
+		return true
+	}
+	// Check for label changes
+	if strings.Contains(body, "changed label") || strings.Contains(body, "added label") || strings.Contains(body, "removed label") {
+		return true
+	}
+	// Check for mentions
+	if strings.Contains(body, "mentioned in") {
+		return true
+	}
+	// Check for title changes
+	if strings.Contains(body, "changed title") {
+		return true
+	}
+	return false
 }
