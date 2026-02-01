@@ -97,7 +97,8 @@ func isImportantSystemNote(note *gitlab.Note) bool {
 		return true
 	}
 	// Check for label changes
-	if strings.Contains(body, "changed label") || strings.Contains(body, "added label") || strings.Contains(body, "removed label") {
+	// GitLab format: "added ~LabelName label" or "changed label from X to Y"
+	if strings.Contains(body, "label") {
 		return true
 	}
 	// Check for mentions
