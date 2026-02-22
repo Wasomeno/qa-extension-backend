@@ -16,17 +16,16 @@ import (
 	authHandler "qa-extension-backend/handlers"
 
 	"github.com/gin-gonic/gin"
-	"github.com/openai/openai-go/v3/option"
-
-	openAIClient "github.com/openai/openai-go/v3"
+	"github.com/google/generative-ai-go/genai"
 	"github.com/tmc/langchaingo/agents"
 	"github.com/tmc/langchaingo/callbacks"
 	"github.com/tmc/langchaingo/chains"
-	"github.com/tmc/langchaingo/llms/openai"
+	"github.com/tmc/langchaingo/llms/googleai"
 	"github.com/tmc/langchaingo/tools"
 	"github.com/tmc/langchaingo/tools/serpapi"
 	gitlab "gitlab.com/gitlab-org/api/client-go"
 	"golang.org/x/oauth2"
+	"google.golang.org/api/option"
 )
 
 func GenerateIssueFixingPrompt(ginContext *gin.Context) {
@@ -34,7 +33,9 @@ func GenerateIssueFixingPrompt(ginContext *gin.Context) {
 }
 
 func GenerateIssueFixingPromptWithAgent() {
-	llm, err := openai.New(openai.WithModel("gpt-5-mini"))
+	ctx := context.Background()
+	apiKey := os.Getenv("GEMINI_API_KEY")
+	llm, err := googleai.New(ctx, googleai.WithAPIKey(apiKey), googleai.WithDefaultModel("gemini-1.5-flash"))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -57,7 +58,6 @@ func GenerateIssueFixingPromptWithAgent() {
 
 	// 5. Run the Agent
 	// Scenario: Search for a concept, then check if the remote repo README mentions it.
-	ctx := context.Background()
 	query := "Search for the purpose of a 'CONTRIBUTING.md' file in open source. Then, read the 'README.md' file in the GitLab repository and suggest if I should add a contributing section based on the search results."
 
 	fmt.Printf("--- User Query: %s ---\n", query)
@@ -74,16 +74,23 @@ func SmartAutoCompleteIssueDescription(ginContext *gin.Context) {
 	// Token verification handled by middleware, but we can access it if needed
 	_ = ginContext.MustGet("token").(*oauth2.Token)
 
-	openaiApiKey := os.Getenv("OPENAI_API_KEY")
-	if openaiApiKey == "" {
-		ginContext.JSON(http.StatusUnauthorized, gin.H{"error": "Missing OpenAI API key"})
+	geminiApiKey := os.Getenv("GEMINI_API_KEY")
+	if geminiApiKey == "" {
+		ginContext.JSON(http.StatusUnauthorized, gin.H{"error": "Missing Gemini API key"})
 		ginContext.Abort()
 		return
 	}
 
-	client := openAIClient.NewClient(
-		option.WithAPIKey(openaiApiKey),
-	)
+	ctx := context.Background()
+	client, err := genai.NewClient(ctx, option.WithAPIKey(geminiApiKey))
+	if err != nil {
+		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create Gemini client: " + err.Error()})
+		ginContext.Abort()
+		return
+	}
+	defer client.Close()
+
+	model := client.GenerativeModel("gemini-1.5-flash")
 
 	systemPrompt := `
 You are a Senior QA Engineer responsible for filing bug reports and feature requests in GitLab.
@@ -120,18 +127,31 @@ Use the exact structure below:
 <Any relevant error codes, logical gaps, or context.>
 `
 
-	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openAIClient.ChatCompletionNewParams{
-		Messages: []openAIClient.ChatCompletionMessageParamUnion{
-			openAIClient.SystemMessage(systemPrompt),
-			openAIClient.UserMessage("i got an issue in the login page, in /auth/login. the form in there supposed to have an email and password validations. the current condition is there are no validations"),
-		},
-		Model: openAIClient.ChatModelGPT5Mini,
-	})
-	if err != nil {
-		panic(err.Error())
+	model.SystemInstruction = &genai.Content{
+		Parts: []genai.Part{genai.Text(systemPrompt)},
 	}
-	println(chatCompletion.Choices)
-	ginContext.JSON(http.StatusOK, gin.H{"message": "Issue completion Success", "issue_description": chatCompletion.Choices[0].Message.Content})
+
+	resp, err := model.GenerateContent(ctx, genai.Text("i got an issue in the login page, in /auth/login. the form in there supposed to have an email and password validations. the current condition is there are no validations"))
+	if err != nil {
+		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate content: " + err.Error()})
+		ginContext.Abort()
+		return
+	}
+
+	if len(resp.Candidates) == 0 {
+		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "No candidates returned from Gemini"})
+		ginContext.Abort()
+		return
+	}
+
+	var description strings.Builder
+	for _, part := range resp.Candidates[0].Content.Parts {
+		if text, ok := part.(genai.Text); ok {
+			description.WriteString(string(text))
+		}
+	}
+
+	ginContext.JSON(http.StatusOK, gin.H{"message": "Issue completion Success", "issue_description": description.String()})
 }
 
 type IssueWithProject struct {
