@@ -96,3 +96,7 @@ func UpdateSession(ctx context.Context, sessionID string, token *oauth2.Token) e
 	}
 	return database.RedisClient.Set(ctx, "session:"+sessionID, tokenBytes, 24*time.Hour).Err()
 }
+
+func DeleteSession(ctx context.Context, sessionID string) error {
+	return database.RedisClient.Del(ctx, "session:"+sessionID).Err()
+}

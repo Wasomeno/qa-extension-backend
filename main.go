@@ -24,10 +24,10 @@ func main() {
 	router.GET("/auth/callback", routes.AuthCallbackEndpoint)
 	router.GET("/auth/session", routes.GetSessionEndpoint)
 
-	// Protected Routes
 	protected := router.Group("/")
 	protected.Use(middleware.AuthMiddleware())
 	{
+		protected.POST("/auth/logout", routes.LogoutEndpoint)
 		protected.GET("/current-user", routes.GetUser)
 		protected.GET("/projects", routes.GetProjects)
 		protected.GET("/projects/:id", routes.GetProject)

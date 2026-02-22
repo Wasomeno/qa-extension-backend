@@ -82,3 +82,30 @@ func GetSessionEndpoint(ginContext *gin.Context) {
 		"session": token,
 	})
 }
+
+func LogoutEndpoint(ginContext *gin.Context) {
+	sessionID, exists := ginContext.Get("session_id")
+	if !exists {
+		ginContext.JSON(http.StatusBadRequest, gin.H{"error": "No session ID found in context"})
+		return
+	}
+
+	sid, ok := sessionID.(string)
+	if !ok {
+		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid session ID format"})
+		return
+	}
+
+	// Delete from Redis
+	if err := authHandler.DeleteSession(ginContext, sid); err != nil {
+		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete session: " + err.Error()})
+		return
+	}
+
+	// Clear HttpOnly cookie
+	ginContext.SetCookie("session_id", "", -1, "/", "localhost", false, true)
+
+	ginContext.JSON(http.StatusOK, gin.H{
+		"message": "Logout successful",
+	})
+}
