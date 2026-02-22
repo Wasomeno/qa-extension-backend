@@ -1,0 +1,35 @@
+version: "3.8"
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: qa-extension-api
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    networks:
+      - qa-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: qa-extension-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - qa-net
+
+networks:
+  qa-net:
+    driver: bridge
+
+volumes:
+  redis_data:

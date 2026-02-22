@@ -1,0 +1,42 @@
+# Binaries and build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+main
+/main
+
+# Vendor directory
+vendor/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Go build cache
+.pkg/
+.cache/
+
+# Version control
+.git/
+.gitignore
+.jj/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Agent/AI tools
+.agent/
+.agents/
+.gemini/
