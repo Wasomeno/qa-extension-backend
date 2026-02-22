@@ -11,6 +11,12 @@ services:
       - .env
     environment:
       - REDIS_ADDR=redis:6379
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.services.qa-api.loadbalancer.server.port=3000"
+      - "traefik.http.routers.qa-api.rule=Host(`${DOMAIN_NAME}`)"
+      - "traefik.http.routers.qa-api.entrypoints=websecure"
+      - "traefik.http.routers.qa-api.tls.certresolver=letsencrypt"
     depends_on:
       - redis
     networks:
