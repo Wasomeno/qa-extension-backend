@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"qa-extension-backend/config"
 	"qa-extension-backend/database"
 	"qa-extension-backend/middleware"
 	"qa-extension-backend/routes"
@@ -11,6 +12,8 @@ import (
 )
 
 func main() {
+	config.Init()
+
 	if err := database.InitRedis(); err != nil {
 		log.Fatalf("Could not connect to Redis: %v", err)
 	}

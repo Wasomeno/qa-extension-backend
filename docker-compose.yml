@@ -11,6 +11,9 @@ services:
       - .env
     environment:
       - REDIS_ADDR=redis:6379
+      - APP_ENV=${APP_ENV}
+      - COOKIE_DOMAIN=${COOKIE_DOMAIN}
+      - GITLAB_REDIRECT_URI=${GITLAB_REDIRECT_URI}
     labels:
       - "traefik.enable=true"
       - "traefik.http.services.qa-api.loadbalancer.server.port=3000"

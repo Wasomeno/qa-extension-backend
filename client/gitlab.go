@@ -3,12 +3,12 @@ package client
 import (
 	"context"
 	"log"
-	"os"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"qa-extension-backend/config"
 	"qa-extension-backend/models"
 
 	gitlab "gitlab.com/gitlab-org/api/client-go"
@@ -36,16 +36,16 @@ func (s *NotifyTokenSource) Token() (*oauth2.Token, error) {
 }
 
 func GetClient(ctx context.Context, token *oauth2.Token, saver TokenSaver) (*gitlab.Client, error) {
-	clientID := os.Getenv("GITLAB_APPLICATION_ID")
-	clientSecret := os.Getenv("GITLAB_SECRET")
-	redirectURL := "http://localhost:3000/auth/callback"
+	clientID := config.GetEnv("GITLAB_APPLICATION_ID")
+	clientSecret := config.GetEnv("GITLAB_SECRET")
+	redirectURL := config.GetEnv("GITLAB_REDIRECT_URI")
 	scopes := []string{"api", "read_user"}
-	config := gitlaboauth2.NewOAuth2Config("", clientID, redirectURL, scopes)
-	config.ClientSecret = clientSecret
+	configMap := gitlaboauth2.NewOAuth2Config("", clientID, redirectURL, scopes)
+	configMap.ClientSecret = clientSecret
 
 	ts := &NotifyTokenSource{
 		ctx:    ctx,
-		source: config.TokenSource(ctx, token),
+		source: configMap.TokenSource(ctx, token),
 		saver:  saver,
 	}
 

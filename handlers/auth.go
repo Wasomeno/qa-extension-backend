@@ -4,29 +4,25 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
+	"qa-extension-backend/config" // Changed import path for config
 	"qa-extension-backend/database"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/joho/godotenv"
 	"gitlab.com/gitlab-org/api/client-go/gitlaboauth2"
 	"golang.org/x/oauth2"
 )
 
 func getOAuthConfig() *oauth2.Config {
-	_ = godotenv.Load()
-
-	clientID := os.Getenv("GITLAB_APPLICATION_ID")
-	clientSecret := os.Getenv("GITLAB_SECRET")
-	// Updated to point to the main API server port
-	redirectURL := "http://localhost:3000/auth/callback"
+	clientID := config.GetEnv("GITLAB_APPLICATION_ID")
+	clientSecret := config.GetEnv("GITLAB_SECRET")
+	redirectURL := config.GetEnv("GITLAB_REDIRECT_URI")
 	// explicit scopes are better than empty string
 	scopes := []string{"api", "read_user"}
 
-	config := gitlaboauth2.NewOAuth2Config("", clientID, redirectURL, scopes)
-	config.ClientSecret = clientSecret
-	return config
+	configMap := gitlaboauth2.NewOAuth2Config("", clientID, redirectURL, scopes)
+	configMap.ClientSecret = clientSecret
+	return configMap
 }
 
 func GetAuthURL() string {
