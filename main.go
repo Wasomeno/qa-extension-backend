@@ -22,12 +22,14 @@ func main() {
 
 	router := gin.Default()
 
-	// Public Routes
-	router.POST("/auth/login", routes.LoginEndpoint)
-	router.GET("/auth/callback", routes.AuthCallbackEndpoint)
-	router.GET("/auth/session", routes.GetSessionEndpoint)
+	api := router.Group("/api")
 
-	protected := router.Group("/")
+	// Public Routes
+	api.POST("/auth/login", routes.LoginEndpoint)
+	api.GET("/auth/gitlab/callback", routes.AuthCallbackEndpoint)
+	api.GET("/auth/session", routes.GetSessionEndpoint)
+
+	protected := api.Group("/")
 	protected.Use(middleware.AuthMiddleware())
 	{
 		protected.POST("/auth/logout", routes.LogoutEndpoint)
