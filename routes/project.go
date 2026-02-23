@@ -35,14 +35,11 @@ func GetProjects(ginContext *gin.Context) {
 
 	_ = godotenv.Load() // Ignoring error as it might be already loaded or optional
 
-	user, _, err := gitlabClient.Users.CurrentUser()
-	if err != nil {
-		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		ginContext.Abort()
-		return
+	opts := &gitlab.ListProjectsOptions{
+		Membership: gitlab.Ptr(true),
 	}
 
-	projects, _, err := gitlabClient.Projects.ListUserProjects(user.ID, &gitlab.ListProjectsOptions{})
+	projects, _, err := gitlabClient.Projects.ListProjects(opts)
 	if err != nil {
 		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		ginContext.Abort()
