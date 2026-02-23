@@ -14,13 +14,14 @@ import (
 )
 
 func getOAuthConfig() *oauth2.Config {
+	baseURL := config.GetEnv("GITLAB_BASE_URL")
 	clientID := config.GetEnv("GITLAB_APPLICATION_ID")
 	clientSecret := config.GetEnv("GITLAB_SECRET")
 	redirectURL := config.GetEnv("GITLAB_REDIRECT_URI")
 	// explicit scopes are better than empty string
 	scopes := []string{"api", "read_user"}
 
-	configMap := gitlaboauth2.NewOAuth2Config("", clientID, redirectURL, scopes)
+	configMap := gitlaboauth2.NewOAuth2Config(baseURL, clientID, redirectURL, scopes)
 	configMap.ClientSecret = clientSecret
 	return configMap
 }

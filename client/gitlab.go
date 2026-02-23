@@ -36,11 +36,12 @@ func (s *NotifyTokenSource) Token() (*oauth2.Token, error) {
 }
 
 func GetClient(ctx context.Context, token *oauth2.Token, saver TokenSaver) (*gitlab.Client, error) {
+	baseURL := config.GetEnv("GITLAB_BASE_URL")
 	clientID := config.GetEnv("GITLAB_APPLICATION_ID")
 	clientSecret := config.GetEnv("GITLAB_SECRET")
 	redirectURL := config.GetEnv("GITLAB_REDIRECT_URI")
 	scopes := []string{"api", "read_user"}
-	configMap := gitlaboauth2.NewOAuth2Config("", clientID, redirectURL, scopes)
+	configMap := gitlaboauth2.NewOAuth2Config(baseURL, clientID, redirectURL, scopes)
 	configMap.ClientSecret = clientSecret
 
 	ts := &NotifyTokenSource{
@@ -48,8 +49,17 @@ func GetClient(ctx context.Context, token *oauth2.Token, saver TokenSaver) (*git
 		source: configMap.TokenSource(ctx, token),
 		saver:  saver,
 	}
+	
+	var options []gitlab.ClientOptionFunc
+	if baseURL != "" {
+		apiURL := baseURL
+		if !strings.HasSuffix(apiURL, "/api/v4") && !strings.HasSuffix(apiURL, "/api/v4/") {
+			apiURL = strings.TrimRight(apiURL, "/") + "/api/v4/"
+		}
+		options = append(options, gitlab.WithBaseURL(apiURL))
+	}
 
-	client, err := gitlab.NewAuthSourceClient(gitlab.OAuthTokenSource{TokenSource: ts})
+	client, err := gitlab.NewAuthSourceClient(gitlab.OAuthTokenSource{TokenSource: ts}, options...)
 	if err != nil {
 		return nil, err
 	}
