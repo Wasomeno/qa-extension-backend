@@ -1,15 +1,15 @@
 package routes
 
 import (
-    "context"
-    "net/http"
+	"context"
+	"net/http"
 
-    "qa-extension-backend/client"
-    authHandler "qa-extension-backend/handlers"
+	"qa-extension-backend/client"
+	authHandler "qa-extension-backend/handlers"
 
-    "github.com/gin-gonic/gin"
-    gitlab "gitlab.com/gitlab-org/api/client-go"
-    "golang.org/x/oauth2"
+	"github.com/gin-gonic/gin"
+	gitlab "gitlab.com/gitlab-org/api/client-go"
+	"golang.org/x/oauth2"
 )
 
 func GetDashboardStats(ginContext *gin.Context) {
@@ -27,7 +27,7 @@ func GetDashboardStats(ginContext *gin.Context) {
         return
     }
 
-    scope := "assigned_to_me"
+    scope := "all"
 
     // Fetch Recent Issues
     recentOpts := &gitlab.ListIssuesOptions{

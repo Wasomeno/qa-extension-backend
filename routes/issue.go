@@ -187,6 +187,7 @@ func GetIssues(ginContext *gin.Context) {
 
 	opts := &gitlab.ListIssuesOptions{
 		WithLabelDetails: gitlab.Ptr(true),
+		Scope:            gitlab.Ptr("all"),
 	}
 
 	if issueIds != "" {
