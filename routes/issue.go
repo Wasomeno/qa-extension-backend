@@ -182,8 +182,10 @@ func GetIssues(ginContext *gin.Context) {
 	search := ginContext.Query("search")
 	issueIds := ginContext.Query("issue_ids")
 	assigneeId := ginContext.Query("assignee_id")
+	assigneeIds := ginContext.Query("assignee_ids")
 	authorId := ginContext.Query("author_id")
 	state := ginContext.Query("state")
+	projectIds := ginContext.Query("project_ids")
 
 	opts := &gitlab.ListIssuesOptions{
 		WithLabelDetails: gitlab.Ptr(true),
@@ -215,7 +217,20 @@ func GetIssues(ginContext *gin.Context) {
 		opts.AuthorID = &id
 	}
 
-	if assigneeId != "" {
+	if assigneeIds != "" {
+		splitAssigneeIds := strings.Split(assigneeIds, ",")
+		ids := make([]int64, len(splitAssigneeIds))
+		for i, idStr := range splitAssigneeIds {
+			id, err := strconv.ParseInt(strings.TrimSpace(idStr), 10, 64)
+			if err != nil {
+				ginContext.JSON(http.StatusBadRequest, gin.H{"error": "Invalid assignee IDs"})
+				ginContext.Abort()
+				return
+			}
+			ids[i] = id
+		}
+		opts.AssigneeID = gitlab.AssigneeID(ids)
+	} else if assigneeId != "" {
 		id, err := strconv.ParseInt(assigneeId, 10, 64)
 		if err != nil {
 			ginContext.JSON(http.StatusBadRequest, gin.H{"error": "Invalid assignee ID"})
@@ -251,12 +266,40 @@ func GetIssues(ginContext *gin.Context) {
 		opts.State = &state
 	}
 
-	issues, _, err := gitlabClient.Issues.ListIssues(opts)
-
-	if err != nil {
-		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		ginContext.Abort()
-		return
+	var issues []*gitlab.Issue
+	if projectIds != "" {
+		splitProjectIds := strings.Split(projectIds, ",")
+		for _, pid := range splitProjectIds {
+			pOpts := &gitlab.ListProjectIssuesOptions{
+				IIDs:             opts.IIDs,
+				State:            opts.State,
+				Labels:           opts.Labels,
+				WithLabelDetails: opts.WithLabelDetails,
+				Milestone:        opts.Milestone,
+				Scope:            opts.Scope,
+				AuthorID:         opts.AuthorID,
+				AssigneeID:       opts.AssigneeID,
+				OrderBy:          opts.OrderBy,
+				Sort:             opts.Sort,
+				Search:           opts.Search,
+				IssueType:        opts.IssueType,
+			}
+			projectIssues, _, err := gitlabClient.Issues.ListProjectIssues(strings.TrimSpace(pid), pOpts)
+			if err != nil {
+				ginContext.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to fetch issues for project %s: %s", pid, err.Error())})
+				ginContext.Abort()
+				return
+			}
+			issues = append(issues, projectIssues...)
+		}
+	} else {
+		var err error
+		issues, _, err = gitlabClient.Issues.ListIssues(opts)
+		if err != nil {
+			ginContext.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			ginContext.Abort()
+			return
+		}
 	}
 
 	// Prepare result list
