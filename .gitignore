@@ -1,2 +1,6 @@
 .DS_Store
 .env
+temp-go/
+agent/tmp/
+config.yaml
+static/management.html
