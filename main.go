@@ -57,6 +57,7 @@ func main() {
 		protected.GET("/issues", routes.GetIssues)
 		protected.GET("/issues/:id", routes.GetIssue)
 		protected.GET("/issues/open-ai-test", routes.SmartAutoCompleteIssueDescription)
+		protected.POST("/agent/chat", routes.ChatWithAgent)
 		protected.GET("/dashboard", routes.GetDashboardStats)
 		protected.GET("/debug/notes/:project_id/:issue_iid", routes.DebugIssueNotes)
 	}
