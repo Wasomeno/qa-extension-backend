@@ -42,10 +42,8 @@ COPY --from=builder /app/main .
 # Copy the playwright driver and browser cache from the builder stage
 COPY --from=builder /root/.cache/ms-playwright-go /root/.cache/ms-playwright-go
 
-# Install the system dependencies required by Chromium
-# Playwright provides a command to do this automatically.
-# Since we already have the driver in the cache, we can use npx.
-RUN npx playwright install-deps chromium
+# Install the browser executable AND the system dependencies required by Chromium
+RUN npx playwright install --with-deps chromium
 
 # Expose port 3000
 EXPOSE 3000
