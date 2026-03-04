@@ -1,52 +1,31 @@
-# Build stage
+# Stage 1: Build the Go application
 FROM golang:1.24-bookworm AS builder
-
 WORKDIR /app
-
-# Copy go mod and sum files
 COPY go.mod go.sum ./
-
-# Download dependencies
 RUN go mod download
-
-# Copy source code
 COPY . .
+# We use CGO_ENABLED=0 to ensure the Go binary is statically linked
+RUN CGO_ENABLED=0 GOOS=linux go build -o main .
 
-# Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main .
+# Run the Playwright installer ONLY to get the driver JS files
+# (We skip browsers because the Microsoft image already has them)
+RUN PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 go run github.com/playwright-community/playwright-go/cmd/playwright@v0.5700.1 install
 
-# Install playwright driver and browsers
-# This downloads everything to /root/.cache/ms-playwright-go
-RUN go run github.com/playwright-community/playwright-go/cmd/playwright@v0.5700.1 install --with-deps chromium
-
-# Run stage
-# We switch to debian-slim for the final image to ensure 100% compatibility 
-# with Playwright's glibc and GUI library requirements.
-FROM debian:bookworm-slim
+# Stage 2: The Official Playwright Environment
+# We use the exact version of Playwright that playwright-go v0.5700.1 wraps (v1.50.1)
+FROM mcr.microsoft.com/playwright:v1.50.1-jammy
 
 WORKDIR /app
 
-# Install CA certificates, tzdata, and Node.js
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    tzdata \
-    curl \
-    gnupg \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy the pre-built binary file from the previous stage
+# Copy the compiled Go binary
 COPY --from=builder /app/main .
 
-# Copy the playwright driver and browser cache from the builder stage
+# Copy the driver JS files that were extracted during build
 COPY --from=builder /root/.cache/ms-playwright-go /root/.cache/ms-playwright-go
 
-# Install the browser executable AND the system dependencies required by Chromium
-RUN npx playwright install --with-deps chromium
+# Crucial step: The official image stores browsers in /ms-playwright, not /root/.cache
+# We must tell playwright-go to look there for the browsers.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
-# Expose port 3000
 EXPOSE 3000
-
-# Command to run the executable
 CMD ["./main"]
