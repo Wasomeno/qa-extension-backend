@@ -20,6 +20,9 @@ COPY . .
 # GOOS=linux GOARCH=amd64 (or arm64 depending on VPS)
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main .
 
+# Install playwright driver
+RUN go run github.com/playwright-community/playwright-go/cmd/playwright@v0.5700.1 install driver
+
 # Run stage
 FROM alpine:latest
 
@@ -39,12 +42,15 @@ RUN apk add --no-cache \
     bash \
     curl
 
+# Copy the pre-built binary file from the previous stage
+COPY --from=builder /app/main .
+
+# Copy the playwright driver from the builder stage
+COPY --from=builder /root/.cache/ms-playwright-go /root/.cache/ms-playwright-go
+
 # Set environment variables for Playwright
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
-
-# Copy the pre-built binary file from the previous stage
-COPY --from=builder /app/main .
 
 # Expose port 3000 to the outside world
 EXPOSE 3000
