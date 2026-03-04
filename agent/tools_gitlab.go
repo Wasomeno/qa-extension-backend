@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"log"
 	"qa-extension-backend/client"
 	"strconv"
 
@@ -17,7 +18,7 @@ func GetGitLabTools() []tool.Tool {
 	
 	t1, _ := functiontool.New(functiontool.Config{
 		Name: "listGitLabProjects",
-		Description: "List all available projects.",
+		Description: "List available GitLab projects. Call this without arguments to see all projects you have access to.",
 	}, listGitLabProjects)
 	tools = append(tools, t1)
 
@@ -29,9 +30,15 @@ func GetGitLabTools() []tool.Tool {
 
 	t3, _ := functiontool.New(functiontool.Config{
 		Name: "listGitLabIssues",
-		Description: "List issues from a GitLab project.",
+		Description: "List issues from a specific GitLab project. Requires projectId.",
 	}, listGitLabIssues)
 	tools = append(tools, t3)
+
+	t5, _ := functiontool.New(functiontool.Config{
+		Name: "listAllGitLabIssues",
+		Description: "List all issues assigned to you or created by you across all projects.",
+	}, listAllGitLabIssues)
+	tools = append(tools, t5)
 
 	t4, _ := functiontool.New(functiontool.Config{
 		Name: "updateGitLabIssue",
@@ -42,19 +49,69 @@ func GetGitLabTools() []tool.Tool {
 	return tools
 }
 
-type ListProjectsArgs struct{}
+type ListProjectsArgs struct {
+	Search  string `json:"search"`
+	Owned   bool   `json:"owned"`
+	Starred bool   `json:"starred"`
+}
 
-func listGitLabProjects(ctx tool.Context, args ListProjectsArgs) ([]*gitlab.Project, error) {
+type ProjectShortInfo struct {
+	ID                int64  `json:"id"`
+	Name              string `json:"name"`
+	PathWithNamespace string `json:"pathWithNamespace"`
+	WebURL            string `json:"webUrl"`
+	Description       string `json:"description"`
+}
+
+type ListProjectsResponse struct {
+	Projects []ProjectShortInfo `json:"projects"`
+}
+
+func listGitLabProjects(ctx tool.Context, args ListProjectsArgs) (*ListProjectsResponse, error) {
+	log.Printf("[AgentTool] listGitLabProjects called with args: %+v", args)
 	gitlabClient, err := getGitLabClient(ctx)
 	if err != nil {
+		log.Printf("[AgentTool] listGitLabProjects failed to get client: %v", err)
 		return nil, err
 	}
 
-	projects, _, err := gitlabClient.Projects.ListProjects(&gitlab.ListProjectsOptions{
+	opts := &gitlab.ListProjectsOptions{
 		Membership: gitlab.Ptr(true),
 		Simple:     gitlab.Ptr(true),
-	})
-	return projects, err
+		ListOptions: gitlab.ListOptions{
+			PerPage: 100,
+		},
+	}
+
+	if args.Search != "" {
+		opts.Search = &args.Search
+	}
+	if args.Owned {
+		opts.Owned = gitlab.Ptr(true)
+	}
+	if args.Starred {
+		opts.Starred = gitlab.Ptr(true)
+	}
+
+	projects, _, err := gitlabClient.Projects.ListProjects(opts)
+	if err != nil {
+		log.Printf("[AgentTool] listGitLabProjects API error: %v", err)
+		return nil, err
+	}
+
+	var result []ProjectShortInfo
+	for _, p := range projects {
+		result = append(result, ProjectShortInfo{
+			ID:                p.ID,
+			Name:              p.Name,
+			PathWithNamespace: p.PathWithNamespace,
+			WebURL:            p.WebURL,
+			Description:       p.Description,
+		})
+	}
+
+	log.Printf("[AgentTool] listGitLabProjects success, found %d projects", len(result))
+	return &ListProjectsResponse{Projects: result}, nil
 }
 
 type CreateIssueArgs struct {
@@ -65,8 +122,10 @@ type CreateIssueArgs struct {
 }
 
 func createGitLabIssue(ctx tool.Context, args CreateIssueArgs) (*gitlab.Issue, error) {
+	log.Printf("[AgentTool] createGitLabIssue called with args: %+v", args)
 	gitlabClient, err := getGitLabClient(ctx)
 	if err != nil {
+		log.Printf("[AgentTool] createGitLabIssue failed to get client: %v", err)
 		return nil, err
 	}
 
@@ -80,6 +139,11 @@ func createGitLabIssue(ctx tool.Context, args CreateIssueArgs) (*gitlab.Issue, e
 	}
 
 	issue, _, err := gitlabClient.Issues.CreateIssue(strconv.Itoa(args.ProjectID), opt)
+	if err != nil {
+		log.Printf("[AgentTool] createGitLabIssue API error: %v", err)
+	} else {
+		log.Printf("[AgentTool] createGitLabIssue success, created issue IID: %d", issue.IID)
+	}
 	return issue, err
 }
 
@@ -88,9 +152,26 @@ type ListIssuesArgs struct {
 	State     string `json:"state"`
 }
 
-func listGitLabIssues(ctx tool.Context, args ListIssuesArgs) ([]*gitlab.Issue, error) {
+type IssueShortInfo struct {
+	ID          int64    `json:"id"`
+	IID         int64    `json:"iid"`
+	ProjectID   int64    `json:"projectId"`
+	Title       string   `json:"title"`
+	State       string   `json:"state"`
+	Labels      []string `json:"labels"`
+	WebURL      string   `json:"webUrl"`
+	Description string   `json:"description"`
+}
+
+type ListIssuesResponse struct {
+	Issues []IssueShortInfo `json:"issues"`
+}
+
+func listGitLabIssues(ctx tool.Context, args ListIssuesArgs) (*ListIssuesResponse, error) {
+	log.Printf("[AgentTool] listGitLabIssues called with args: %+v", args)
 	gitlabClient, err := getGitLabClient(ctx)
 	if err != nil {
+		log.Printf("[AgentTool] listGitLabIssues failed to get client: %v", err)
 		return nil, err
 	}
 
@@ -102,7 +183,70 @@ func listGitLabIssues(ctx tool.Context, args ListIssuesArgs) ([]*gitlab.Issue, e
 	}
 
 	issues, _, err := gitlabClient.Issues.ListProjectIssues(strconv.Itoa(args.ProjectID), opt)
-	return issues, err
+	if err != nil {
+		log.Printf("[AgentTool] listGitLabIssues API error: %v", err)
+		return nil, err
+	}
+
+	var result []IssueShortInfo
+	for _, i := range issues {
+		result = append(result, IssueShortInfo{
+			ID:          i.ID,
+			IID:         i.IID,
+			ProjectID:   i.ProjectID,
+			Title:       i.Title,
+			State:       i.State,
+			Labels:      i.Labels,
+			WebURL:      i.WebURL,
+			Description: i.Description,
+		})
+	}
+
+	log.Printf("[AgentTool] listGitLabIssues success, found %d issues", len(result))
+	return &ListIssuesResponse{Issues: result}, nil
+}
+
+type ListAllIssuesArgs struct {
+	State string `json:"state"`
+}
+
+func listAllGitLabIssues(ctx tool.Context, args ListAllIssuesArgs) (*ListIssuesResponse, error) {
+	log.Printf("[AgentTool] listAllGitLabIssues called with args: %+v", args)
+	gitlabClient, err := getGitLabClient(ctx)
+	if err != nil {
+		log.Printf("[AgentTool] listAllGitLabIssues failed to get client: %v", err)
+		return nil, err
+	}
+
+	opt := &gitlab.ListIssuesOptions{
+		Scope: gitlab.Ptr("all"),
+	}
+	if args.State != "" {
+		opt.State = &args.State
+	}
+
+	issues, err := client.ListIssuesRelatedToMe(gitlabClient, opt)
+	if err != nil {
+		log.Printf("[AgentTool] listAllGitLabIssues API error: %v", err)
+		return nil, err
+	}
+
+	var result []IssueShortInfo
+	for _, i := range issues {
+		result = append(result, IssueShortInfo{
+			ID:          i.ID,
+			IID:         i.IID,
+			ProjectID:   i.ProjectID,
+			Title:       i.Title,
+			State:       i.State,
+			Labels:      i.Labels,
+			WebURL:      i.WebURL,
+			Description: i.Description,
+		})
+	}
+
+	log.Printf("[AgentTool] listAllGitLabIssues success, found %d issues", len(result))
+	return &ListIssuesResponse{Issues: result}, nil
 }
 
 type UpdateIssueArgs struct {
@@ -112,8 +256,10 @@ type UpdateIssueArgs struct {
 }
 
 func updateGitLabIssue(ctx tool.Context, args UpdateIssueArgs) (*gitlab.Issue, error) {
+	log.Printf("[AgentTool] updateGitLabIssue called with args: %+v", args)
 	gitlabClient, err := getGitLabClient(ctx)
 	if err != nil {
+		log.Printf("[AgentTool] updateGitLabIssue failed to get client: %v", err)
 		return nil, err
 	}
 
@@ -129,6 +275,11 @@ func updateGitLabIssue(ctx tool.Context, args UpdateIssueArgs) (*gitlab.Issue, e
 	}
 
 	issue, _, err := gitlabClient.Issues.UpdateIssue(strconv.Itoa(args.ProjectID), int64(args.IssueIID), opt)
+	if err != nil {
+		log.Printf("[AgentTool] updateGitLabIssue API error: %v", err)
+	} else {
+		log.Printf("[AgentTool] updateGitLabIssue success, updated issue IID: %d", issue.IID)
+	}
 	return issue, err
 }
 

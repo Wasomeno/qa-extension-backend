@@ -30,6 +30,6 @@ func CreateTestSpecialist(llm model.LLM) (agent.Agent, error) {
 		Model:       llm,
 		Description: "Specialized in listing and running automation tests.",
 		Instruction: TEST_SPECIALIST_INSTRUCTION,
-		// Tools will be added when Playwright Go integration is ready
+		Tools:       GetTestTools(),
 	})
 }

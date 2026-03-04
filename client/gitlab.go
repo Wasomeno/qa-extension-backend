@@ -67,6 +67,74 @@ func GetClient(ctx context.Context, token *oauth2.Token, saver TokenSaver) (*git
 	return client, nil
 }
 
+// ListIssuesRelatedToMe fetches issues assigned to me OR created by me.
+func ListIssuesRelatedToMe(client *gitlab.Client, opts *gitlab.ListIssuesOptions) ([]*gitlab.Issue, error) {
+	// Clone options to avoid side effects
+	assignedOpts := *opts
+	assignedOpts.Scope = gitlab.Ptr("assigned_to_me")
+	assigned, _, err := client.Issues.ListIssues(&assignedOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	createdOpts := *opts
+	createdOpts.Scope = gitlab.Ptr("created_by_me")
+	created, _, err := client.Issues.ListIssues(&createdOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	// Deduplicate
+	issueMap := make(map[int64]*gitlab.Issue)
+	for _, iss := range assigned {
+		issueMap[iss.ID] = iss
+	}
+	for _, iss := range created {
+		issueMap[iss.ID] = iss
+	}
+
+	var issues []*gitlab.Issue
+	for _, iss := range issueMap {
+		issues = append(issues, iss)
+	}
+
+	return issues, nil
+}
+
+// ListProjectIssuesRelatedToMe fetches project issues assigned to me OR created by me.
+func ListProjectIssuesRelatedToMe(client *gitlab.Client, projectID interface{}, opts *gitlab.ListProjectIssuesOptions) ([]*gitlab.Issue, error) {
+	// Clone options to avoid side effects
+	assignedOpts := *opts
+	assignedOpts.Scope = gitlab.Ptr("assigned_to_me")
+	assigned, _, err := client.Issues.ListProjectIssues(projectID, &assignedOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	createdOpts := *opts
+	createdOpts.Scope = gitlab.Ptr("created_by_me")
+	created, _, err := client.Issues.ListProjectIssues(projectID, &createdOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	// Deduplicate
+	issueMap := make(map[int64]*gitlab.Issue)
+	for _, iss := range assigned {
+		issueMap[iss.ID] = iss
+	}
+	for _, iss := range created {
+		issueMap[iss.ID] = iss
+	}
+
+	var issues []*gitlab.Issue
+	for _, iss := range issueMap {
+		issues = append(issues, iss)
+	}
+
+	return issues, nil
+}
+
 // FetchRecentIssueNotes retrieves the last N notes for an issue.
 func FetchRecentIssueNotes(client *gitlab.Client, projectID int, issueID int, limit int) ([]*gitlab.Note, error) {
 	orderBy := "created_at"

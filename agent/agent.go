@@ -13,22 +13,17 @@ import (
 	"google.golang.org/adk/model/gemini"
 	"google.golang.org/adk/runner"
 	"google.golang.org/adk/session"
-	"google.golang.org/adk/tool/agenttool"
 )
 
-const SYSTEM_INSTRUCTION = `You are a QA Assistant embedded in a Chrome extension. Your role is strictly limited to helping users with:
+const SYSTEM_INSTRUCTION = `You are a QA Assistant. Your role is to help users with GitLab Issue Management and Recorded Automation Tests.
 
-1. **GitLab Issue Management** — Creating, listing, updating, and discussing GitLab issues and projects.
-2. **Recorded Automation Tests** — Listing and running recorded test blueprints, and comparing results against user expectations.
+## Guidelines
 
-## Rules
-
-- You MUST use the available tools (createGitLabIssue, listGitLabIssues, updateGitLabIssue, listGitLabProjects, listRecordedTests, runRecordedTest) to fulfill requests within your scope.
-- If a user asks something OUTSIDE your scope (e.g., general knowledge, coding help, math, creative writing, weather, news, or any topic unrelated to GitLab issues and QA testing), respond with: "I'm focused on QA workflows and GitLab issue management. Can I help you with something in that area instead?"
-- You MAY respond to basic greetings (hi, hello, how are you, thanks, etc.) in a friendly manner, but always briefly mention your capabilities so the user knows what you can help with.
-- Do NOT generate code, explain programming concepts, answer trivia, or perform any task outside of GitLab issue management and automation test execution.
-- When discussing issues or tests, be concise, structured, and actionable.
-- Before running a recorded test, ALWAYS ask the user what the expected result should be.`
+1. **Be Direct**: If a user asks for a list of projects, call listGitLabProjects ONCE with default parameters. Do NOT guess search terms.
+2. **Stop after tool output**: Once a tool returns data (e.g., a list of projects), use that data to answer the user immediately. Do NOT call more tools or try different filters.
+3. **No Redundant Calls**: If you already have projects, do NOT call issue tools unless specifically asked for issues.
+4. **Trust the tool**: If the tool returns a list of 2 projects, tell the user about those 2 projects. Do not claim there is a technical issue.
+5. **Output Video URLs Exactly**: When returning a video URL from a test result, use the exact URL provided in the VideoURL field. Do not modify, guess, or reformat the URL.`
 
 func GetSessionService() session.Service {
 	return NewRedisSessionService("qa_extension")
@@ -47,25 +42,12 @@ func GetQARunner(ctx context.Context) (*runner.Runner, error) {
 		return nil, fmt.Errorf("failed to create Gemini model: %w", err)
 	}
 
-	gitlabSpecialist, err := CreateGitLabSpecialist(llm)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create GitLab specialist: %w", err)
-	}
-
-	testSpecialist, err := CreateTestSpecialist(llm)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create test specialist: %w", err)
-	}
-
 	mainAgent, err := llmagent.New(llmagent.Config{
 		Name:        "qa_agent",
 		Model:       llm,
 		Description: "A QA Assistant that helps with GitLab issues and automation tests.",
 		Instruction: SYSTEM_INSTRUCTION,
-		Tools: append(GetGitLabTools(),
-			agenttool.New(gitlabSpecialist, nil),
-			agenttool.New(testSpecialist, nil),
-		),
+		Tools:       append(GetGitLabTools(), GetTestTools()...),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create main QA agent: %w", err)
