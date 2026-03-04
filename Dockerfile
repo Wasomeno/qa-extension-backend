@@ -12,8 +12,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o main .
 RUN PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 go run github.com/playwright-community/playwright-go/cmd/playwright@v0.5700.1 install
 
 # Stage 2: The Official Playwright Environment
-# We use the exact version of Playwright that playwright-go v0.5700.1 wraps (v1.50.1)
-FROM mcr.microsoft.com/playwright:v1.50.1-jammy
+# We use the exact version of Playwright that playwright-go v0.5700.1 wraps (v1.57.0)
+FROM mcr.microsoft.com/playwright:v1.57.0-jammy
 
 WORKDIR /app
 
