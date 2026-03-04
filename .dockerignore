@@ -8,6 +8,8 @@
 *.out
 main
 /main
+qa-extension-backend
+server.log
 
 # Vendor directory
 vendor/
@@ -40,3 +42,7 @@ Thumbs.db
 .agent/
 .agents/
 .gemini/
+
+# Scripts and temporary files
+scripts/
+temp-go/
