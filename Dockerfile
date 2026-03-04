@@ -19,8 +19,10 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main .
 
 # Install playwright driver
-# This downloads the driver (including JS files and a bundled node binary) to /root/.cache/ms-playwright-go
-RUN go run github.com/playwright-community/playwright-go/cmd/playwright@v0.5700.1 install driver
+# This downloads the driver (including JS files and a bundled node binary) to /root/.cache/ms-playwright-go.
+# We use PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 to avoid downloading the huge browser binaries
+# as the final image will use Alpine's native Chromium.
+RUN PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 go run github.com/playwright-community/playwright-go/cmd/playwright@v0.5700.1 install
 
 # Run stage
 # We use Alpine for the final image to keep it lightweight.
