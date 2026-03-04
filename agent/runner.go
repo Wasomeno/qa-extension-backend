@@ -20,8 +20,22 @@ var (
 )
 
 func InitPlaywright() error {
+	log.Printf("[DEBUG] Starting InitPlaywright")
+	log.Printf("[DEBUG] PLAYWRIGHT_NODEJS_PATH: %s", os.Getenv("PLAYWRIGHT_NODEJS_PATH"))
+	log.Printf("[DEBUG] PLAYWRIGHT_BROWSERS_PATH: %s", os.Getenv("PLAYWRIGHT_BROWSERS_PATH"))
+	log.Printf("[DEBUG] HOME: %s", os.Getenv("HOME"))
+
+	// Check for driver cache
+	cachePath := "/root/.cache/ms-playwright-go"
+	if _, err := os.Stat(cachePath); err == nil {
+		log.Printf("[DEBUG] Driver cache exists at %s", cachePath)
+	} else {
+		log.Printf("[DEBUG] Driver cache MISSING at %s: %v", cachePath, err)
+	}
+
 	pw, err := playwright.Run()
 	if err != nil {
+		log.Printf("[FATAL ERROR] playwright.Run() failed: %v", err)
 		return fmt.Errorf("could not start playwright: %w", err)
 	}
 	globalPw = pw
@@ -31,6 +45,7 @@ func InitPlaywright() error {
 		SlowMo:   playwright.Float(250),
 	})
 	if err != nil {
+		log.Printf("[FATAL ERROR] globalPw.Chromium.Launch() failed: %v", err)
 		return fmt.Errorf("could not launch browser: %w", err)
 	}
 	globalBrowser = browser
