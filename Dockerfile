@@ -3,8 +3,8 @@ FROM golang:1.24-alpine AS builder
 
 WORKDIR /app
 
-# Install git for downloading dependencies
-RUN apk add --no-cache git
+# Install git for downloading dependencies and gcompat for running playwright driver
+RUN apk add --no-cache git gcompat
 
 # Copy go mod and sum files
 COPY go.mod go.sum ./
@@ -40,7 +40,8 @@ RUN apk add --no-cache \
     ca-certificates \
     ttf-freefont \
     bash \
-    curl
+    curl \
+    gcompat
 
 # Copy the pre-built binary file from the previous stage
 COPY --from=builder /app/main .
