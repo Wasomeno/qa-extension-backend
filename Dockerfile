@@ -3,8 +3,8 @@ FROM golang:1.24-alpine AS builder
 
 WORKDIR /app
 
-# Install git for downloading dependencies and gcompat for running playwright driver
-RUN apk add --no-cache git gcompat libstdc++ libgcc
+# Install git for downloading dependencies
+RUN apk add --no-cache git
 
 # Copy go mod and sum files
 COPY go.mod go.sum ./
@@ -20,9 +20,6 @@ COPY . .
 # GOOS=linux GOARCH=amd64 (or arm64 depending on VPS)
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main .
 
-# Install playwright driver
-RUN go run github.com/playwright-community/playwright-go/cmd/playwright@v0.5700.1 install driver
-
 # Run stage
 FROM alpine:latest
 
@@ -32,6 +29,8 @@ WORKDIR /app
 RUN apk --no-cache add ca-certificates tzdata
 
 # Install dependencies for Playwright
+# We install nodejs and set PLAYWRIGHT_NODEJS_PATH to /usr/bin/node
+# to avoid compatibility issues with the bundled node binary on Alpine.
 RUN apk add --no-cache \
     chromium \
     nss \
@@ -41,19 +40,15 @@ RUN apk add --no-cache \
     ttf-freefont \
     bash \
     curl \
-    gcompat \
-    libstdc++ \
-    libgcc
+    nodejs
 
 # Copy the pre-built binary file from the previous stage
 COPY --from=builder /app/main .
 
-# Copy the playwright driver from the builder stage
-COPY --from=builder /root/.cache/ms-playwright-go /root/.cache/ms-playwright-go
-
 # Set environment variables for Playwright
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
+ENV PLAYWRIGHT_NODEJS_PATH=/usr/bin/node
 
 # Expose port 3000 to the outside world
 EXPOSE 3000
