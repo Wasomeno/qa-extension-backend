@@ -2,8 +2,11 @@ package routes
 
 import (
 	"context"
+	"errors"
+	"log"
 	"net/http"
 	"qa-extension-backend/agent"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/oauth2"
@@ -70,6 +73,12 @@ func ChatWithAgent(c *gin.Context) {
 	var finalResponse string
 	for event, err := range eventCh {
 		if err != nil {
+			if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "context canceled") {
+				// Request was aborted by the client
+				log.Printf("[ChatWithAgent] Request aborted by client, exiting gracefully: %v", err)
+				return
+			}
+			log.Printf("[ChatWithAgent] Agent execution error: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Agent execution error: " + err.Error()})
 			return
 		}
