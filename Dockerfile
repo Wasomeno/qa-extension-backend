@@ -28,6 +28,21 @@ WORKDIR /app
 # Add CA certificates for HTTPS requests (e.g., to GitLab/OpenAI)
 RUN apk --no-cache add ca-certificates tzdata
 
+# Install dependencies for Playwright
+RUN apk add --no-cache \
+    chromium \
+    nss \
+    freetype \
+    harfbuzz \
+    ca-certificates \
+    ttf-freefont \
+    bash \
+    curl
+
+# Set environment variables for Playwright
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
+
 # Copy the pre-built binary file from the previous stage
 COPY --from=builder /app/main .
 
