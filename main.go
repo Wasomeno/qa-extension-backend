@@ -49,6 +49,9 @@ func main() {
 	{
 		protected.POST("/recordings", handlers.SaveRecording)
 		protected.GET("/recordings", handlers.ListRecordings)
+		protected.PUT("/recordings/:id", handlers.UpdateRecording)
+		protected.PATCH("/recordings/:id", handlers.UpdateRecording)
+		protected.DELETE("/recordings/:id", handlers.DeleteRecording)
 
 		protected.POST("/auth/logout", routes.LogoutEndpoint)
 		protected.GET("/current-user", routes.GetUser)
