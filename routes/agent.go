@@ -103,6 +103,9 @@ func ChatWithAgent(c *gin.Context) {
 				"status":  "processing",
 				"message": progressMsg,
 			})
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
 			return true
 		case res, ok := <-resCh:
 			if !ok {
@@ -115,6 +118,9 @@ func ChatWithAgent(c *gin.Context) {
 				}
 				log.Printf("[ChatWithAgent] Agent execution error: %v", res.err)
 				c.SSEvent("error", res.err.Error())
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
+				}
 				return false
 			}
 
@@ -135,6 +141,9 @@ func ChatWithAgent(c *gin.Context) {
 				c.SSEvent("progress", gin.H{
 					"status": "processing",
 				})
+			}
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
 			}
 			return true
 		}
