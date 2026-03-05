@@ -64,6 +64,19 @@ func StopPlaywright() {
 func RunTest(ctx context.Context, recording *models.TestRecording) (*models.TestResult, error) {
 	log.Printf("[Runner] Running test: %s", recording.Name)
 
+	// Get progress channel from context if available
+	progressCh, _ := ctx.Value("progressCh").(chan string)
+	sendProgress := func(msg string) {
+		if progressCh != nil {
+			select {
+			case progressCh <- msg:
+			default:
+				// Skip if channel is full
+			}
+		}
+	}
+
+	sendProgress("Initializing Playwright browser...")
 	if globalBrowser == nil {
 		if err := InitPlaywright(); err != nil {
 			return nil, err
@@ -114,6 +127,7 @@ func RunTest(ctx context.Context, recording *models.TestRecording) (*models.Test
 		default:
 		}
 
+		sendProgress(fmt.Sprintf("Step %d: %s", i+1, step.Description))
 		log.Printf("[Runner] Step %d: %s (%s)", i+1, step.Description, step.Action)
 		
 		stepResult := models.TestStepResult{

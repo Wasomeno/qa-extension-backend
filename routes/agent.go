@@ -3,6 +3,7 @@ package routes
 import (
 	"context"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"qa-extension-backend/agent"
@@ -32,8 +33,10 @@ func ChatWithAgent(c *gin.Context) {
 
 	token := c.MustGet("token").(*oauth2.Token)
 
-	// Create a context with the token so tools can access it
+	// Create a progress channel and add it to the context
+	progressCh := make(chan string, 10)
 	ctx := context.WithValue(c.Request.Context(), "token", token)
+	ctx = context.WithValue(ctx, "progressCh", progressCh)
 
 	r, err := agent.GetQARunner(ctx)
 	if err != nil {
@@ -68,32 +71,72 @@ func ChatWithAgent(c *gin.Context) {
 
 	content := genai.NewContentFromText(req.Input, genai.RoleUser)
 
-	eventCh := r.Run(ctx, userID, req.SessionID, content, adkagent.RunConfig{})
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("Transfer-Encoding", "chunked")
 
-	var finalResponse string
-	for event, err := range eventCh {
-		if err != nil {
-			if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "context canceled") {
-				// Request was aborted by the client
-				log.Printf("[ChatWithAgent] Request aborted by client, exiting gracefully: %v", err)
-				return
-			}
-			log.Printf("[ChatWithAgent] Agent execution error: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Agent execution error: " + err.Error()})
-			return
-		}
-		if event.IsFinalResponse() {
-			for _, part := range event.Content.Parts {
-				if part.Text != "" {
-					finalResponse += part.Text
-				}
-			}
-		}
+	// Create a wrapper to consume the iterator and send to a channel
+	type resultEvent struct {
+		event adkagent.RunEvent
+		err   error
 	}
+	resCh := make(chan resultEvent)
+	go func() {
+		defer close(resCh)
+		eventCh := r.Run(ctx, userID, req.SessionID, content, adkagent.RunConfig{})
+		for event, err := range eventCh {
+			resCh <- resultEvent{event, err}
+		}
+	}()
 
-	c.JSON(http.StatusOK, gin.H{
-		"content":    finalResponse,
-		"session_id": req.SessionID,
-		"status":     "done",
+	c.Stream(func(w io.Writer) bool {
+		select {
+		case <-c.Request.Context().Done():
+			log.Printf("[ChatWithAgent] Client disconnected")
+			return false
+		case progressMsg, ok := <-progressCh:
+			if !ok {
+				return true
+			}
+			c.SSEvent("progress", gin.H{
+				"status":  "processing",
+				"message": progressMsg,
+			})
+			return true
+		case res, ok := <-resCh:
+			if !ok {
+				return false
+			}
+			if res.err != nil {
+				if errors.Is(res.err, context.Canceled) || strings.Contains(res.err.Error(), "context canceled") {
+					log.Printf("[ChatWithAgent] Request aborted by client, exiting gracefully: %v", res.err)
+					return false
+				}
+				log.Printf("[ChatWithAgent] Agent execution error: %v", res.err)
+				c.SSEvent("error", res.err.Error())
+				return false
+			}
+
+			if res.event.IsFinalResponse() {
+				var finalResponse string
+				for _, part := range res.event.Content.Parts {
+					if part.Text != "" {
+						finalResponse += part.Text
+					}
+				}
+				c.SSEvent("final", gin.H{
+					"content":    finalResponse,
+					"session_id": req.SessionID,
+				})
+			} else {
+				// We still send a generic progress for non-final agent events
+				// to keep the connection alive even if no tool is running
+				c.SSEvent("progress", gin.H{
+					"status": "processing",
+				})
+			}
+			return true
+		}
 	})
 }
