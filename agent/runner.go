@@ -121,9 +121,15 @@ func RunTest(ctx context.Context, recording *models.TestRecording) (*models.Test
 	}
 
 	for i, step := range recording.Steps {
+		// Create a per-step timeout context (60 seconds)
+		stepCtx, stepCancel := context.WithTimeout(ctx, 60*time.Second)
+		
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			stepCancel()
+			result.Status = "timeout"
+			result.Log = "Test execution timed out during step execution"
+			return result, nil
 		default:
 		}
 
@@ -135,12 +141,32 @@ func RunTest(ctx context.Context, recording *models.TestRecording) (*models.Test
 			Status:    "success",
 		}
 
-		err = executeStep(page, step)
+		// Execute the step using a separate goroutine to handle per-step timeout
+		errChan := make(chan error, 1)
+		go func() {
+			errChan <- executeStep(page, step)
+		}()
+
+		var err error
+		select {
+		case err = <-errChan:
+			// Step finished within timeout
+		case <-stepCtx.Done():
+			err = stepCtx.Err()
+		}
+		stepCancel()
+
 		if err != nil {
 			log.Printf("[Runner] Step %d failed: %v", i+1, err)
 			stepResult.Status = "failure"
 			stepResult.Error = err.Error()
-			result.Status = "failed"
+			
+			if stepCtx.Err() == context.DeadlineExceeded {
+				stepResult.Error = "Step timed out after 60 seconds"
+				result.Status = "timeout"
+			} else {
+				result.Status = "failed"
+			}
 			
 			// Take screenshot on failure
 			screenshot, _ := page.Screenshot()
@@ -149,6 +175,11 @@ func RunTest(ctx context.Context, recording *models.TestRecording) (*models.Test
 			}
 			
 			result.StepResults = append(result.StepResults, stepResult)
+			
+			// If it's a timeout or serious error, stop immediately
+			if result.Status == "timeout" || result.Status == "failed" {
+				return result, nil
+			}
 			break
 		}
 
@@ -166,7 +197,9 @@ func RunTest(ctx context.Context, recording *models.TestRecording) (*models.Test
 	// Wait a moment at the end to ensure the last action is captured in the video
 	select {
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		result.Status = "timeout"
+		result.Log = "Test execution timed out after final step"
+		return result, nil
 	case <-time.After(200 * time.Millisecond):
 	}
 
@@ -180,7 +213,9 @@ func RunTest(ctx context.Context, recording *models.TestRecording) (*models.Test
 	// Give a moment for the video to be finalized
 	select {
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		result.Status = "timeout"
+		result.Log = "Test execution timed out during video finalization"
+		return result, nil
 	case <-time.After(300 * time.Millisecond):
 	}
 

@@ -1,12 +1,15 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"qa-extension-backend/database"
 	"qa-extension-backend/models"
 	"strings"
+	"time"
 
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
@@ -108,9 +111,29 @@ func runRecordedTest(ctx tool.Context, args RunRecordedTestArgs) (*models.TestRe
 		}
 	}
 
-	result, err := RunTest(ctx, &recording)
+	// Use a 5-minute timeout for the entire test execution
+	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
+	result, err := RunTest(timeoutCtx, &recording)
 	if err != nil {
+		if errors.Is(timeoutCtx.Err(), context.DeadlineExceeded) {
+			log.Printf("[AgentTool] runRecordedTest TIMEOUT reached")
+			// Return a specialized timeout result
+			timeoutResult := &models.TestResult{
+				TestID: args.TestID,
+				Status: "timeout",
+				Log:    fmt.Sprintf("Test execution timed out after 5 minutes. Last error: %v", err),
+			}
+			// Save result to Redis (ignore error)
+			_ = database.SaveTestResult(ctx, timeoutResult)
+			return timeoutResult, nil
+		}
 		return nil, err
+	}
+	
+	if timeoutCtx.Err() != nil && errors.Is(timeoutCtx.Err(), context.DeadlineExceeded) {
+		result.Status = "timeout"
 	}
 	
 	// Save result to Redis (ignore error)
