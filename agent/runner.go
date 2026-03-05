@@ -167,7 +167,7 @@ func RunTest(ctx context.Context, recording *models.TestRecording) (*models.Test
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-time.After(2 * time.Second):
+	case <-time.After(200 * time.Millisecond):
 	}
 
 	// Get video object before closing
@@ -181,7 +181,7 @@ func RunTest(ctx context.Context, recording *models.TestRecording) (*models.Test
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-time.After(2 * time.Second):
+	case <-time.After(300 * time.Millisecond):
 	}
 
 	// Upload video to R2 if available

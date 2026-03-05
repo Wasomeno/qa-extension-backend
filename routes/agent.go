@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"qa-extension-backend/agent"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/oauth2"
@@ -76,6 +77,10 @@ func ChatWithAgent(c *gin.Context) {
 	c.Header("Connection", "keep-alive")
 	c.Header("Transfer-Encoding", "chunked")
 
+	// Create a background-ish context that inherits values but isn't canceled when the request ends.
+	// This ensures the agent finishes its work (like uploading video) even if the client disconnects.
+	agentCtx := context.WithoutCancel(c.Request.Context())
+
 	// Create a wrapper to consume the iterator and send to a channel
 	type resultEvent struct {
 		event *session.Event
@@ -84,11 +89,14 @@ func ChatWithAgent(c *gin.Context) {
 	resCh := make(chan resultEvent)
 	go func() {
 		defer close(resCh)
-		eventCh := r.Run(ctx, userID, req.SessionID, content, adkagent.RunConfig{})
+		eventCh := r.Run(agentCtx, userID, req.SessionID, content, adkagent.RunConfig{})
 		for event, err := range eventCh {
 			resCh <- resultEvent{event, err}
 		}
 	}()
+
+	heartbeatTicker := time.NewTicker(15 * time.Second)
+	defer heartbeatTicker.Stop()
 
 	c.Stream(func(w io.Writer) bool {
 		for {
@@ -96,6 +104,14 @@ func ChatWithAgent(c *gin.Context) {
 			case <-c.Request.Context().Done():
 				log.Printf("[ChatWithAgent] Client disconnected")
 				return false
+			case <-heartbeatTicker.C:
+				// Send a heartbeat to keep the connection alive
+				c.SSEvent("heartbeat", gin.H{
+					"status": "alive",
+				})
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
+				}
 			case progressMsg, ok := <-progressCh:
 				if !ok {
 					progressCh = nil
