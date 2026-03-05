@@ -91,61 +91,60 @@ func ChatWithAgent(c *gin.Context) {
 	}()
 
 	c.Stream(func(w io.Writer) bool {
-		select {
-		case <-c.Request.Context().Done():
-			log.Printf("[ChatWithAgent] Client disconnected")
-			return false
-		case progressMsg, ok := <-progressCh:
-			if !ok {
-				return true
-			}
-			c.SSEvent("progress", gin.H{
-				"status":  "processing",
-				"message": progressMsg,
-			})
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
-			}
-			return true
-		case res, ok := <-resCh:
-			if !ok {
+		for {
+			select {
+			case <-c.Request.Context().Done():
+				log.Printf("[ChatWithAgent] Client disconnected")
 				return false
-			}
-			if res.err != nil {
-				if errors.Is(res.err, context.Canceled) || strings.Contains(res.err.Error(), "context canceled") {
-					log.Printf("[ChatWithAgent] Request aborted by client, exiting gracefully: %v", res.err)
-					return false
+			case progressMsg, ok := <-progressCh:
+				if !ok {
+					progressCh = nil
+					continue
 				}
-				log.Printf("[ChatWithAgent] Agent execution error: %v", res.err)
-				c.SSEvent("error", res.err.Error())
+				c.SSEvent("progress", gin.H{
+					"status":  "processing",
+					"message": progressMsg,
+				})
 				if flusher, ok := w.(http.Flusher); ok {
 					flusher.Flush()
 				}
-				return false
-			}
-
-			if res.event.IsFinalResponse() {
-				var finalResponse string
-				for _, part := range res.event.Content.Parts {
-					if part.Text != "" {
-						finalResponse += part.Text
-					}
+			case res, ok := <-resCh:
+				if !ok {
+					return false
 				}
-				c.SSEvent("final", gin.H{
-					"content":    finalResponse,
-					"session_id": req.SessionID,
-				})
-			} else {
-				// We still send a generic progress for non-final agent events
-				// to keep the connection alive even if no tool is running
-				c.SSEvent("progress", gin.H{
-					"status": "processing",
-				})
+				if res.err != nil {
+					if errors.Is(res.err, context.Canceled) || strings.Contains(res.err.Error(), "context canceled") {
+						log.Printf("[ChatWithAgent] Request aborted by client, exiting gracefully: %v", res.err)
+						return false
+					}
+					log.Printf("[ChatWithAgent] Agent execution error: %v", res.err)
+					c.SSEvent("error", res.err.Error())
+					if flusher, ok := w.(http.Flusher); ok {
+						flusher.Flush()
+					}
+					return false
+				}
+
+				if res.event.IsFinalResponse() {
+					var finalResponse string
+					for _, part := range res.event.Content.Parts {
+						if part.Text != "" {
+							finalResponse += part.Text
+						}
+					}
+					c.SSEvent("final", gin.H{
+						"content":    finalResponse,
+						"session_id": req.SessionID,
+					})
+				} else {
+					c.SSEvent("progress", gin.H{
+						"status": "processing",
+					})
+				}
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
+				}
 			}
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
-			}
-			return true
 		}
 	})
 }
