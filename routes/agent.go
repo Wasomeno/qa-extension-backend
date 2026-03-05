@@ -78,7 +78,7 @@ func ChatWithAgent(c *gin.Context) {
 
 	// Create a wrapper to consume the iterator and send to a channel
 	type resultEvent struct {
-		event adkagent.RunEvent
+		event *session.Event
 		err   error
 	}
 	resCh := make(chan resultEvent)
