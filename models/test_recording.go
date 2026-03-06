@@ -1,5 +1,7 @@
 package models
 
+import "time"
+
 type ElementHints struct {
 	Attributes map[string]string `json:"attributes"`
 	TagName    string            `json:"tagName"`
@@ -21,8 +23,11 @@ type TestRecording struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	Status      string          `json:"status"`
+	ProjectID   string          `json:"projectId,omitempty"`
+	IssueID     string          `json:"issueId,omitempty"`
 	Steps       []RecordingStep `json:"steps"`
 	Parameters  []any           `json:"parameters"`
+	CreatedAt   time.Time       `json:"createdAt"`
 }
 
 type TestStepResult struct {

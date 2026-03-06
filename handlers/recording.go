@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"qa-extension-backend/database"
 	"qa-extension-backend/models"
+	"sort"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -21,6 +23,11 @@ func SaveRecording(c *gin.Context) {
 	if recording.ID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "recording id is required"})
 		return
+	}
+
+	// Set CreatedAt if not provided (new recording)
+	if recording.CreatedAt.IsZero() {
+		recording.CreatedAt = time.Now()
 	}
 
 	// Save to Redis
@@ -46,6 +53,13 @@ func SaveRecording(c *gin.Context) {
 		return
 	}
 
+	if recording.ProjectID != "" {
+		database.RedisClient.SAdd(ctx, fmt.Sprintf("recordings:project:%s", recording.ProjectID), recording.ID)
+	}
+	if recording.IssueID != "" {
+		database.RedisClient.SAdd(ctx, fmt.Sprintf("recordings:issue:%s", recording.IssueID), recording.ID)
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"message": "recording saved successfully",
 		"id":      recording.ID,
@@ -54,7 +68,22 @@ func SaveRecording(c *gin.Context) {
 
 func ListRecordings(c *gin.Context) {
 	ctx := context.Background()
-	ids, err := database.RedisClient.SMembers(ctx, "recordings").Result()
+	projectID := c.Query("project_id")
+	issueID := c.Query("issue_id")
+	sortBy := c.Query("sort_by") // "created_at", "name"
+	order := c.Query("order")     // "asc", "desc"
+
+	var ids []string
+	var err error
+
+	if issueID != "" {
+		ids, err = database.RedisClient.SMembers(ctx, fmt.Sprintf("recordings:issue:%s", issueID)).Result()
+	} else if projectID != "" {
+		ids, err = database.RedisClient.SMembers(ctx, fmt.Sprintf("recordings:project:%s", projectID)).Result()
+	} else {
+		ids, err = database.RedisClient.SMembers(ctx, "recordings").Result()
+	}
+
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list recordings"})
 		return
@@ -70,6 +99,35 @@ func ListRecordings(c *gin.Context) {
 			}
 		}
 	}
+
+	// Default sort if sortBy not provided
+	if sortBy == "" {
+		sortBy = "created_at"
+	}
+	if order == "" {
+		order = "desc"
+	}
+
+	sort.Slice(recordings, func(i, j int) bool {
+		var condition bool
+		switch sortBy {
+		case "name":
+			if order == "asc" {
+				condition = recordings[i].Name < recordings[j].Name
+			} else {
+				condition = recordings[i].Name > recordings[j].Name
+			}
+		case "created_at":
+			fallthrough
+		default:
+			if order == "asc" {
+				condition = recordings[i].CreatedAt.Before(recordings[j].CreatedAt)
+			} else {
+				condition = recordings[i].CreatedAt.After(recordings[j].CreatedAt)
+			}
+		}
+		return condition
+	})
 
 	c.JSON(http.StatusOK, recordings)
 }
@@ -104,6 +162,9 @@ func UpdateRecording(c *gin.Context) {
 		return
 	}
 
+	oldProjectID := existing.ProjectID
+	oldIssueID := existing.IssueID
+
 	// Bind update data
 	var updateData map[string]interface{}
 	if err := c.ShouldBindJSON(&updateData); err != nil {
@@ -121,6 +182,13 @@ func UpdateRecording(c *gin.Context) {
 	if status, ok := updateData["status"].(string); ok {
 		existing.Status = status
 	}
+	if projectID, ok := updateData["projectId"].(string); ok {
+		existing.ProjectID = projectID
+	}
+	if issueID, ok := updateData["issueId"].(string); ok {
+		existing.IssueID = issueID
+	}
+
 	// For full replacement via PUT, we could check the method
 	if c.Request.Method == http.MethodPut {
 		if steps, ok := updateData["steps"]; ok {
@@ -146,6 +214,24 @@ func UpdateRecording(c *gin.Context) {
 		return
 	}
 
+	// Update indices if project or issue changed
+	if existing.ProjectID != oldProjectID {
+		if oldProjectID != "" {
+			database.RedisClient.SRem(ctx, fmt.Sprintf("recordings:project:%s", oldProjectID), existing.ID)
+		}
+		if existing.ProjectID != "" {
+			database.RedisClient.SAdd(ctx, fmt.Sprintf("recordings:project:%s", existing.ProjectID), existing.ID)
+		}
+	}
+	if existing.IssueID != oldIssueID {
+		if oldIssueID != "" {
+			database.RedisClient.SRem(ctx, fmt.Sprintf("recordings:issue:%s", oldIssueID), existing.ID)
+		}
+		if existing.IssueID != "" {
+			database.RedisClient.SAdd(ctx, fmt.Sprintf("recordings:issue:%s", existing.IssueID), existing.ID)
+		}
+	}
+
 	c.JSON(http.StatusOK, existing)
 }
 
@@ -159,10 +245,16 @@ func DeleteRecording(c *gin.Context) {
 	ctx := context.Background()
 	key := fmt.Sprintf("recording:%s", id)
 
-	// Check if exists
-	exists, err := database.RedisClient.Exists(ctx, key).Result()
-	if err != nil || exists == 0 {
+	// Fetch to get ProjectID and IssueID for index cleanup
+	val, err := database.RedisClient.Get(ctx, key).Result()
+	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "recording not found"})
+		return
+	}
+
+	var recording models.TestRecording
+	if err := json.Unmarshal([]byte(val), &recording); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to unmarshal recording"})
 		return
 	}
 
@@ -174,10 +266,12 @@ func DeleteRecording(c *gin.Context) {
 	}
 
 	// Remove from index set
-	err = database.RedisClient.SRem(ctx, "recordings", id).Err()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to remove from recordings index"})
-		return
+	database.RedisClient.SRem(ctx, "recordings", id)
+	if recording.ProjectID != "" {
+		database.RedisClient.SRem(ctx, fmt.Sprintf("recordings:project:%s", recording.ProjectID), id)
+	}
+	if recording.IssueID != "" {
+		database.RedisClient.SRem(ctx, fmt.Sprintf("recordings:issue:%s", recording.IssueID), id)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "recording deleted successfully", "id": id})

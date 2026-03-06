@@ -18,33 +18,46 @@ import (
 func GetTestTools() []tool.Tool {
 	tools := []tool.Tool{}
 
-	t1, _ := functiontool.New(functiontool.Config{
+	tt1, _ := functiontool.New(functiontool.Config{
 		Name:        "listRecordedTests",
-		Description: "List all available recorded automation tests.",
+		Description: "List all available recorded automation tests. You can optionally filter by projectID or issueID.",
 	}, listRecordedTests)
-	tools = append(tools, t1)
+	tools = append(tools, tt1)
 
-	t2, _ := functiontool.New(functiontool.Config{
+	tt2, _ := functiontool.New(functiontool.Config{
 		Name:        "runRecordedTest",
 		Description: "Run a recorded automation test by its ID. You can optionally provide 'overrides' to change input values (like email or password) during the test run.",
 	}, runRecordedTest)
-	tools = append(tools, t2)
+	tools = append(tools, tt2)
 
 	return tools
 }
 
-type ListRecordedTestsArgs struct{}
+type ListRecordedTestsArgs struct {
+	ProjectID string `json:"projectID,omitempty"`
+	IssueID   string `json:"issueID,omitempty"`
+}
 
 type ListRecordedTestsResponse struct {
 	Recordings []models.TestRecording `json:"recordings"`
 }
 
 func listRecordedTests(ctx tool.Context, args ListRecordedTestsArgs) (*ListRecordedTestsResponse, error) {
-	log.Printf("[AgentTool] listRecordedTests called")
+	log.Printf("[AgentTool] listRecordedTests called with args: %+v", args)
 	
-	ids, err := database.RedisClient.SMembers(ctx, "recordings").Result()
+	var ids []string
+	var err error
+
+	if args.IssueID != "" {
+		ids, err = database.RedisClient.SMembers(ctx, fmt.Sprintf("recordings:issue:%s", args.IssueID)).Result()
+	} else if args.ProjectID != "" {
+		ids, err = database.RedisClient.SMembers(ctx, fmt.Sprintf("recordings:project:%s", args.ProjectID)).Result()
+	} else {
+		ids, err = database.RedisClient.SMembers(ctx, "recordings").Result()
+	}
+
 	if err != nil {
-		log.Printf("[AgentTool] listRecordedTests SMembers error: %v", err)
+		log.Printf("[AgentTool] listRecordedTests redis error: %v", err)
 		return nil, fmt.Errorf("failed to fetch recordings: %w", err)
 	}
 
