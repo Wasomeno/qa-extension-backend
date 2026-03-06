@@ -23,11 +23,11 @@ type TestRecording struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	Status      string          `json:"status"`
-	ProjectID   string          `json:"projectId,omitempty"`
-	IssueID     string          `json:"issueId,omitempty"`
+	ProjectID   string          `json:"project_id,omitempty"`
+	IssueID     string          `json:"issue_id,omitempty"`
 	Steps       []RecordingStep `json:"steps"`
 	Parameters  []any           `json:"parameters"`
-	CreatedAt   time.Time       `json:"createdAt"`
+	CreatedAt   time.Time       `json:"created_at"`
 }
 
 type TestStepResult struct {
