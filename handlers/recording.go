@@ -182,10 +182,10 @@ func UpdateRecording(c *gin.Context) {
 	if status, ok := updateData["status"].(string); ok {
 		existing.Status = status
 	}
-	if projectID, ok := updateData["projectId"].(string); ok {
+	if projectID, ok := updateData["project_id"].(string); ok {
 		existing.ProjectID = projectID
 	}
-	if issueID, ok := updateData["issueId"].(string); ok {
+	if issueID, ok := updateData["issue_id"].(string); ok {
 		existing.IssueID = issueID
 	}
 
@@ -276,3 +276,29 @@ func DeleteRecording(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"message": "recording deleted successfully", "id": id})
 }
+
+func GetRecording(c *gin.Context) {
+	id := c.Param("id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "recording id is required"})
+		return
+	}
+
+	ctx := context.Background()
+	key := fmt.Sprintf("recording:%s", id)
+
+	val, err := database.RedisClient.Get(ctx, key).Result()
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "recording not found"})
+		return
+	}
+
+	var recording models.TestRecording
+	if err := json.Unmarshal([]byte(val), &recording); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to unmarshal recording"})
+		return
+	}
+
+	c.JSON(http.StatusOK, recording)
+}
+
