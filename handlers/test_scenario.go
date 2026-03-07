@@ -166,12 +166,12 @@ func DeleteScenario(c *gin.Context) {
 	var scenario models.TestScenario
 	if err := json.Unmarshal([]byte(val), &scenario); err == nil {
 		// Clean up generated recordings implicitly
-		for _, recID := range scenario.GeneratedIDs {
-			database.RedisClient.Del(ctx, fmt.Sprintf("recording:%s", recID))
-			database.RedisClient.SRem(ctx, "recordings", recID)
+		for _, test := range scenario.GeneratedTests {
+			database.RedisClient.Del(ctx, fmt.Sprintf("recording:%s", test.ID))
+			database.RedisClient.SRem(ctx, "recordings", test.ID)
 			
 			if scenario.ProjectID != "" {
-				database.RedisClient.SRem(ctx, fmt.Sprintf("recordings:project:%s", scenario.ProjectID), recID)
+				database.RedisClient.SRem(ctx, fmt.Sprintf("recordings:project:%s", scenario.ProjectID), test.ID)
 			}
 		}
 	}
@@ -312,7 +312,10 @@ func GenerateTests(c *gin.Context) {
 			}
 
 			// Link
-			scenario.GeneratedIDs = append(scenario.GeneratedIDs, rec.ID)
+			scenario.GeneratedTests = append(scenario.GeneratedTests, models.TestScenarioRecording{
+				ID:   rec.ID,
+				Name: rec.Name,
+			})
 		}
 
 		// Update scenario as ready
