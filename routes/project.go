@@ -35,8 +35,14 @@ func GetProjects(ginContext *gin.Context) {
 
 	_ = godotenv.Load() // Ignoring error as it might be already loaded or optional
 
+	search := ginContext.Query("search")
+
 	opts := &gitlab.ListProjectsOptions{
 		Membership: gitlab.Ptr(true),
+	}
+
+	if search != "" {
+		opts.Search = &search
 	}
 
 	projects, _, err := gitlabClient.Projects.ListProjects(opts)
