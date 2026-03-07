@@ -52,10 +52,29 @@ func UploadScenario(c *gin.Context) {
 		return
 	}
 
+	projectName := ""
+	if projectID != "" {
+		token, _ := c.MustGet("token").(*oauth2.Token)
+		sessionID, _ := c.MustGet("session_id").(string)
+		if token != nil {
+			tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
+				return UpdateSession(ctx, sessionID, t)
+			}
+			gitlabClient, err := client.GetClient(c, token, tokenSaver)
+			if err == nil {
+				project, _, err := gitlabClient.Projects.GetProject(projectID, &gitlab.GetProjectOptions{})
+				if err == nil && project != nil {
+					projectName = project.NameWithNamespace
+				}
+			}
+		}
+	}
+
 	scenario := models.TestScenario{
 		ID:           uuid.NewString(),
 		FileName:     header.Filename,
 		ProjectID:    projectID,
+		ProjectName:  projectName,
 		Sheets:       sheets,
 		GeneratedIDs: []string{},
 		Status:       "uploaded",

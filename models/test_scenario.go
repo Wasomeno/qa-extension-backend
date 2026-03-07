@@ -46,6 +46,7 @@ type TestScenario struct {
 	ID             string                  `json:"id"`
 	FileName       string                  `json:"fileName"`
 	ProjectID      string                  `json:"projectId,omitempty"`
+	ProjectName    string                  `json:"projectName,omitempty"`
 	Sheets         []TestScenarioSheet     `json:"sheets"`
 	GeneratedTests []TestScenarioRecording `json:"generatedTests"` // Simplified recordings info
 	Status         string                  `json:"status"`         // "uploaded", "generating", "ready", "failed"
