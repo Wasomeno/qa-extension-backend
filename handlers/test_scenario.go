@@ -71,15 +71,15 @@ func UploadScenario(c *gin.Context) {
 	}
 
 	scenario := models.TestScenario{
-		ID:           uuid.NewString(),
-		FileName:     header.Filename,
-		ProjectID:    projectID,
-		ProjectName:  projectName,
-		Sheets:       sheets,
-		GeneratedIDs: []string{},
-		Status:       "uploaded",
-		AuthConfig:   authConfig,
-		CreatedAt:    time.Now(),
+		ID:             uuid.NewString(),
+		FileName:       header.Filename,
+		ProjectID:      projectID,
+		ProjectName:    projectName,
+		Sheets:         sheets,
+		GeneratedTests: []models.TestScenarioRecording{},
+		Status:         "uploaded",
+		AuthConfig:     authConfig,
+		CreatedAt:      time.Now(),
 	}
 
 	// Save to Redis
