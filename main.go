@@ -54,6 +54,12 @@ func main() {
 		protected.PATCH("/recordings/:id", handlers.UpdateRecording)
 		protected.DELETE("/recordings/:id", handlers.DeleteRecording)
 
+		protected.POST("/test-scenarios/upload", handlers.UploadScenario)
+		protected.GET("/test-scenarios", handlers.ListScenarios)
+		protected.GET("/test-scenarios/:id", handlers.GetScenario)
+		protected.DELETE("/test-scenarios/:id", handlers.DeleteScenario)
+		protected.POST("/test-scenarios/:id/generate", handlers.GenerateTests)
+
 		protected.POST("/auth/logout", routes.LogoutEndpoint)
 		protected.GET("/current-user", routes.GetUser)
 		protected.GET("/projects", routes.GetProjects)
