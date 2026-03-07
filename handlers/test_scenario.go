@@ -196,14 +196,14 @@ func GenerateTests(c *gin.Context) {
 	}
 
 	var req struct {
-		SheetName string `json:"sheetName"`
+		SheetNames []string `json:"sheetNames"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if req.SheetName == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "sheetName is required"})
+	if len(req.SheetNames) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "sheetNames array is required and cannot be empty"})
 		return
 	}
 
@@ -250,7 +250,7 @@ func GenerateTests(c *gin.Context) {
 	// We return immediately and do the heavy lifting in a goroutine
 	c.JSON(http.StatusAccepted, gin.H{"message": "generation started", "id": id})
 
-	go func(scenario models.TestScenario, sheetName string, gitlabClient interface{}) { // We cannot pass *gitlab.Client directly over to a goroutine without issues if it references expiring context, but let's use a background context
+	go func(scenario models.TestScenario, sheetNames []string, gitlabClient interface{}) { // We cannot pass *gitlab.Client directly over to a goroutine without issues if it references expiring context, but let's use a background context
 		bgCtx := context.Background()
 
 		// Re-instantiate client with bgCtx if possible, or assume it's fine
@@ -260,18 +260,20 @@ func GenerateTests(c *gin.Context) {
 			clientObj = gitlabClient.(*gitlab.Client) // fallback
 		}
 
-		// Find the target sheet
+		// Collect test cases from all target sheets
 		var targetTestCases []models.ParsedTestCase
 		for _, s := range scenario.Sheets {
-			if s.Name == sheetName {
-				targetTestCases = s.TestCases
-				break
+			for _, name := range sheetNames {
+				if s.Name == name {
+					targetTestCases = append(targetTestCases, s.TestCases...)
+					break
+				}
 			}
 		}
 
 		if len(targetTestCases) == 0 {
 			scenario.Status = "failed"
-			scenario.Error = "sheet not found or empty"
+			scenario.Error = "no test cases found in selected sheets"
 			updateScenarioStatus(id, scenario)
 			return
 		}
@@ -318,7 +320,7 @@ func GenerateTests(c *gin.Context) {
 		scenario.Error = ""
 		updateScenarioStatus(id, scenario)
 
-	}(scenario, req.SheetName, gitlabClient)
+	}(scenario, req.SheetNames, gitlabClient)
 }
 
 func updateScenarioStatus(id string, scenario models.TestScenario) {
