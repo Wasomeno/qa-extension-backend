@@ -188,6 +188,9 @@ func UpdateRecording(c *gin.Context) {
 	if issueID, ok := updateData["issue_id"].(string); ok {
 		existing.IssueID = issueID
 	}
+	if videoURL, ok := updateData["video_url"].(string); ok {
+		existing.VideoURL = videoURL
+	}
 
 	// For full replacement via PUT, we could check the method
 	if c.Request.Method == http.MethodPut {
