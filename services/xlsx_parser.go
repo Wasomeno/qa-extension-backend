@@ -62,21 +62,27 @@ func parseSheet(f *excelize.File, sheetName string) ([]models.ParsedTestCase, er
 
 		for cIdx, cell := range row {
 			val := strings.TrimSpace(strings.ToLower(cell))
-			if strings.Contains(val, "test case id") || val == "id" {
+			
+			// V2 exact matches or fallbacks
+			if val == "test id" || strings.Contains(val, "test case id") || val == "id" {
 				headerMap["id"] = cIdx
-			} else if strings.Contains(val, "test case") && !strings.Contains(val, "id") {
+			} else if val == "user story" || strings.Contains(val, "story") {
+				headerMap["userstory"] = cIdx
+			} else if val == "test type" || strings.Contains(val, "type") {
+				headerMap["testtype"] = cIdx
+			} else if val == "test scenario" || (strings.Contains(val, "test case") && !strings.Contains(val, "id")) {
 				headerMap["name"] = cIdx
 			} else if strings.Contains(val, "pre-condition") || strings.Contains(val, "precondition") {
 				headerMap["precondition"] = cIdx
-			} else if strings.Contains(val, "test step") || strings.Contains(val, "step") {
+			} else if val == "test step" || strings.Contains(val, "step") {
 				headerMap["action"] = cIdx
 			} else if strings.Contains(val, "input data") || strings.Contains(val, "input") {
 				headerMap["inputdata"] = cIdx
-			} else if strings.Contains(val, "expected result") || strings.Contains(val, "expected") {
+			} else if val == "result" || strings.Contains(val, "expected result") || strings.Contains(val, "expected") {
 				headerMap["expectedresult"] = cIdx
 			} else if strings.Contains(val, "status") {
 				headerMap["status"] = cIdx
-			} else if val == "note" || val == "notes" {
+			} else if val == "additional note" || val == "note" || val == "notes" {
 				headerMap["note"] = cIdx
 			}
 		}
@@ -110,6 +116,8 @@ func parseSheet(f *excelize.File, sheetName string) ([]models.ParsedTestCase, er
 		}
 
 		id := getCol("id")
+		userStory := getCol("userstory")
+		testType := getCol("testtype")
 		name := getCol("name")
 		preCond := getCol("precondition")
 		action := getCol("action")
@@ -130,6 +138,8 @@ func parseSheet(f *excelize.File, sheetName string) ([]models.ParsedTestCase, er
 			}
 			currentTC = &models.ParsedTestCase{
 				ID:           id,
+				UserStory:    userStory,
+				TestType:     testType,
 				Name:         name,
 				PreCondition: preCond,
 				Status:       status,
@@ -140,6 +150,12 @@ func parseSheet(f *excelize.File, sheetName string) ([]models.ParsedTestCase, er
 
 		if currentTC != nil {
 			// Update top-level info if missing but present here (some sheets merge cells vertically)
+			if currentTC.UserStory == "" && userStory != "" {
+				currentTC.UserStory = userStory
+			}
+			if currentTC.TestType == "" && testType != "" {
+				currentTC.TestType = testType
+			}
 			if currentTC.Name == "" && name != "" {
 				currentTC.Name = name
 			}

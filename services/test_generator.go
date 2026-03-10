@@ -169,6 +169,8 @@ Your task is to convert the following %d Test Scenarios into an array of TestRec
 4. Include at least 2 "selectorCandidates" (e.g. xpath, css fallback) per interactive step.
 5. Use proper "expectedValue" and "assertionType" (e.g., "isVisible", "toHaveText") for steps that are checking results.
 6. Allowed actions: "navigate", "click", "type", "press", "assert", "wait". Use "assert" for verification steps.
+7. CRITICAL: Respect the "userStory" field for overarching business logic context.
+8. CRITICAL: Pay attention to the "testType" field. If it's a "Negative case" or similar, strictly ensure assertions check for expected error messages or validation states.
 
 ### SOURCE CODE CONTEXT (%s):
 `, len(batch), authConfig.BaseURL, authConfig.LoginURL, authConfig.Username, authConfig.Password, codebaseCtx.ProjectName)

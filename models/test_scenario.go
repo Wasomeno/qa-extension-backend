@@ -22,6 +22,8 @@ type ParsedStep struct {
 // ParsedTestCase represents a single test case extracted from the XLSX
 type ParsedTestCase struct {
 	ID           string       `json:"id"`
+	UserStory    string       `json:"userStory,omitempty"`
+	TestType     string       `json:"testType,omitempty"`
 	Name         string       `json:"name"`
 	PreCondition string       `json:"preCondition"`
 	Steps        []ParsedStep `json:"steps"`
