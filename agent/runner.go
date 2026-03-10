@@ -247,6 +247,43 @@ func RunTest(ctx context.Context, recording *models.TestRecording) (*models.Test
 	return result, nil
 }
 
+func RunTestsParallel(ctx context.Context, recordings []models.TestRecording) []*models.TestResult {
+	log.Printf("[Runner] Running %d tests in parallel", len(recordings))
+	
+	results := make([]*models.TestResult, len(recordings))
+	
+	// Use a worker pool with a concurrency limit of 3
+	semaphore := make(chan struct{}, 3)
+	
+	for i := range recordings {
+		semaphore <- struct{}{}
+		go func(idx int) {
+			defer func() {
+				<-semaphore
+			}()
+			
+			rec := recordings[idx]
+			result, err := RunTest(ctx, &rec)
+			if err != nil {
+				results[idx] = &models.TestResult{
+					TestID: rec.ID,
+					Status: "failed",
+					Log:    err.Error(),
+				}
+			} else {
+				results[idx] = result
+			}
+		}(i)
+	}
+	
+	// Wait for all workers to finish by filling the semaphore
+	for i := 0; i < 3; i++ {
+		semaphore <- struct{}{}
+	}
+	
+	return results
+}
+
 func executeStep(page playwright.Page, step models.RecordingStep) error {
 	log.Printf("[Runner] Executing action: %s on selector: %s with value: %s", step.Action, step.Selector, step.Value)
 
