@@ -48,7 +48,7 @@ func AuthCallbackEndpoint(ginContext *gin.Context) {
 		return
 	}
 
-	user, _, err := gitlabClient.Users.CurrentUser()
+	_, _, err = gitlabClient.Users.CurrentUser()
 	if err != nil {
 		ginContext.String(http.StatusInternalServerError, "Failed to fetch user: "+err.Error())
 		return
@@ -62,10 +62,7 @@ func AuthCallbackEndpoint(ginContext *gin.Context) {
 	// MaxAge: 3600*24 (24 hours) as per handler logic
 	ginContext.SetCookie("session_id", sessionID, 3600*24, "/", cookieDomain, isSecure, true)
 
-	ginContext.JSON(http.StatusOK, gin.H{
-		"message": "Login successful",
-		"user":    user,
-	})
+	ginContext.Redirect(http.StatusFound, "/static/auth_success.html")
 }
 
 func GetSessionEndpoint(ginContext *gin.Context) {

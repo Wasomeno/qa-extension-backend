@@ -36,6 +36,7 @@ func main() {
 	}()
 
 	router := gin.Default()
+	router.Static("/static", "./static")
 
 	api := router.Group("/api")
 
