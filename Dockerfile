@@ -20,6 +20,9 @@ WORKDIR /app
 # Copy the compiled Go binary
 COPY --from=builder /app/main .
 
+# Copy the static files
+COPY --from=builder /app/static ./static
+
 # Copy the driver JS files that were extracted during build
 COPY --from=builder /root/.cache/ms-playwright-go /root/.cache/ms-playwright-go
 
