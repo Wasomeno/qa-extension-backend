@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 	"qa-extension-backend/client"
-	authHandler "qa-extension-backend/handlers"
+	"qa-extension-backend/auth"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/oauth2"
@@ -15,7 +15,7 @@ func GetUser(ginContext *gin.Context) {
 	sessionID := ginContext.MustGet("session_id").(string)
 
 	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-		return authHandler.UpdateSession(ctx, sessionID, t)
+		return auth.UpdateSession(ctx, sessionID, t)
 	}
 
 	gitlabClient, err := client.GetClient(ginContext, token, tokenSaver)

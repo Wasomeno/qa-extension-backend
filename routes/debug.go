@@ -6,7 +6,7 @@ import (
     "strconv"
 
     "qa-extension-backend/client"
-    authHandler "qa-extension-backend/handlers"
+    "qa-extension-backend/auth"
 
     "github.com/gin-gonic/gin"
     "golang.org/x/oauth2"
@@ -20,7 +20,7 @@ func DebugIssueNotes(ginContext *gin.Context) {
     issueIID, _ := strconv.Atoi(ginContext.Param("issue_iid"))
 
     tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-        return authHandler.UpdateSession(ctx, sessionID, t)
+        return auth.UpdateSession(ctx, sessionID, t)
     }
 
     gitlabClient, err := client.GetClient(ginContext, token, tokenSaver)

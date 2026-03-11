@@ -2,7 +2,7 @@ package middleware
 
 import (
 	"net/http"
-	authHandler "qa-extension-backend/handlers"
+	"qa-extension-backend/auth"
 
 	"github.com/gin-gonic/gin"
 )
@@ -15,7 +15,7 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		token, err := authHandler.GetSession(c, sessionID)
+		token, err := auth.GetSession(c, sessionID)
 		if err != nil {
 			// If session is invalid in Redis (expired or doesn't exist), return 401
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: Invalid session"})

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"qa-extension-backend/client"
-	authHandler "qa-extension-backend/handlers"
+	"qa-extension-backend/auth"
 	"strconv"
 	"strings"
 	"time"
@@ -23,7 +23,7 @@ func GetProjects(ginContext *gin.Context) {
 	fmt.Printf("Token: ...%s\n", token.AccessToken[len(token.AccessToken)-5:])
 
 	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-		return authHandler.UpdateSession(ctx, sessionID, t)
+		return auth.UpdateSession(ctx, sessionID, t)
 	}
 
 	gitlabClient, err := client.GetClient(ginContext, token, tokenSaver)
@@ -62,7 +62,7 @@ func GetProject(ginContext *gin.Context) {
 	sessionID := ginContext.MustGet("session_id").(string)
 
 	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-		return authHandler.UpdateSession(ctx, sessionID, t)
+		return auth.UpdateSession(ctx, sessionID, t)
 	}
 
 	gitlabClient, err := client.GetClient(ginContext, token, tokenSaver)
@@ -90,7 +90,7 @@ func GetProjectLabels(ginContext *gin.Context) {
 	sessionID := ginContext.MustGet("session_id").(string)
 
 	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-		return authHandler.UpdateSession(ctx, sessionID, t)
+		return auth.UpdateSession(ctx, sessionID, t)
 	}
 
 	gitlabClient, err := client.GetClient(ginContext, token, tokenSaver)
@@ -116,7 +116,7 @@ func GetProjectMembers(ginContext *gin.Context) {
 	sessionID := ginContext.MustGet("session_id").(string)
 
 	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-		return authHandler.UpdateSession(ctx, sessionID, t)
+		return auth.UpdateSession(ctx, sessionID, t)
 	}
 
 	gitlabClient, err := client.GetClient(ginContext, token, tokenSaver)
@@ -194,7 +194,7 @@ func GetProjectIssues(ginContext *gin.Context) {
 	}
 
 	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-		return authHandler.UpdateSession(ctx, sessionID, t)
+		return auth.UpdateSession(ctx, sessionID, t)
 	}
 
 	gitlabClient, err := client.GetClient(ginContext, token, tokenSaver)
@@ -270,7 +270,7 @@ func GetProjectBoards(ginContext *gin.Context) {
 	sessionID := ginContext.MustGet("session_id").(string)
 
 	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-		return authHandler.UpdateSession(ctx, sessionID, t)
+		return auth.UpdateSession(ctx, sessionID, t)
 	}
 
 	gitlabClient, err := GetGitLabClient(ginContext, token, tokenSaver)

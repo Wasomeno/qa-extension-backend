@@ -1,9 +1,9 @@
-package routes
+package identity
 
 import (
 	"context"
 	"fmt"
-	authHandler "qa-extension-backend/handlers"
+	"qa-extension-backend/auth"
 	"qa-extension-backend/client"
 
 	"github.com/gin-gonic/gin"
@@ -27,7 +27,7 @@ func GetCurrentUserID(ginContext *gin.Context) (int, error) {
 // GetCurrentUserIDFromCtx fetches the current user's GitLab ID using a standard context
 func GetCurrentUserIDFromCtx(ctx context.Context, token *oauth2.Token, sessionID string) (int, error) {
 	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-		return authHandler.UpdateSession(ctx, sessionID, t)
+		return auth.UpdateSession(ctx, sessionID, t)
 	}
 
 	gitlabClient, err := client.GetClient(ctx, token, tokenSaver)
@@ -40,5 +40,5 @@ func GetCurrentUserIDFromCtx(ctx context.Context, token *oauth2.Token, sessionID
 		return 0, err
 	}
 
-	return user.ID, nil
+	return int(user.ID), nil
 }

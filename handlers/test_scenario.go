@@ -8,8 +8,9 @@ import (
 	"qa-extension-backend/client"
 	"qa-extension-backend/database"
 	"qa-extension-backend/models"
-	"qa-extension-backend/routes"
+	"qa-extension-backend/identity"
 	"qa-extension-backend/services"
+	"qa-extension-backend/auth"
 	"sort"
 	"time"
 
@@ -59,7 +60,7 @@ func UploadScenario(c *gin.Context) {
 		sessionID, _ := c.MustGet("session_id").(string)
 		if token != nil {
 			tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-				return UpdateSession(ctx, sessionID, t)
+				return auth.UpdateSession(ctx, sessionID, t)
 			}
 			gitlabClient, err := client.GetClient(c, token, tokenSaver)
 			if err == nil {
@@ -83,7 +84,7 @@ func UploadScenario(c *gin.Context) {
 		CreatedAt:      time.Now(),
 	}
 
-	userID, err := routes.GetCurrentUserID(c)
+	userID, err := identity.GetCurrentUserID(c)
 	if err == nil {
 		scenario.CreatorID = userID
 	}
@@ -122,7 +123,7 @@ func UploadScenario(c *gin.Context) {
 // ListScenarios lists all test scenarios
 func ListScenarios(c *gin.Context) {
 	ctx := c.Request.Context()
-	userID, _ := routes.GetCurrentUserID(c)
+	userID, _ := identity.GetCurrentUserID(c)
 
 	var ids []string
 	var err error

@@ -5,14 +5,14 @@ import (
 	"net/http"
 	"qa-extension-backend/client"
 	"qa-extension-backend/config"
-	authHandler "qa-extension-backend/handlers"
+	"qa-extension-backend/auth"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/oauth2"
 )
 
 func LoginEndpoint(ginContext *gin.Context) {
-	url := authHandler.GetAuthURL()
+	url := auth.GetAuthURL()
 	ginContext.JSON(http.StatusOK, gin.H{"url": url})
 }
 
@@ -26,20 +26,20 @@ func AuthCallbackEndpoint(ginContext *gin.Context) {
 		return
 	}
 
-	token, err := authHandler.ExchangeToken(ginContext, code)
+	token, err := auth.ExchangeToken(ginContext, code)
 	if err != nil {
 		ginContext.String(http.StatusUnauthorized, "Failed to exchange token: "+err.Error())
 		return
 	}
 
-	sessionID, err := authHandler.CreateSession(token)
+	sessionID, err := auth.CreateSession(token)
 	if err != nil {
 		ginContext.String(http.StatusInternalServerError, "Failed to create session: "+err.Error())
 		return
 	}
 
 	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-		return authHandler.UpdateSession(ctx, sessionID, t)
+		return auth.UpdateSession(ctx, sessionID, t)
 	}
 
 	gitlabClient, err := client.GetClient(ginContext, token, tokenSaver)
@@ -76,7 +76,7 @@ func GetSessionEndpoint(ginContext *gin.Context) {
 	isSecure := config.GetEnvOrDefault("APP_ENV", "development") == "production"
 	cookieDomain := config.GetEnv("COOKIE_DOMAIN")
 
-	token, err := authHandler.GetSession(ginContext, sessionID)
+	token, err := auth.GetSession(ginContext, sessionID)
 	if err != nil {
 		// Maybe clear cookie if session invalid
 		ginContext.SetCookie("session_id", "", -1, "/", cookieDomain, isSecure, true)
@@ -103,7 +103,7 @@ func LogoutEndpoint(ginContext *gin.Context) {
 	}
 
 	// Delete from Redis
-	if err := authHandler.DeleteSession(ginContext, sid); err != nil {
+	if err := auth.DeleteSession(ginContext, sid); err != nil {
 		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete session: " + err.Error()})
 		return
 	}

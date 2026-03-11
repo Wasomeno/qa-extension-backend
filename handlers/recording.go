@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"qa-extension-backend/database"
 	"qa-extension-backend/models"
-	"qa-extension-backend/routes"
+	"qa-extension-backend/identity"
 	"sort"
 	"time"
 
@@ -31,7 +31,7 @@ func SaveRecording(c *gin.Context) {
 		recording.CreatedAt = time.Now()
 	}
 
-	userID, err := routes.GetCurrentUserID(c)
+	userID, err := identity.GetCurrentUserID(c)
 	if err == nil {
 		recording.CreatorID = userID
 	}
@@ -84,7 +84,7 @@ func ListRecordings(c *gin.Context) {
 	issueID := c.Query("issue_id")
 	sortBy := c.Query("sort_by") // "created_at", "name"
 	order := c.Query("order")     // "asc", "desc"
-	userID, _ := routes.GetCurrentUserID(c)
+	userID, _ := identity.GetCurrentUserID(c)
 
 	var ids []string
 	var err error

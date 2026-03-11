@@ -13,7 +13,7 @@ import (
 	"strings"
 
 	"qa-extension-backend/client"
-	authHandler "qa-extension-backend/handlers"
+	"qa-extension-backend/auth"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/generative-ai-go/genai"
@@ -242,7 +242,7 @@ func GetIssues(ginContext *gin.Context) {
 	}
 
 	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-		return authHandler.UpdateSession(ctx, sessionID, t)
+		return auth.UpdateSession(ctx, sessionID, t)
 	}
 
 	gitlabClient, err := client.GetClient(ginContext, token, tokenSaver)
@@ -477,7 +477,7 @@ func GetIssueComments(ginContext *gin.Context) {
 	sessionID := ginContext.MustGet("session_id").(string)
 
 	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-		return authHandler.UpdateSession(ctx, sessionID, t)
+		return auth.UpdateSession(ctx, sessionID, t)
 	}
 
 	gitlabClient, err := client.GetClient(ginContext, token, tokenSaver)
@@ -513,7 +513,7 @@ func CreateIssue(ginContext *gin.Context) {
 	sessionID := ginContext.MustGet("session_id").(string)
 
 	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-		return authHandler.UpdateSession(ctx, sessionID, t)
+		return auth.UpdateSession(ctx, sessionID, t)
 	}
 
 	gitlabClient, err := client.GetClient(ginContext, token, tokenSaver)
@@ -559,7 +559,7 @@ func CreateIssueWithChild(ginContext *gin.Context) {
 	sessionID := ginContext.MustGet("session_id").(string)
 
 	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-		return authHandler.UpdateSession(ctx, sessionID, t)
+		return auth.UpdateSession(ctx, sessionID, t)
 	}
 
 	gitlabClient, err := client.GetClient(ginContext, token, tokenSaver)
@@ -810,7 +810,7 @@ func UpdateIssue(ginContext *gin.Context) {
 	sessionID := ginContext.MustGet("session_id").(string)
 
 	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-		return authHandler.UpdateSession(ctx, sessionID, t)
+		return auth.UpdateSession(ctx, sessionID, t)
 	}
 
 	gitlabClient, err := client.GetClient(ginContext, token, tokenSaver)
@@ -851,7 +851,7 @@ func GetLabels(ginContext *gin.Context) {
 	sessionID := ginContext.MustGet("session_id").(string)
 
 	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-		return authHandler.UpdateSession(ctx, sessionID, t)
+		return auth.UpdateSession(ctx, sessionID, t)
 	}
 
 	gitlabClient, err := client.GetClient(ginContext, token, tokenSaver)
@@ -878,7 +878,7 @@ func CreateIssueComment(ginContext *gin.Context) {
 	sessionID := ginContext.MustGet("session_id").(string)
 
 	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-		return authHandler.UpdateSession(ctx, sessionID, t)
+		return auth.UpdateSession(ctx, sessionID, t)
 	}
 
 	gitlabClient, err := client.GetClient(ginContext, token, tokenSaver)
@@ -918,7 +918,7 @@ func UpdateIssueComment(ginContext *gin.Context) {
 	sessionID := ginContext.MustGet("session_id").(string)
 
 	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-		return authHandler.UpdateSession(ctx, sessionID, t)
+		return auth.UpdateSession(ctx, sessionID, t)
 	}
 
 	gitlabClient, err := client.GetClient(ginContext, token, tokenSaver)
@@ -954,7 +954,7 @@ func DeleteIssueComment(ginContext *gin.Context) {
 	sessionID := ginContext.MustGet("session_id").(string)
 
 	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-		return authHandler.UpdateSession(ctx, sessionID, t)
+		return auth.UpdateSession(ctx, sessionID, t)
 	}
 
 	gitlabClient, err := client.GetClient(ginContext, token, tokenSaver)
@@ -983,7 +983,7 @@ func GetIssue(ginContext *gin.Context) {
 	sessionID := ginContext.MustGet("session_id").(string)
 
 	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-		return authHandler.UpdateSession(ctx, sessionID, t)
+		return auth.UpdateSession(ctx, sessionID, t)
 	}
 
 	gitlabClient, err := client.GetClient(ginContext, token, tokenSaver)
@@ -1076,7 +1076,7 @@ func CreateIssueLink(ginContext *gin.Context) {
 	sessionID := ginContext.MustGet("session_id").(string)
 
 	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-		return authHandler.UpdateSession(ctx, sessionID, t)
+		return auth.UpdateSession(ctx, sessionID, t)
 	}
 
 	gitlabClient, err := client.GetClient(ginContext, token, tokenSaver)
@@ -1110,7 +1110,7 @@ func DeleteIssueLink(ginContext *gin.Context) {
 	sessionID := ginContext.MustGet("session_id").(string)
 
 	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-		return authHandler.UpdateSession(ctx, sessionID, t)
+		return auth.UpdateSession(ctx, sessionID, t)
 	}
 
 	gitlabClient, err := client.GetClient(ginContext, token, tokenSaver)
@@ -1138,7 +1138,7 @@ func GetIssueLinks(ginContext *gin.Context) {
 	sessionID := ginContext.MustGet("session_id").(string)
 
 	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-		return authHandler.UpdateSession(ctx, sessionID, t)
+		return auth.UpdateSession(ctx, sessionID, t)
 	}
 
 	gitlabClient, err := client.GetClient(ginContext, token, tokenSaver)
@@ -1170,7 +1170,7 @@ func CreateChildIssue(ginContext *gin.Context) {
     sessionID := ginContext.MustGet("session_id").(string)
 
     tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-        return authHandler.UpdateSession(ctx, sessionID, t)
+        return auth.UpdateSession(ctx, sessionID, t)
     }
 
     gitlabClient, err := client.GetClient(ginContext, token, tokenSaver)
@@ -1244,7 +1244,7 @@ func UnlinkChildIssue(ginContext *gin.Context) {
     sessionID := ginContext.MustGet("session_id").(string)
 
     tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-        return authHandler.UpdateSession(ctx, sessionID, t)
+        return auth.UpdateSession(ctx, sessionID, t)
     }
 
     _, err := client.GetClient(ginContext, token, tokenSaver)

@@ -8,12 +8,13 @@ import (
 	"log"
 	"qa-extension-backend/database"
 	"qa-extension-backend/models"
-	"qa-extension-backend/routes"
+	"qa-extension-backend/identity"
 	"strings"
 	"time"
 
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
+	"golang.org/x/oauth2"
 )
 
 func GetTestTools() []tool.Tool {
@@ -67,7 +68,7 @@ func listTestScenarios(ctx tool.Context, _ struct{}) (*ListTestScenariosResponse
 	sessionID, _ := ctx.Value("session_id").(string)
 
 	if token != nil && sessionID != "" {
-		userID, err := routes.GetCurrentUserIDFromCtx(ctx, token, sessionID)
+		userID, err := identity.GetCurrentUserIDFromCtx(ctx, token, sessionID)
 		if err == nil {
 			userKey := fmt.Sprintf("scenarios:user:%d", userID)
 			ids, err = database.RedisClient.SUnion(ctx, "scenarios:legacy", userKey).Result()
@@ -268,7 +269,7 @@ func listRecordedTests(ctx tool.Context, args ListRecordedTestsArgs) (*ListRecor
 		sessionID, _ := ctx.Value("session_id").(string)
 
 		if token != nil && sessionID != "" {
-			userID, err := routes.GetCurrentUserIDFromCtx(ctx, token, sessionID)
+			userID, err := identity.GetCurrentUserIDFromCtx(ctx, token, sessionID)
 			if err == nil {
 				userKey := fmt.Sprintf("recordings:user:%d", userID)
 				ids, err = database.RedisClient.SUnion(ctx, "recordings:legacy", userKey).Result()
