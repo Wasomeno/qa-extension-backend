@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"qa-extension-backend/database"
 	"qa-extension-backend/models"
+	"qa-extension-backend/routes"
 	"sort"
 	"time"
 
@@ -28,6 +29,11 @@ func SaveRecording(c *gin.Context) {
 	// Set CreatedAt if not provided (new recording)
 	if recording.CreatedAt.IsZero() {
 		recording.CreatedAt = time.Now()
+	}
+
+	userID, err := routes.GetCurrentUserID(c)
+	if err == nil {
+		recording.CreatorID = userID
 	}
 
 	// Save to Redis
@@ -53,6 +59,12 @@ func SaveRecording(c *gin.Context) {
 		return
 	}
 
+	if recording.CreatorID != 0 {
+		database.RedisClient.SAdd(ctx, fmt.Sprintf("recordings:user:%d", recording.CreatorID), recording.ID)
+	} else {
+		database.RedisClient.SAdd(ctx, "recordings:legacy", recording.ID)
+	}
+
 	if recording.ProjectID != "" {
 		database.RedisClient.SAdd(ctx, fmt.Sprintf("recordings:project:%s", recording.ProjectID), recording.ID)
 	}
@@ -72,6 +84,7 @@ func ListRecordings(c *gin.Context) {
 	issueID := c.Query("issue_id")
 	sortBy := c.Query("sort_by") // "created_at", "name"
 	order := c.Query("order")     // "asc", "desc"
+	userID, _ := routes.GetCurrentUserID(c)
 
 	var ids []string
 	var err error
@@ -80,6 +93,9 @@ func ListRecordings(c *gin.Context) {
 		ids, err = database.RedisClient.SMembers(ctx, fmt.Sprintf("recordings:issue:%s", issueID)).Result()
 	} else if projectID != "" {
 		ids, err = database.RedisClient.SMembers(ctx, fmt.Sprintf("recordings:project:%s", projectID)).Result()
+	} else if userID != 0 {
+		userKey := fmt.Sprintf("recordings:user:%d", userID)
+		ids, err = database.RedisClient.SUnion(ctx, "recordings:legacy", userKey).Result()
 	} else {
 		ids, err = database.RedisClient.SMembers(ctx, "recordings").Result()
 	}
@@ -90,12 +106,21 @@ func ListRecordings(c *gin.Context) {
 	}
 
 	var recordings []models.TestRecording
+	processedIDs := make(map[string]bool)
+
 	for _, id := range ids {
+		if processedIDs[id] {
+			continue
+		}
 		val, err := database.RedisClient.Get(ctx, fmt.Sprintf("recording:%s", id)).Result()
 		if err == nil {
 			var r models.TestRecording
 			if json.Unmarshal([]byte(val), &r) == nil {
-				recordings = append(recordings, r)
+				// Filter for current user or legacy
+				if userID == 0 || r.CreatorID == 0 || r.CreatorID == userID {
+					recordings = append(recordings, r)
+					processedIDs[id] = true
+				}
 			}
 		}
 	}

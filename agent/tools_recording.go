@@ -8,6 +8,7 @@ import (
 	"log"
 	"qa-extension-backend/database"
 	"qa-extension-backend/models"
+	"qa-extension-backend/routes"
 	"strings"
 	"time"
 
@@ -58,7 +59,26 @@ type ListTestScenariosResponse struct {
 func listTestScenarios(ctx tool.Context, _ struct{}) (*ListTestScenariosResponse, error) {
 	log.Printf("[AgentTool] listTestScenarios called")
 
-	ids, err := database.RedisClient.SMembers(ctx, "scenarios").Result()
+	var ids []string
+	var err error
+
+	// Try to get user identity from context
+	token, _ := ctx.Value("token").(*oauth2.Token)
+	sessionID, _ := ctx.Value("session_id").(string)
+
+	if token != nil && sessionID != "" {
+		userID, err := routes.GetCurrentUserIDFromCtx(ctx, token, sessionID)
+		if err == nil {
+			userKey := fmt.Sprintf("scenarios:user:%d", userID)
+			ids, err = database.RedisClient.SUnion(ctx, "scenarios:legacy", userKey).Result()
+		} else {
+			log.Printf("[AgentTool] listTestScenarios failed to get user identity: %v", err)
+			ids, err = database.RedisClient.SMembers(ctx, "scenarios").Result()
+		}
+	} else {
+		ids, err = database.RedisClient.SMembers(ctx, "scenarios").Result()
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to list scenarios: %w", err)
 	}
@@ -243,7 +263,22 @@ func listRecordedTests(ctx tool.Context, args ListRecordedTestsArgs) (*ListRecor
 	} else if args.ProjectID != "" {
 		ids, err = database.RedisClient.SMembers(ctx, fmt.Sprintf("recordings:project:%s", args.ProjectID)).Result()
 	} else {
-		ids, err = database.RedisClient.SMembers(ctx, "recordings").Result()
+		// Scoping by user for general list
+		token, _ := ctx.Value("token").(*oauth2.Token)
+		sessionID, _ := ctx.Value("session_id").(string)
+
+		if token != nil && sessionID != "" {
+			userID, err := routes.GetCurrentUserIDFromCtx(ctx, token, sessionID)
+			if err == nil {
+				userKey := fmt.Sprintf("recordings:user:%d", userID)
+				ids, err = database.RedisClient.SUnion(ctx, "recordings:legacy", userKey).Result()
+			} else {
+				log.Printf("[AgentTool] listRecordedTests failed to get user identity: %v", err)
+				ids, err = database.RedisClient.SMembers(ctx, "recordings").Result()
+			}
+		} else {
+			ids, err = database.RedisClient.SMembers(ctx, "recordings").Result()
+		}
 	}
 
 	if err != nil {

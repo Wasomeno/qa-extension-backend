@@ -25,6 +25,7 @@ type TestRecording struct {
 	Status      string          `json:"status"`
 	ProjectID   string          `json:"project_id,omitempty"`
 	IssueID     string          `json:"issue_id,omitempty"`
+	CreatorID   int             `json:"creator_id,omitempty"`
 	VideoURL    string          `json:"video_url,omitempty"`
 	Steps       []RecordingStep `json:"steps"`
 	Parameters  []any           `json:"parameters"`

@@ -8,6 +8,7 @@ import (
 	"qa-extension-backend/client"
 	"qa-extension-backend/database"
 	"qa-extension-backend/models"
+	"qa-extension-backend/routes"
 	"qa-extension-backend/services"
 	"sort"
 	"time"
@@ -82,6 +83,11 @@ func UploadScenario(c *gin.Context) {
 		CreatedAt:      time.Now(),
 	}
 
+	userID, err := routes.GetCurrentUserID(c)
+	if err == nil {
+		scenario.CreatorID = userID
+	}
+
 	// Save to Redis
 	ctx := c.Request.Context()
 	key := fmt.Sprintf("scenario:%s", scenario.ID)
@@ -100,6 +106,11 @@ func UploadScenario(c *gin.Context) {
 
 	// Add to set of scenarios
 	database.RedisClient.SAdd(ctx, "scenarios", scenario.ID)
+	if scenario.CreatorID != 0 {
+		database.RedisClient.SAdd(ctx, fmt.Sprintf("scenarios:user:%d", scenario.CreatorID), scenario.ID)
+	} else {
+		database.RedisClient.SAdd(ctx, "scenarios:legacy", scenario.ID)
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "scenario uploaded and parsed successfully",
@@ -111,22 +122,40 @@ func UploadScenario(c *gin.Context) {
 // ListScenarios lists all test scenarios
 func ListScenarios(c *gin.Context) {
 	ctx := c.Request.Context()
+	userID, _ := routes.GetCurrentUserID(c)
 
-	ids, err := database.RedisClient.SMembers(ctx, "scenarios").Result()
+	var ids []string
+	var err error
+
+	if userID != 0 {
+		// Fetch user's scenarios and legacy (CreatorID == 0)
+		userKey := fmt.Sprintf("scenarios:user:%d", userID)
+		ids, err = database.RedisClient.SUnion(ctx, "scenarios:legacy", userKey).Result()
+	} else {
+		ids, err = database.RedisClient.SMembers(ctx, "scenarios").Result()
+	}
+
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list scenarios"})
 		return
 	}
 
 	var scenarios []models.TestScenario
+	processedIDs := make(map[string]bool)
+
 	for _, id := range ids {
+		if processedIDs[id] {
+			continue
+		}
 		val, err := database.RedisClient.Get(ctx, fmt.Sprintf("scenario:%s", id)).Result()
 		if err == nil {
 			var s models.TestScenario
 			if json.Unmarshal([]byte(val), &s) == nil {
-				// We might want to remove 'Sheets' from the list response to save bandwidth
-				// if scenarios get huge. For now, it's fine.
-				scenarios = append(scenarios, s)
+				// Filter for current user or legacy
+				if userID == 0 || s.CreatorID == 0 || s.CreatorID == userID {
+					scenarios = append(scenarios, s)
+					processedIDs[id] = true
+				}
 			}
 		}
 	}
@@ -318,14 +347,21 @@ func GenerateTests(c *gin.Context) {
 		// Save generated recordings to Redis
 		for _, rec := range recordings {
 			rec.ProjectID = scenario.ProjectID
+			rec.CreatorID = scenario.CreatorID
 			rec.CreatedAt = time.Now()
-			
+
 			// Same logic as SaveRecording
 			recKey := fmt.Sprintf("recording:%s", rec.ID)
 			recVal, _ := json.Marshal(rec)
-			
+
 			database.RedisClient.Set(bgCtx, recKey, recVal, 0)
 			database.RedisClient.SAdd(bgCtx, "recordings", rec.ID)
+			if rec.CreatorID != 0 {
+				database.RedisClient.SAdd(bgCtx, fmt.Sprintf("recordings:user:%d", rec.CreatorID), rec.ID)
+			} else {
+				database.RedisClient.SAdd(bgCtx, "recordings:legacy", rec.ID)
+			}
+
 			if rec.ProjectID != "" {
 				database.RedisClient.SAdd(bgCtx, fmt.Sprintf("recordings:project:%s", rec.ProjectID), rec.ID)
 			}

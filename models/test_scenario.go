@@ -54,5 +54,6 @@ type TestScenario struct {
 	Status         string                  `json:"status"`         // "uploaded", "generating", "ready", "failed"
 	Error          string                  `json:"error,omitempty"`
 	AuthConfig     AuthConfig              `json:"authConfig"`
+	CreatorID      int                     `json:"creatorId,omitempty"`
 	CreatedAt      time.Time               `json:"createdAt"`
 }

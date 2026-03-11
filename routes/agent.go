@@ -37,6 +37,7 @@ func ChatWithAgent(c *gin.Context) {
 	// Create a progress channel and add it to the context
 	progressCh := make(chan string, 10)
 	ctx := context.WithValue(c.Request.Context(), "token", token)
+	ctx = context.WithValue(ctx, "session_id", req.SessionID)
 	ctx = context.WithValue(ctx, "progressCh", progressCh)
 
 	r, err := agent.GetQARunner(ctx)
