@@ -54,7 +54,7 @@ func GetQARunner(ctx context.Context) (*runner.Runner, error) {
 		location = "us-central1"
 	}
 
-	llm, err := gemini.NewModel(ctx, "gemini-3-flash-preview", &genai.ClientConfig{
+	llm, err := gemini.NewModel(ctx, "gemini-2.5-flash", &genai.ClientConfig{
 		Backend:  genai.BackendVertexAI,
 		Project:  projectID,
 		Location: location,
