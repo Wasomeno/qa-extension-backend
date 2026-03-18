@@ -34,7 +34,7 @@ func GenerateIssueFixingPrompt(ginContext *gin.Context) {
 func GenerateIssueFixingPromptWithAgent() {
 	ctx := context.Background()
 	apiKey := os.Getenv("GEMINI_API_KEY")
-	llm, err := googleai.New(ctx, googleai.WithAPIKey(apiKey), googleai.WithDefaultModel("gemini-2.5-flash"))
+	llm, err := googleai.New(ctx, googleai.WithAPIKey(apiKey), googleai.WithDefaultModel("gemini-3.1-flash-lite-preview"))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func SmartAutoCompleteIssueDescription(ginContext *gin.Context) {
 		ginContext.Abort()
 		return
 	}
-	model := "gemini-2.5-flash"
+	model := "gemini-3.1-flash-lite-preview"
 	
 	systemPrompt := `
 You are a Senior QA Engineer responsible for filing bug reports and feature requests in GitLab.

@@ -116,7 +116,7 @@ func processBatch(
 
 	resp, err := client.Models.GenerateContent(
 		ctx,
-		"gemini-2.5-flash",
+		"gemini-3.1-flash-lite-preview",
 		genai.Text(prompt),
 		config,
 	)
