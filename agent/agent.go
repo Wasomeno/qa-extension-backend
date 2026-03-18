@@ -59,7 +59,7 @@ func GetQARunner(ctx context.Context) (*runner.Runner, error) {
 	var llm model.LLM
 	var err error
 
-	// If a specific MaaS model is requested via env var
+	// If a specific MaaS model is requested via env var (e.g. moonshotai/kimi-k2-5)
 	if maasModel := os.Getenv("VERTEX_MAAS_MODEL"); maasModel != "" {
 		llm, err = maas.NewMaaSModel(ctx, projectID, location, maasModel)
 		if err != nil {
