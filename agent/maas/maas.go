@@ -39,7 +39,7 @@ func NewMaaSModel(ctx context.Context, projectID, location, modelName string) (*
 	return &MaaSAdapter{
 		client: openai.NewClientWithConfig(config),
 		model:  modelName,	// The Vertex API expects `<publisher>/<model>`
-	// Example: "meta/llama-3.1-70b-instruct-maas", "zai-org/glm-5", "moonshotai/kimi-k2-5"
+	// Example: "meta/llama3-405b-instruct-maas", "zai-org/glm-5", "moonshotai/kimi-k2-5"
 	}, nil
 }
 
