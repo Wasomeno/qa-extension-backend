@@ -20,13 +20,16 @@ func GenerateTestsForScenario(
 	authConfig models.AuthConfig,
 ) ([]models.TestRecording, error) {
 
-	apiKey := os.Getenv("GEMINI_API_KEY")
-	if apiKey == "" {
-		return nil, fmt.Errorf("GEMINI_API_KEY not set")
+	projectID := os.Getenv("GOOGLE_CLOUD_PROJECT")
+	location := os.Getenv("VERTEX_LOCATION")
+	if location == "" {
+		location = "us-central1"
 	}
 
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey: apiKey,
+		Backend:  genai.BackendVertexAI,
+		Project:  projectID,
+		Location: location,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create genai client: %w", err)

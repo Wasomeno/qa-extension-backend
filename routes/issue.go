@@ -16,7 +16,7 @@ import (
 	"qa-extension-backend/auth"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/generative-ai-go/genai"
+	goGenai "google.golang.org/genai"
 	"github.com/tmc/langchaingo/agents"
 	"github.com/tmc/langchaingo/callbacks"
 	"github.com/tmc/langchaingo/chains"
@@ -25,7 +25,6 @@ import (
 	"github.com/tmc/langchaingo/tools/serpapi"
 	gitlab "gitlab.com/gitlab-org/api/client-go"
 	"golang.org/x/oauth2"
-	"google.golang.org/api/option"
 )
 
 func GenerateIssueFixingPrompt(ginContext *gin.Context) {
@@ -74,24 +73,28 @@ func SmartAutoCompleteIssueDescription(ginContext *gin.Context) {
 	// Token verification handled by middleware, but we can access it if needed
 	_ = ginContext.MustGet("token").(*oauth2.Token)
 
-	geminiApiKey := os.Getenv("GEMINI_API_KEY")
-	if geminiApiKey == "" {
-		ginContext.JSON(http.StatusUnauthorized, gin.H{"error": "Missing Gemini API key"})
-		ginContext.Abort()
-		return
+	// geminiApiKey := os.Getenv("GEMINI_API_KEY")
+	projectID := os.Getenv("GOOGLE_CLOUD_PROJECT")
+	location := os.Getenv("VERTEX_LOCATION")
+	if location == "" {
+		location = "us-central1" // default location
 	}
 
 	ctx := context.Background()
-	client, err := genai.NewClient(ctx, option.WithAPIKey(geminiApiKey))
+	
+	// Create client config
+	client, err := goGenai.NewClient(ctx, &goGenai.ClientConfig{
+		Backend: goGenai.BackendVertexAI,
+		Project: projectID,
+		Location: location,
+	})
 	if err != nil {
 		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create Gemini client: " + err.Error()})
 		ginContext.Abort()
 		return
 	}
-	defer client.Close()
-
-	model := client.GenerativeModel("gemini-1.5-flash")
-
+	model := "gemini-1.5-flash"
+	
 	systemPrompt := `
 You are a Senior QA Engineer responsible for filing bug reports and feature requests in GitLab.
 Your goal is to take a rough user description and elaborate it into a professional, structured GitLab Issue.
@@ -127,11 +130,18 @@ Use the exact structure below:
 <Any relevant error codes, logical gaps, or context.>
 `
 
-	model.SystemInstruction = &genai.Content{
-		Parts: []genai.Part{genai.Text(systemPrompt)},
+	config := &goGenai.GenerateContentConfig{
+		SystemInstruction: &goGenai.Content{
+			Parts: []*goGenai.Part{{Text: systemPrompt}},
+		},
 	}
 
-	resp, err := model.GenerateContent(ctx, genai.Text("i got an issue in the login page, in /auth/login. the form in there supposed to have an email and password validations. the current condition is there are no validations"))
+	contents := []*goGenai.Content{
+		{
+			Parts: []*goGenai.Part{{Text: "i got an issue in the login page, in /auth/login. the form in there supposed to have an email and password validations. the current condition is there are no validations"}},
+		},
+	}
+	resp, err := client.Models.GenerateContent(ctx, model, contents, config)
 	if err != nil {
 		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate content: " + err.Error()})
 		ginContext.Abort()
@@ -146,8 +156,8 @@ Use the exact structure below:
 
 	var description strings.Builder
 	for _, part := range resp.Candidates[0].Content.Parts {
-		if text, ok := part.(genai.Text); ok {
-			description.WriteString(string(text))
+		if part.Text != "" {
+			description.WriteString(part.Text)
 		}
 	}
 

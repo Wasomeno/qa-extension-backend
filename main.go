@@ -17,6 +17,15 @@ import (
 )
 
 func main() {
+	if jsonCreds := os.Getenv("GCP_CREDS_JSON"); jsonCreds != "" {
+		credsPath := "/tmp/gcp-key.json"
+		if err := os.WriteFile(credsPath, []byte(jsonCreds), 0600); err == nil {
+			os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", credsPath)
+		} else {
+			log.Printf("Warning: Failed to write GCP credentials file: %v", err)
+		}
+	}
+
 	config.Init()
 
 	if err := database.InitRedis(); err != nil {

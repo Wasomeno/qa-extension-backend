@@ -31,13 +31,16 @@ func GetSessionService() session.Service {
 }
 
 func GetQARunner(ctx context.Context) (*runner.Runner, error) {
-	apiKey := os.Getenv("GEMINI_API_KEY")
-	if apiKey == "" {
-		return nil, fmt.Errorf("GEMINI_API_KEY environment variable is not set")
+	projectID := os.Getenv("GOOGLE_CLOUD_PROJECT")
+	location := os.Getenv("VERTEX_LOCATION")
+	if location == "" {
+		location = "us-central1"
 	}
 
 	llm, err := gemini.NewModel(ctx, "gemini-3-flash-preview", &genai.ClientConfig{
-		APIKey: apiKey,
+		Backend:  genai.BackendVertexAI,
+		Project:  projectID,
+		Location: location,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Gemini model: %w", err)
