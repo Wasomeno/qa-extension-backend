@@ -31,6 +31,14 @@ func GetSessionService() session.Service {
 }
 
 func GetQARunner(ctx context.Context) (*runner.Runner, error) {
+	// Make sure the env var is parsed globally before we init the runner
+	if jsonCreds := os.Getenv("GCP_CREDS_JSON"); jsonCreds != "" {
+		credsPath := "/tmp/gcp-key.json"
+		if err := os.WriteFile(credsPath, []byte(jsonCreds), 0600); err == nil {
+			os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", credsPath)
+		}
+	}
+
 	projectID := os.Getenv("GOOGLE_CLOUD_PROJECT")
 	location := os.Getenv("VERTEX_LOCATION")
 	if location == "" {
