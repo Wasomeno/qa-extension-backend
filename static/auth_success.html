@@ -30,44 +30,80 @@
         body {
             font-family: "Public Sans", sans-serif;
         }
+        
+        /* Subtle animation for the success icon */
+        @keyframes scaleIn {
+            0% { transform: scale(0.8); opacity: 0; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        
+        @keyframes pulseGlow {
+            0% { transform: scale(1.5); opacity: 0.1; }
+            50% { transform: scale(1.8); opacity: 0.2; }
+            100% { transform: scale(1.5); opacity: 0.1; }
+        }
+
+        .animate-scale-in {
+            animation: scaleIn 0.5s ease-out forwards;
+        }
+        
+        .animate-pulse-glow {
+            animation: pulseGlow 3s infinite ease-in-out;
+        }
+
+        /* Ensure material symbols load instantly if possible or provide fallback */
+        .material-symbols-outlined {
+          font-variation-settings:
+          'FILL' 0,
+          'wght' 300,
+          'GRAD' 0,
+          'opsz' 24;
+        }
     </style>
 </head>
-<body class="bg-background-light dark:bg-background-dark min-h-screen flex flex-col font-display">
+<body class="bg-slate-50 dark:bg-slate-950 min-h-screen flex flex-col font-display selection:bg-slate-200 dark:selection:bg-slate-800">
 <div class="relative flex h-full min-h-screen w-full flex-col group/design-root overflow-x-hidden">
 <div class="layout-container flex h-full grow flex-col">
 <!-- Main Content -->
 <main class="flex-1 flex items-center justify-center p-6">
-<div class="layout-content-container flex flex-col max-w-[560px] w-full bg-white dark:bg-slate-900 shadow-sm border border-slate-100 dark:border-slate-800 rounded-xl p-8 md:p-12 text-center">
+<div class="layout-content-container flex flex-col max-w-[480px] w-full bg-white/70 dark:bg-slate-900/70 backdrop-blur-md shadow-[0_8px_30px_rgb(0,0,0,0.04)] dark:shadow-[0_8px_30px_rgb(0,0,0,0.2)] border border-slate-200/50 dark:border-slate-800/50 rounded-2xl p-8 md:p-12 text-center relative overflow-hidden">
+<div class="absolute -top-24 -left-24 w-48 h-48 bg-slate-200/40 dark:bg-slate-800/40 rounded-full blur-3xl"></div>
+<div class="absolute -bottom-24 -right-24 w-48 h-48 bg-slate-200/40 dark:bg-slate-800/40 rounded-full blur-3xl"></div>
 <!-- Success Icon Section -->
-<div class="flex justify-center mb-8">
-<div class="relative">
-<div class="absolute inset-0 bg-slate-400/20 rounded-full scale-150 blur-xl"></div>
-<div class="relative size-24 md:size-32 bg-slate-100 dark:bg-slate-800 rounded-full flex items-center justify-center text-primary">
-<span class="material-symbols-outlined text-6xl md:text-7xl font-light">check_circle</span>
+<div class="flex justify-center mb-10">
+<div class="relative animate-scale-in">
+<div class="absolute inset-0 bg-slate-400/20 rounded-full scale-150 blur-xl animate-pulse-glow"></div>
+<div class="relative size-24 md:size-32 bg-slate-100 dark:bg-slate-800 rounded-full flex items-center justify-center text-primary shadow-sm ring-1 ring-slate-900/5 dark:ring-white/10">
+<!-- Use SVG for instant loading instead of relying on external font, which fixes the delay issue -->
+<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-12 h-12 md:w-16 md:h-16 text-slate-800 dark:text-slate-200">
+  <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+</svg>
 </div>
 </div>
 </div>
 <!-- Text Content -->
-<h1 class="text-slate-900 dark:text-slate-100 tracking-tight text-3xl md:text-4xl font-bold leading-tight mb-4">
+<h1 class="text-slate-900 dark:text-slate-100 tracking-tight text-3xl md:text-3xl font-semibold leading-tight mb-3">
                         Authentication Successful
                     </h1>
-<p class="text-slate-600 dark:text-slate-400 text-base md:text-lg font-normal leading-relaxed mb-10 max-w-md mx-auto">
+<p class="text-slate-500 dark:text-slate-400 text-sm md:text-base font-normal leading-relaxed mb-10 max-w-sm mx-auto">
                         You have been successfully logged into Flowg. You can now close this tab and return to the application.
                     </p>
 <!-- Action Button -->
-<div class="flex flex-col gap-4 items-center">
-<button onclick="window.close()" class="w-full md:w-auto min-w-[240px] flex cursor-pointer items-center justify-center overflow-hidden rounded-xl h-14 px-8 bg-primary text-white text-base font-bold leading-normal tracking-[0.015em] hover:opacity-90 transition-opacity hover:bg-slate-800">
-<span class="truncate">Return to Application</span>
+<div class="flex flex-col gap-5 items-center">
+<button onclick="window.close()" class="w-full md:w-auto min-w-[200px] flex cursor-pointer items-center justify-center rounded-lg h-12 px-6 bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-sm font-semibold tracking-wide hover:opacity-90 transition-all shadow-sm ring-1 ring-slate-900/10 dark:ring-white/10 hover:shadow-md hover:-translate-y-0.5">
+<span>Return to Application</span>
 </button>
-<div class="mt-4 flex items-center gap-2 text-slate-400 dark:text-slate-500 text-sm">
-<span class="material-symbols-outlined text-base">timer</span>
-<span>Redirecting in <span id="timer">5</span> seconds...</span>
+<div class="flex items-center gap-2 text-slate-400 dark:text-slate-500 text-xs tracking-wide">
+<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4">
+  <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+</svg>
+<span>Redirecting in <span id="timer" class="font-medium">5</span>s</span>
 </div>
 </div>
 </div>
 </main>
 <!-- Footer -->
-<footer class="py-8 px-6 text-center border-t border-slate-200 dark:border-slate-800">
+<footer class="py-6 px-6 text-center border-t border-slate-200/50 dark:border-slate-800/50 backdrop-blur-sm">
 <p class="text-slate-400 dark:text-slate-600 text-xs">
                     © 2024 Flowg Inc. All rights reserved. | <a class="hover:text-primary transition-colors" href="#">Security Overview</a>
 </p>
