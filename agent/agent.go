@@ -15,7 +15,7 @@ import (
 	"google.golang.org/adk/model/gemini"
 	"google.golang.org/adk/runner"
 	"google.golang.org/adk/session"
-	"qa-extension-backend/agent/glm"
+	"qa-extension-backend/agent/maas"
 )
 
 const SYSTEM_INSTRUCTION = `You are a QA Assistant. Your role is to help users with GitLab Issue Management, Test Scenarios (XLSX), and Recorded Automation Tests.
@@ -59,11 +59,11 @@ func GetQARunner(ctx context.Context) (*runner.Runner, error) {
 	var llm model.LLM
 	var err error
 
-	// If a specific GLM model is requested via env var
-	if glmModel := os.Getenv("GLM_MODEL"); glmModel != "" {
-		llm, err = glm.NewGLMModel(ctx, projectID, location, glmModel)
+	// If a specific MaaS model is requested via env var
+	if maasModel := os.Getenv("VERTEX_MAAS_MODEL"); maasModel != "" {
+		llm, err = maas.NewMaaSModel(ctx, projectID, location, maasModel)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create GLM model: %w", err)
+			return nil, fmt.Errorf("failed to create MaaS model: %w", err)
 		}
 	} else {
 		// Default to Gemini
