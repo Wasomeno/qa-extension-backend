@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
 	"log"
 	"os"
@@ -17,7 +18,14 @@ import (
 )
 
 func main() {
-	if jsonCreds := os.Getenv("GCP_CREDS_JSON"); jsonCreds != "" {
+	if b64Creds := os.Getenv("GCP_CREDS_BASE64"); b64Creds != "" {
+		credsPath := "/tmp/gcp-key.json"
+		if decoded, err := base64.StdEncoding.DecodeString(b64Creds); err == nil {
+			if err := os.WriteFile(credsPath, decoded, 0600); err == nil {
+				os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", credsPath)
+			}
+		}
+	} else if jsonCreds := os.Getenv("GCP_CREDS_JSON"); jsonCreds != "" {
 		credsPath := "/tmp/gcp-key.json"
 		if err := os.WriteFile(credsPath, []byte(jsonCreds), 0600); err == nil {
 			os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", credsPath)

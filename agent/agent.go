@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"os"
 
@@ -32,7 +33,15 @@ func GetSessionService() session.Service {
 
 func GetQARunner(ctx context.Context) (*runner.Runner, error) {
 	// Make sure the env var is parsed globally before we init the runner
-	if jsonCreds := os.Getenv("GCP_CREDS_JSON"); jsonCreds != "" {
+	// Base64 encoding bypasses Docker multi-line variable corruption
+	if b64Creds := os.Getenv("GCP_CREDS_BASE64"); b64Creds != "" {
+		credsPath := "/tmp/gcp-key.json"
+		if decoded, err := base64.StdEncoding.DecodeString(b64Creds); err == nil {
+			if err := os.WriteFile(credsPath, decoded, 0600); err == nil {
+				os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", credsPath)
+			}
+		}
+	} else if jsonCreds := os.Getenv("GCP_CREDS_JSON"); jsonCreds != "" {
 		credsPath := "/tmp/gcp-key.json"
 		if err := os.WriteFile(credsPath, []byte(jsonCreds), 0600); err == nil {
 			os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", credsPath)
