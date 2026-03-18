@@ -12,6 +12,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/playwright-community/playwright-go v0.5700.1
 	github.com/redis/go-redis/v9 v9.17.2
+	github.com/sashabaranov/go-openai v1.41.2
 	github.com/stretchr/testify v1.11.1
 	github.com/tmc/langchaingo v0.1.14
 	github.com/xuri/excelize/v2 v2.10.1
