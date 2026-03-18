@@ -71,7 +71,10 @@ func ChatWithAgent(c *gin.Context) {
 		}
 	}
 
-	content := genai.NewContentFromText(req.Input, genai.RoleUser)
+	content := &genai.Content{
+		Role: genai.RoleUser,
+		Parts: []*genai.Part{{Text: req.Input}},
+	}
 
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
