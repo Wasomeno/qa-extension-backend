@@ -923,6 +923,62 @@ func CreateIssueComment(ginContext *gin.Context) {
 	ginContext.JSON(http.StatusCreated, note)
 }
 
+type CreateIssueEvidenceRequest struct {
+	Comment  string `json:"comment"`
+	Evidence string `json:"evidence"`
+}
+
+func CreateIssueEvidence(ginContext *gin.Context) {
+	token := ginContext.MustGet("token").(*oauth2.Token)
+	sessionID := ginContext.MustGet("session_id").(string)
+
+	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
+		return auth.UpdateSession(ctx, sessionID, t)
+	}
+
+	gitlabClient, err := client.GetClient(ginContext, token, tokenSaver)
+	if err != nil {
+		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create GitLab client: " + err.Error()})
+		ginContext.Abort()
+		return
+	}
+
+	projectID := ginContext.Param("id")
+	issueID, err := strconv.ParseInt(ginContext.Param("issue_id"), 10, 64)
+	if err != nil {
+		ginContext.JSON(http.StatusBadRequest, gin.H{"error": "Invalid issue ID"})
+		ginContext.Abort()
+		return
+	}
+
+	var req CreateIssueEvidenceRequest
+	if err := ginContext.BindJSON(&req); err != nil {
+		ginContext.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		ginContext.Abort()
+		return
+	}
+
+	var formattedBody strings.Builder
+	formattedBody.WriteString("**Evidence:**\n")
+	formattedBody.WriteString(req.Evidence)
+	formattedBody.WriteString("\n\n")
+
+	formattedBody.WriteString(req.Comment)
+
+	opt := &gitlab.CreateIssueNoteOptions{
+		Body: gitlab.Ptr(formattedBody.String()),
+	}
+
+	note, _, err := gitlabClient.Notes.CreateIssueNote(projectID, issueID, opt)
+	if err != nil {
+		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		ginContext.Abort()
+		return
+	}
+
+	ginContext.JSON(http.StatusCreated, note)
+}
+
 func UpdateIssueComment(ginContext *gin.Context) {
 	token := ginContext.MustGet("token").(*oauth2.Token)
 	sessionID := ginContext.MustGet("session_id").(string)

@@ -90,6 +90,7 @@ func main() {
 		protected.GET("/projects/:id/issues/:issue_id", routes.GetIssue)
 		protected.GET("/projects/:id/issues/:issue_id/comments", routes.GetIssueComments)
 		protected.POST("/projects/:id/issues/:issue_id/comments", routes.CreateIssueComment)
+		protected.POST("/projects/:id/issues/:issue_id/evidence", routes.CreateIssueEvidence)
 		protected.PUT("/projects/:id/issues/:issue_id/comments/:note_id", routes.UpdateIssueComment)
 		protected.DELETE("/projects/:id/issues/:issue_id/comments/:note_id", routes.DeleteIssueComment)
 		protected.GET("/projects/:id/issues/:issue_id/links", routes.GetIssueLinks)
