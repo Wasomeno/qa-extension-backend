@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"qa-extension-backend/client"
 	"qa-extension-backend/auth"
@@ -200,6 +201,7 @@ func GetIssues(ginContext *gin.Context) {
 	opts := &gitlab.ListIssuesOptions{
 		WithLabelDetails: gitlab.Ptr(true),
 		Scope:            gitlab.Ptr("all"),
+		ListOptions:      gitlab.ListOptions{PerPage: 50},
 	}
 
 	if issueIds != "" {
@@ -450,6 +452,10 @@ func GetIssues(ginContext *gin.Context) {
 	}
 
 	// 2. Construct Final Response (With REST Fallback)
+	// Use project cache to avoid duplicate GetProject calls
+	projectCache := sync.Map{}
+	var cacheWg sync.WaitGroup
+
 	for _, issue := range issues {
 		aux := auxMap[issue.ID] // int64 key
 
@@ -461,9 +467,19 @@ func GetIssues(ginContext *gin.Context) {
 		// Fallback: If ProjectName is missing from GraphQL, fetch via REST
 		finalProjectName := aux.ProjectName
 		if finalProjectName == "" {
-			project, _, err := gitlabClient.Projects.GetProject(issue.ProjectID, nil)
-			if err == nil {
-				finalProjectName = project.NameWithNamespace
+			// Check cache first
+			if cached, ok := projectCache.Load(issue.ProjectID); ok {
+				finalProjectName = cached.(string)
+			} else {
+				// Fetch and cache in parallel
+				cacheWg.Add(1)
+				go func(projID interface{}) {
+					defer cacheWg.Done()
+					project, _, err := gitlabClient.Projects.GetProject(projID, nil)
+					if err == nil {
+						projectCache.Store(projID, project.NameWithNamespace)
+					}
+				}(issue.ProjectID)
 			}
 		}
 
@@ -477,6 +493,16 @@ func GetIssues(ginContext *gin.Context) {
 				Items:  aux.ChildItems,
 			},
 		})
+	}
+	cacheWg.Wait()
+
+	// Populate finalProjectName from cache for any that were fetched in parallel
+	for i, iwc := range issuesWithChild {
+		if iwc.ProjectName == "" {
+			if cached, ok := projectCache.Load(issuesWithChild[i].ProjectID); ok {
+				issuesWithChild[i].ProjectName = cached.(string)
+			}
+		}
 	}
 
 	ginContext.JSON(http.StatusOK, issuesWithChild)

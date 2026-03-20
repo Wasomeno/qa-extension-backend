@@ -72,6 +72,7 @@ func ListIssuesRelatedToMe(client *gitlab.Client, opts *gitlab.ListIssuesOptions
 	// Clone options to avoid side effects
 	assignedOpts := *opts
 	assignedOpts.Scope = gitlab.Ptr("assigned_to_me")
+	assignedOpts.ListOptions = gitlab.ListOptions{PerPage: 50}
 	assigned, _, err := client.Issues.ListIssues(&assignedOpts)
 	if err != nil {
 		return nil, err
@@ -79,6 +80,7 @@ func ListIssuesRelatedToMe(client *gitlab.Client, opts *gitlab.ListIssuesOptions
 
 	createdOpts := *opts
 	createdOpts.Scope = gitlab.Ptr("created_by_me")
+	createdOpts.ListOptions = gitlab.ListOptions{PerPage: 50}
 	created, _, err := client.Issues.ListIssues(&createdOpts)
 	if err != nil {
 		return nil, err
