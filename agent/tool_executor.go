@@ -14,7 +14,7 @@ import (
 
 	"qa-extension-backend/client"
 	"qa-extension-backend/database"
-	"qa-extension-backend/models"
+	"qa-extension-backend/internal/models"
 )
 
 // ToolExecutor is a function that executes a tool with given arguments

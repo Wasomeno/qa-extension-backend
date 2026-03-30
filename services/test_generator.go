@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"qa-extension-backend/models"
+	"qa-extension-backend/internal/models"
 	"strings"
 
 	"github.com/google/uuid"

@@ -5,7 +5,7 @@ import (
 	"io"
 	"strings"
 
-	"qa-extension-backend/models"
+	"qa-extension-backend/internal/models"
 
 	"github.com/xuri/excelize/v2"
 )

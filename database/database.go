@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 	"time"
-	"qa-extension-backend/models"
+	"qa-extension-backend/internal/models"
 
 	"github.com/redis/go-redis/v9"
 )

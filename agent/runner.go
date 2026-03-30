@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"qa-extension-backend/client"
-	"qa-extension-backend/models"
+	"qa-extension-backend/internal/models"
 	"time"
 
 	"github.com/playwright-community/playwright-go"

@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"qa-extension-backend/agent"
-	"qa-extension-backend/models"
+	"qa-extension-backend/internal/models"
 )
 
 func main() {

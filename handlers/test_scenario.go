@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"qa-extension-backend/client"
 	"qa-extension-backend/database"
-	"qa-extension-backend/models"
+	"qa-extension-backend/internal/models"
 	"qa-extension-backend/identity"
 	"qa-extension-backend/services"
 	"qa-extension-backend/auth"

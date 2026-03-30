@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"qa-extension-backend/config"
-	"qa-extension-backend/models"
+	"qa-extension-backend/internal/models"
 
 	gitlab "gitlab.com/gitlab-org/api/client-go"
 	"gitlab.com/gitlab-org/api/client-go/gitlaboauth2"

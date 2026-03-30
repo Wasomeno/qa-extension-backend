@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"qa-extension-backend/database"
-	"qa-extension-backend/models"
+	"qa-extension-backend/internal/models"
 	"qa-extension-backend/identity"
 	"sort"
 	"time"

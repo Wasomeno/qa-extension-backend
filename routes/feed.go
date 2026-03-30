@@ -3,7 +3,7 @@ package routes
 import (
 	"qa-extension-backend/client"
 	gitlab "gitlab.com/gitlab-org/api/client-go"
-	"qa-extension-backend/models"
+	"qa-extension-backend/internal/models"
 )
 
 // ConcurrentFeedAggregator is a wrapper around the client's unified activity fetcher.
