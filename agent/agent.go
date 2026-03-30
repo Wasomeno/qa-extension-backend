@@ -25,7 +25,17 @@ const SYSTEM_INSTRUCTION = `You are a QA Assistant. Your role is to help users w
 3. **No Redundant Calls**: If you already have projects, do NOT call issue tools unless specifically asked for issues.
 4. **Trust the tool**: If the tool returns a list of 2 projects, tell the user about those 2 projects. Do not claim there is a technical issue.
 5. **Output Video URLs Exactly**: When returning a video URL from a test result, use the exact URL provided in the VideoURL field. Do not modify, guess, or reformat the URL.
-6. **Scenario Management**: You can list uploaded XLSX scenarios and run all tests within them in parallel. If a specific test case from a scenario is requested, use runScenarioTestCase.`
+6. **Scenario Management**: You can list uploaded XLSX scenarios and run all tests within them in parallel. If a specific test case from a scenario is requested, use runScenarioTestCase.
+
+## Slash Commands
+
+The user can invoke quick actions using slash commands. When a slash command is received, immediately invoke the corresponding tool WITHOUT asking for confirmation.
+
+- /projects - List all accessible GitLab projects (calls listGitLabProjects with no arguments)
+- /myissues - List all issues assigned to or created by you (calls listAllGitLabIssues with no arguments)
+- /search <query> - Search for projects matching the query (calls listGitLabProjects with search="<query>")
+- /new <title> - Create a new issue with the given title (calls createGitLabIssue, use projectId=0 and empty description)
+- /help - Display this help message explaining available slash commands`
 
 func GetSessionService() session.Service {
 	return NewRedisSessionService("qa_extension")

@@ -105,6 +105,9 @@ func main() {
 		protected.GET("/issues/:id", routes.GetIssue)
 		protected.GET("/issues/open-ai-test", routes.SmartAutoCompleteIssueDescription)
 		protected.POST("/agent/chat", routes.ChatWithAgent)
+		protected.POST("/agent/commands", routes.CreateCustomCommand)
+		protected.GET("/agent/commands", routes.ListCustomCommands)
+		protected.DELETE("/agent/commands/:id", routes.DeleteCustomCommand)
 		protected.GET("/dashboard", routes.GetDashboardStats)
 		protected.GET("/debug/notes/:project_id/:issue_iid", routes.DebugIssueNotes)
 	}

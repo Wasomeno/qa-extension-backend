@@ -2,7 +2,9 @@ package routes
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -71,9 +73,76 @@ func ChatWithAgent(c *gin.Context) {
 		}
 	}
 
+	// Process input - check for slash commands
+	input := req.Input
+	if agent.IsSlashCommand(input) {
+		// Try built-in slash commands first
+		if cmd, args, matched := agent.MatchSlashCommand(input); matched {
+			log.Printf("[ChatWithAgent] Matched built-in slash command: %s", cmd.ToolName)
+
+			// Execute the tool pre-emptively
+			if cmd.ToolName != "" && agent.HasToolExecutor(cmd.ToolName) {
+				toolResult, execErr := agent.ExecuteTool(cmd.ToolName, ctx, args)
+				if execErr != nil {
+					log.Printf("[ChatWithAgent] Tool execution error: %v", execErr)
+					// Continue to LLM with error context
+					input = fmt.Sprintf("%s\n\n[Tool execution error: %v]", input, execErr)
+				} else {
+					// Serialize tool result and inject into context
+					resultJSON, _ := json.MarshalIndent(toolResult, "", "  ")
+					log.Printf("[ChatWithAgent] Tool executed successfully, result length: %d", len(resultJSON))
+
+					// Prepend tool result to user input for LLM to format
+					input = fmt.Sprintf(`%s
+
+[PRE-EXECUTED TOOL RESULT]
+The slash command "%s" was pre-executed and returned:
+%s
+
+Please format this result nicely for the user, presenting the key information in a clear, readable format.`, input, input, string(resultJSON))
+				}
+			} else if cmd.ToolName == "" {
+				// /help command - special handling
+				commands := agent.GetAllSlashCommands(ctx)
+				var helpText strings.Builder
+				helpText.WriteString("Available slash commands:\n\n")
+				for _, c := range commands {
+					helpText.WriteString(fmt.Sprintf("- %s: %s\n", c.Pattern, c.Description))
+				}
+				helpText.WriteString("\nYou can also type naturally and I'll help you with GitLab issues and test automation.")
+				input = fmt.Sprintf(`The user invoked /help. Display the available commands:
+
+%s`, helpText.String())
+			}
+		} else if cmd, args, matched := agent.MatchCustomSlashCommand(ctx, input); matched {
+			log.Printf("[ChatWithAgent] Matched custom slash command: %s", cmd.Name)
+
+			// Execute the custom command's tool
+			if cmd.ToolName != "" && agent.HasToolExecutor(cmd.ToolName) {
+				toolResult, execErr := agent.ExecuteTool(cmd.ToolName, ctx, args)
+				if execErr != nil {
+					log.Printf("[ChatWithAgent] Custom tool execution error: %v", execErr)
+					input = fmt.Sprintf("%s\n\n[Tool execution error: %v]", input, execErr)
+				} else {
+					resultJSON, _ := json.MarshalIndent(toolResult, "", "  ")
+					log.Printf("[ChatWithAgent] Custom tool executed successfully, result length: %d", len(resultJSON))
+
+					// Prepend tool result to user input for LLM to format
+					input = fmt.Sprintf(`%s
+
+[PRE-EXECUTED TOOL RESULT - Custom Command: %s]
+The custom command "%s" was pre-executed and returned:
+%s
+
+Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, string(resultJSON))
+				}
+			}
+		}
+	}
+
 	content := &genai.Content{
 		Role: genai.RoleUser,
-		Parts: []*genai.Part{{Text: req.Input}},
+		Parts: []*genai.Part{{Text: input}},
 	}
 
 	c.Header("Content-Type", "text/event-stream")
