@@ -99,8 +99,12 @@ func MatchCustomSlashCommand(ctx context.Context, input string) (*CustomCommand,
 	// Custom commands are stored with / prefix
 	fullName := "/" + commandName
 
-	// Get user's custom commands
-	customCommands, err := GetUserCustomCommands(ctx, "user")
+	// Get user's custom commands using session_id from context
+	sessionID, _ := ctx.Value("session_id").(string)
+	if sessionID == "" {
+		sessionID = "user" // fallback for backwards compatibility
+	}
+	customCommands, err := GetUserCustomCommands(ctx, sessionID)
 	if err != nil {
 		return nil, nil, false
 	}
@@ -150,8 +154,12 @@ func IsSlashCommand(input string) bool {
 func GetAllSlashCommands(ctx context.Context) []SlashCommand {
 	commands := GetSlashCommands()
 
-	// Add custom commands
-	customCommands, err := GetUserCustomCommands(ctx, "user")
+	// Get user's custom commands using session_id from context
+	sessionID, _ := ctx.Value("session_id").(string)
+	if sessionID == "" {
+		sessionID = "user" // fallback for backwards compatibility
+	}
+	customCommands, err := GetUserCustomCommands(ctx, sessionID)
 	if err != nil {
 		return commands
 	}
