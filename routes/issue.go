@@ -12,9 +12,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"qa-extension-backend/client"
 	"qa-extension-backend/auth"
+	"qa-extension-backend/database"
 
 	"github.com/gin-gonic/gin"
 	goGenai "google.golang.org/genai"
@@ -198,10 +200,18 @@ func GetIssues(ginContext *gin.Context) {
 	state := ginContext.Query("state")
 	projectIds := ginContext.Query("project_ids")
 
+	// Optional pagination limit (default 100)
+	limit := 100
+	if limitStr := ginContext.Query("limit"); limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= 500 {
+			limit = l
+		}
+	}
+
 	opts := &gitlab.ListIssuesOptions{
 		WithLabelDetails: gitlab.Ptr(true),
 		Scope:            gitlab.Ptr("all"),
-		ListOptions:      gitlab.ListOptions{PerPage: 50},
+		ListOptions:      gitlab.ListOptions{PerPage: int64(limit), Page: 1},
 	}
 
 	if issueIds != "" {
@@ -322,41 +332,63 @@ func GetIssues(ginContext *gin.Context) {
 		return
 	}
 
-	// 1. Batched GraphQL Query (Primary Strategy)
-	// We optimize by fetching Project Name AND Hierarchy.
-	// CRITICAL: We MUST batch these requests because GitLab has a Max Query Complexity of 250.
-	// Each item adds complexity. processing 5 items per batch keeps us safe (~70 complexity).
-	const BatchSize = 5
+	// 1. Concurrent GraphQL Batching with Semaphore (Primary Strategy)
+	// GitLab has Max Query Complexity of ~250. Processing 15 items per batch keeps us safe (~105 complexity).
+	// We run up to 5 batches concurrently using a semaphore.
+	const BatchSize = 15
+	const MaxConcurrency = 5
 
 	graphqlEndpoint := "https://gitlab.com/api/graphql"
 	if url := os.Getenv("GITLAB_BASE_URL"); url != "" {
 		graphqlEndpoint = strings.TrimRight(url, "/") + "/api/graphql"
 	}
 
-	// Context data map - Use int64 keys directly
+	// Context data map - Use sync.Map for concurrent writes
 	type AuxData struct {
 		ProjectName string
 		ChildCount  int
 		ChildItems  []ChildIssueItem
 	}
-	auxMap := make(map[int64]AuxData)
+	auxMap := sync.Map{}
 
-	// Iterate issues in chunks
-	for i := 0; i < len(issues); i += BatchSize {
-		end := i + BatchSize
-		if end > len(issues) {
-			end = len(issues)
+	// Semaphore channels for concurrency control
+	sem := make(chan struct{}, MaxConcurrency)
+	var parseWg sync.WaitGroup
+	var parseMu sync.Mutex
+	var parseErrors []string
+
+	ctx := ginContext.Request.Context()
+
+	// Collect unique project IDs for Redis lookup
+	projectIDs := make(map[int64]bool)
+	for _, issue := range issues {
+		projectIDs[issue.ProjectID] = true
+	}
+
+	// Check Redis cache for project names first
+	projectNameCache := make(map[int64]string)
+	for projID := range projectIDs {
+		if name, ok := database.GetCachedProjectName(ctx, projID); ok {
+			projectNameCache[projID] = name
 		}
-		batch := issues[i:end]
+	}
 
-		var queryBuilder strings.Builder
-		queryBuilder.WriteString("query {")
+	// Iterate issues in chunks - each chunk launches a goroutine
+	for i := 0; i < len(issues); i += BatchSize {
+		parseWg.Add(1)
+		go func(batch []*gitlab.Issue) {
+			defer parseWg.Done()
+			sem <- struct{}{}        // Acquire semaphore
+			defer func() { <-sem }() // Release semaphore
 
-		for _, issue := range batch {
-			gid := fmt.Sprintf("gid://gitlab/WorkItem/%d", issue.ID)
-			alias := fmt.Sprintf("item_%d", issue.ID)
+			var queryBuilder strings.Builder
+			queryBuilder.WriteString("query {")
 
-			queryBuilder.WriteString(fmt.Sprintf(`
+			for _, issue := range batch {
+				gid := fmt.Sprintf("gid://gitlab/WorkItem/%d", issue.ID)
+				alias := fmt.Sprintf("item_%d", issue.ID)
+
+				queryBuilder.WriteString(fmt.Sprintf(`
 				%s: workItem(id: "%s") {
 					id
 					project {
@@ -375,103 +407,123 @@ func GetIssues(ginContext *gin.Context) {
 					}
 				}
 			`, alias, gid))
-		}
-		queryBuilder.WriteString("}")
-
-		// Fix: Pass empty map for variables instead of nil
-		respBody, errGQL := sendGraphQLRequest(ginContext, graphqlEndpoint, token.AccessToken, queryBuilder.String(), map[string]interface{}{})
-
-		if errGQL == nil {
-			var rawResp struct {
-				Data   map[string]interface{} `json:"data"`
-				Errors []struct {
-					Message string `json:"message"`
-				} `json:"errors"`
 			}
+			queryBuilder.WriteString("}")
 
-			if err := json.Unmarshal(respBody, &rawResp); err == nil && len(rawResp.Errors) == 0 {
-				for alias, rawNode := range rawResp.Data {
-					data := AuxData{ChildItems: []ChildIssueItem{}}
+			respBody, errGQL := sendGraphQLRequest(ctx, graphqlEndpoint, token.AccessToken, queryBuilder.String(), map[string]interface{}{})
 
-					if nodeMap, ok := rawNode.(map[string]interface{}); ok {
-						// 1. Extract Project Name
-						if proj, ok := nodeMap["project"].(map[string]interface{}); ok {
-							if name, ok := proj["nameWithNamespace"].(string); ok {
-								data.ProjectName = name
+			if errGQL == nil {
+				var rawResp struct {
+					Data   map[string]interface{} `json:"data"`
+					Errors []struct {
+						Message string `json:"message"`
+					} `json:"errors"`
+				}
+
+				if err := json.Unmarshal(respBody, &rawResp); err == nil && len(rawResp.Errors) == 0 {
+					for alias, rawNode := range rawResp.Data {
+						data := AuxData{ChildItems: []ChildIssueItem{}}
+
+						if nodeMap, ok := rawNode.(map[string]interface{}); ok {
+							// 1. Extract Project Name
+							if proj, ok := nodeMap["project"].(map[string]interface{}); ok {
+								if name, ok := proj["nameWithNamespace"].(string); ok {
+									data.ProjectName = name
+								}
 							}
-						}
 
-						// 2. Extract Hierarchy
-						if widgets, ok := nodeMap["widgets"].([]interface{}); ok {
-							for _, w := range widgets {
-								if widgetMap, ok := w.(map[string]interface{}); ok {
-									if children, ok := widgetMap["children"].(map[string]interface{}); ok {
-										if count, ok := children["count"].(float64); ok {
-											data.ChildCount = int(count)
-										}
-										if nodes, ok := children["nodes"].([]interface{}); ok {
-											for _, n := range nodes {
-												if node, ok := n.(map[string]interface{}); ok {
-													childID, _ := node["id"].(string)
-													childIIDStr, _ := node["iid"].(string)
+							// 2. Extract Hierarchy
+							if widgets, ok := nodeMap["widgets"].([]interface{}); ok {
+								for _, w := range widgets {
+									if widgetMap, ok := w.(map[string]interface{}); ok {
+										if children, ok := widgetMap["children"].(map[string]interface{}); ok {
+											if count, ok := children["count"].(float64); ok {
+												data.ChildCount = int(count)
+											}
+											if nodes, ok := children["nodes"].([]interface{}); ok {
+												for _, n := range nodes {
+													if node, ok := n.(map[string]interface{}); ok {
+														childID, _ := node["id"].(string)
+														childIIDStr, _ := node["iid"].(string)
 
-													childIID, _ := strconv.Atoi(childIIDStr)
+														childIID, _ := strconv.Atoi(childIIDStr)
 
-													data.ChildItems = append(data.ChildItems, ChildIssueItem{
-														ID:  childID,
-														IID: childIID,
-													})
+														data.ChildItems = append(data.ChildItems, ChildIssueItem{
+															ID:  childID,
+															IID: childIID,
+														})
+													}
 												}
 											}
-										}
-										if data.ChildCount > 0 || len(data.ChildItems) > 0 {
-											break
+											if data.ChildCount > 0 || len(data.ChildItems) > 0 {
+												break
+											}
 										}
 									}
 								}
 							}
 						}
-					}
 
-					idStr := strings.TrimPrefix(alias, "item_")
-					idInt, _ := strconv.Atoi(idStr)
-					// Cast parsing result to int64
-					auxMap[int64(idInt)] = data
+						idStr := strings.TrimPrefix(alias, "item_")
+						idInt, _ := strconv.Atoi(idStr)
+						auxMap.Store(int64(idInt), data)
+					}
+				} else {
+					parseMu.Lock()
+					parseErrors = append(parseErrors, fmt.Sprintf("ParseError: %v", rawResp.Errors))
+					parseMu.Unlock()
 				}
-				// Only set success header if at least one works (not overwriting errors from others)
-				ginContext.Header("X-Debug-GraphQL-Status", "Success")
 			} else {
-				// Log error
-				fmt.Printf("GraphQL Batch Parse Error: %v\n", rawResp.Errors)
-				ginContext.Header("X-Debug-GraphQL-Status", fmt.Sprintf("ChunkError: %v", rawResp.Errors))
+				parseMu.Lock()
+				parseErrors = append(parseErrors, fmt.Sprintf("ReqFailed: %v", errGQL))
+				parseMu.Unlock()
 			}
-		} else {
-			log.Printf("GraphQL Request Error: %v", errGQL)
-			ginContext.Header("X-Debug-GraphQL-Status", fmt.Sprintf("ReqFailed: %v", errGQL))
-		}
+		}(func() []*gitlab.Issue {
+			end := i + BatchSize
+			if end > len(issues) {
+				end = len(issues)
+			}
+			return issues[i:end]
+		}())
+	}
+
+	parseWg.Wait()
+
+	// Add debug header if any errors occurred
+	if len(parseErrors) > 0 {
+		ginContext.Header("X-Debug-GraphQL-Status", strings.Join(parseErrors, "; "))
+	} else {
+		ginContext.Header("X-Debug-GraphQL-Status", "Success")
 	}
 
 	// 2. Construct Final Response (With REST Fallback)
-	// Use project cache to avoid duplicate GetProject calls
+	// Use pre-fetched Redis cache first, then in-memory cache, then REST fallback
 	projectCache := sync.Map{}
 	var cacheWg sync.WaitGroup
 
 	for _, issue := range issues {
-		aux := auxMap[issue.ID] // int64 key
+		// Retrieve from sync.Map
+		var aux AuxData
+		if v, ok := auxMap.Load(issue.ID); ok {
+			aux = v.(AuxData)
+		}
 
 		// Validation: Ensure ChildItems is non-nil
 		if aux.ChildItems == nil {
 			aux.ChildItems = []ChildIssueItem{}
 		}
 
-		// Fallback: If ProjectName is missing from GraphQL, fetch via REST
+		// Fallback: If ProjectName is missing from GraphQL, try Redis cache first, then in-memory, then REST
 		finalProjectName := aux.ProjectName
 		if finalProjectName == "" {
-			// Check cache first
-			if cached, ok := projectCache.Load(issue.ProjectID); ok {
+			// Check Redis cache first
+			if name, ok := projectNameCache[issue.ProjectID]; ok {
+				finalProjectName = name
+			} else if cached, ok := projectCache.Load(issue.ProjectID); ok {
+				// Fallback to in-memory cache
 				finalProjectName = cached.(string)
 			} else {
-				// Fetch and cache in parallel
+				// Fetch via REST and cache in parallel
 				cacheWg.Add(1)
 				go func(projID interface{}) {
 					defer cacheWg.Done()
@@ -826,7 +878,8 @@ func sendGraphQLRequest(ctx context.Context, endpoint, token, query string, vari
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
+	// Add 10-second timeout to prevent hanging requests
+	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
