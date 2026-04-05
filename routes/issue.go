@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"qa-extension-backend/client"
 	"qa-extension-backend/auth"
@@ -189,6 +190,7 @@ type IssueWithChild struct {
 }
 
 func GetIssues(ginContext *gin.Context) {
+	startTime := time.Now()
 	token := ginContext.MustGet("token").(*oauth2.Token)
 	sessionID := ginContext.MustGet("session_id").(string)
 
@@ -215,14 +217,18 @@ func GetIssues(ginContext *gin.Context) {
 	// Check cache first - return immediately if found
 	// Note: Caching is skipped when projectIds is specified as those are user-specific queries
 	if projectIds == "" {
+		cacheStart := time.Now()
 		if cachedData, ok := database.GetCachedIssueResponse(ginContext, cacheKey); ok {
 			var cached []IssueWithChild
 			if err := json.Unmarshal(cachedData, &cached); err == nil {
 				ginContext.Header("X-Cache", "HIT")
+				ginContext.Header("X-Timing-Cache", time.Since(cacheStart).String())
+				ginContext.Header("X-Timing-Total", time.Since(startTime).String())
 				ginContext.JSON(http.StatusOK, cached)
 				return
 			}
 		}
+		ginContext.Header("X-Timing-Cache", time.Since(cacheStart).String())
 	}
 
 	opts := &gitlab.ListIssuesOptions{
@@ -306,6 +312,7 @@ func GetIssues(ginContext *gin.Context) {
 	}
 
 	var issues []*gitlab.Issue
+	restStart := time.Now()
 	if projectIds != "" {
 		splitProjectIds := strings.Split(projectIds, ",")
 		for _, pid := range splitProjectIds {
@@ -340,6 +347,7 @@ func GetIssues(ginContext *gin.Context) {
 			return
 		}
 	}
+	ginContext.Header("X-Timing-REST", time.Since(restStart).String())
 
 	// Prepare result list
 	var issuesWithChild []IssueWithChild
@@ -506,6 +514,8 @@ func GetIssues(ginContext *gin.Context) {
 	}
 
 	parseWg.Wait()
+	graphqlEnd := time.Now()
+	ginContext.Header("X-Timing-GraphQL", graphqlEnd.Sub(restStart).String())
 
 	// Add debug header if any errors occurred
 	if len(parseErrors) > 0 {
@@ -582,6 +592,7 @@ func GetIssues(ginContext *gin.Context) {
 		}
 	}()
 
+	ginContext.Header("X-Timing-Total", time.Since(startTime).String())
 	ginContext.JSON(http.StatusOK, issuesWithChild)
 }
 
