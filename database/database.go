@@ -92,11 +92,75 @@ func SetCachedWorkItemData(ctx context.Context, issueID int64, childCount int, c
 		ChildCount: childCount,
 		ChildJSON:  childItemsJSON,
 	}
-	
+
 	data, err := json.Marshal(cachedData)
 	if err != nil {
 		return
 	}
 	// Short TTL for work items since they change more frequently
 	RedisClient.Set(ctx, key, data, 10*time.Minute)
+}
+
+// IssueResponseCacheTTL is the TTL for cached issue responses
+const IssueResponseCacheTTL = 5 * time.Minute
+
+// GetCachedIssueResponse retrieves a cached issue response by cache key
+// Returns the cached JSON bytes and true if found, or nil and false if not found
+func GetCachedIssueResponse(ctx context.Context, cacheKey string) ([]byte, bool) {
+	key := fmt.Sprintf("issues:response:%s", cacheKey)
+	data, err := RedisClient.Get(ctx, key).Bytes()
+	if err != nil {
+		return nil, false
+	}
+	return data, true
+}
+
+// SetCachedIssueResponse stores an issue response in cache
+func SetCachedIssueResponse(ctx context.Context, cacheKey string, data []byte) {
+	key := fmt.Sprintf("issues:response:%s", cacheKey)
+	RedisClient.Set(ctx, key, data, IssueResponseCacheTTL)
+}
+
+// InvalidateIssueResponseCache invalidates cached issue responses
+// Call this when issues are created, updated, or deleted
+func InvalidateIssueResponseCache(ctx context.Context) {
+	// Use pattern matching to find and delete all issue response caches
+	// Redis SCAN is better than KEYS for production to avoid blocking
+	iter := RedisClient.Scan(ctx, 0, "issues:response:*", 100).Iterator()
+	for iter.Next(ctx) {
+		RedisClient.Del(ctx, iter.Val())
+	}
+}
+
+// GenerateIssueCacheKey creates a deterministic cache key based on query parameters
+func GenerateIssueCacheKey(labels, search, issueIds, assigneeId, assigneeIds, authorId, state, projectIds string, limit int) string {
+	// Create a simple hash from the parameters
+	key := fmt.Sprintf("l:%s|s:%s|i:%s|ai:%s|ais:%s|au:%s|st:%s|p:%s|lim:%d",
+		labels, search, issueIds, assigneeId, assigneeIds, authorId, state, projectIds, limit)
+	return key
+}
+
+// BoardResponseCacheTTL is the TTL for cached board responses
+const BoardResponseCacheTTL = 2 * time.Minute
+
+// GetCachedBoardResponse retrieves a cached board response
+func GetCachedBoardResponse(ctx context.Context, projectID string) ([]byte, bool) {
+	key := fmt.Sprintf("boards:response:%s", projectID)
+	data, err := RedisClient.Get(ctx, key).Bytes()
+	if err != nil {
+		return nil, false
+	}
+	return data, true
+}
+
+// SetCachedBoardResponse stores a board response in cache
+func SetCachedBoardResponse(ctx context.Context, projectID string, data []byte) {
+	key := fmt.Sprintf("boards:response:%s", projectID)
+	RedisClient.Set(ctx, key, data, BoardResponseCacheTTL)
+}
+
+// InvalidateBoardCache invalidates board cache for a project
+func InvalidateBoardCache(ctx context.Context, projectID string) {
+	key := fmt.Sprintf("boards:response:%s", projectID)
+	RedisClient.Del(ctx, key)
 }

@@ -2,7 +2,9 @@ package client
 
 import (
 	"context"
+	"errors"
 	"log"
+	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -14,7 +16,108 @@ import (
 	gitlab "gitlab.com/gitlab-org/api/client-go"
 	"gitlab.com/gitlab-org/api/client-go/gitlaboauth2"
 	"golang.org/x/oauth2"
+	"github.com/sony/gobreaker"
 )
+
+// Circuit breaker names for different GitLab API operations
+const (
+	CircuitBreakerGraphQL = "gitlab-graphql"
+	CircuitBreakerBoards  = "gitlab-boards"
+	CircuitBreakerIssues  = "gitlab-issues"
+)
+
+// Circuit breaker settings for GitLab API calls
+// These prevent cascade failures when GitLab API is experiencing issues
+var (
+	// GraphQL circuit breaker - protects batched GraphQL operations
+	graphqlCircuitBreaker = gobreaker.NewCircuitBreaker(gobreaker.Settings{
+		Name:        CircuitBreakerGraphQL,
+		MaxRequests: 5,              // Max requests in half-open state before closing
+		Interval:    30 * time.Second, // Time between state checks when closed
+		Timeout:     60 * time.Second, // Time circuit stays open before half-open
+		ReadyToTrip: func(counts gobreaker.Counts) bool {
+			// Open if failure rate > 60% over 10+ requests
+			failureRatio := float64(counts.TotalFailures) / float64(counts.Requests)
+			return counts.Requests >= 10 && failureRatio >= 0.6
+		},
+		OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
+			if from == gobreaker.StateClosed && to == gobreaker.StateOpen {
+				log.Printf("[CIRCUIT BREAKER] %s: Circuit OPENED - GitLab API experiencing issues", name)
+			} else if from == gobreaker.StateOpen && to == gobreaker.StateHalfOpen {
+				log.Printf("[CIRCUIT BREAKER] %s: Circuit HALF-OPEN - Testing GitLab API recovery", name)
+			} else if from == gobreaker.StateHalfOpen && to == gobreaker.StateClosed {
+				log.Printf("[CIRCUIT BREAKER] %s: Circuit CLOSED - GitLab API recovered", name)
+			}
+		},
+	})
+
+	// Boards circuit breaker - protects board listing operations
+	boardsCircuitBreaker = gobreaker.NewCircuitBreaker(gobreaker.Settings{
+		Name:        CircuitBreakerBoards,
+		MaxRequests: 3,
+		Interval:    30 * time.Second,
+		Timeout:     60 * time.Second,
+		ReadyToTrip: func(counts gobreaker.Counts) bool {
+			failureRatio := float64(counts.TotalFailures) / float64(counts.Requests)
+			return counts.Requests >= 5 && failureRatio >= 0.5
+		},
+		OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
+			if from == gobreaker.StateClosed && to == gobreaker.StateOpen {
+				log.Printf("[CIRCUIT BREAKER] %s: Circuit OPENED", name)
+			}
+		},
+	})
+
+	// Issues circuit breaker - protects issue listing operations
+	issuesCircuitBreaker = gobreaker.NewCircuitBreaker(gobreaker.Settings{
+		Name:        CircuitBreakerIssues,
+		MaxRequests: 5,
+		Interval:    30 * time.Second,
+		Timeout:     60 * time.Second,
+		ReadyToTrip: func(counts gobreaker.Counts) bool {
+			failureRatio := float64(counts.TotalFailures) / float64(counts.Requests)
+			return counts.Requests >= 10 && failureRatio >= 0.6
+		},
+		OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
+			if from == gobreaker.StateClosed && to == gobreaker.StateOpen {
+				log.Printf("[CIRCUIT BREAKER] %s: Circuit OPENED", name)
+			}
+		},
+	})
+)
+
+// ErrCircuitOpen is returned when the circuit breaker is open
+var ErrCircuitOpen = errors.New("circuit breaker is open - GitLab API temporarily unavailable")
+
+// GetCircuitBreaker returns the circuit breaker for the given operation type
+func GetCircuitBreaker(name string) *gobreaker.CircuitBreaker {
+	switch name {
+	case CircuitBreakerGraphQL:
+		return graphqlCircuitBreaker
+	case CircuitBreakerBoards:
+		return boardsCircuitBreaker
+	case CircuitBreakerIssues:
+		return issuesCircuitBreaker
+	default:
+		return graphqlCircuitBreaker
+	}
+}
+
+// Singleton HTTP client for GraphQL requests - connection pooled for performance
+// Previously each sendGraphQLRequest created a new client, causing TCP handshake overhead
+var graphqlHTTPClient = &http.Client{
+	Timeout: 10 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10, // Crucial: keeps warm connections per host
+		IdleConnTimeout:     90 * time.Second,
+	},
+}
+
+// GetGraphQLHTTPClient returns the singleton GraphQL HTTP client
+func GetGraphQLHTTPClient() *http.Client {
+	return graphqlHTTPClient
+}
 
 type TokenSaver func(context.Context, *oauth2.Token) error
 

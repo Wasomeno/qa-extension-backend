@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -12,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"qa-extension-backend/client"
 	"qa-extension-backend/auth"
@@ -20,6 +20,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	goGenai "google.golang.org/genai"
+	"github.com/sony/gobreaker"
 	"github.com/tmc/langchaingo/agents"
 	"github.com/tmc/langchaingo/callbacks"
 	"github.com/tmc/langchaingo/chains"
@@ -208,6 +209,22 @@ func GetIssues(ginContext *gin.Context) {
 		}
 	}
 
+	// Generate cache key from query parameters
+	cacheKey := database.GenerateIssueCacheKey(labels, search, issueIds, assigneeId, assigneeIds, authorId, state, projectIds, limit)
+
+	// Check cache first - return immediately if found
+	// Note: Caching is skipped when projectIds is specified as those are user-specific queries
+	if projectIds == "" {
+		if cachedData, ok := database.GetCachedIssueResponse(ginContext, cacheKey); ok {
+			var cached []IssueWithChild
+			if err := json.Unmarshal(cachedData, &cached); err == nil {
+				ginContext.Header("X-Cache", "HIT")
+				ginContext.JSON(http.StatusOK, cached)
+				return
+			}
+		}
+	}
+
 	opts := &gitlab.ListIssuesOptions{
 		WithLabelDetails: gitlab.Ptr(true),
 		Scope:            gitlab.Ptr("all"),
@@ -333,9 +350,10 @@ func GetIssues(ginContext *gin.Context) {
 	}
 
 	// 1. Concurrent GraphQL Batching with Semaphore (Primary Strategy)
-	// GitLab has Max Query Complexity of ~250. Processing 15 items per batch keeps us safe (~105 complexity).
+	// GitLab has Max Query Complexity of ~250. Processing 30 items per batch keeps us safe (~210 complexity).
+	// Increased from 15 to 30 to reduce number of HTTP round trips.
 	// We run up to 5 batches concurrently using a semaphore.
-	const BatchSize = 15
+	const BatchSize = 30
 	const MaxConcurrency = 5
 
 	graphqlEndpoint := "https://gitlab.com/api/graphql"
@@ -556,6 +574,13 @@ func GetIssues(ginContext *gin.Context) {
 			}
 		}
 	}
+
+	// Cache the response asynchronously - don't block the response
+	go func() {
+		if data, err := json.Marshal(issuesWithChild); err == nil {
+			database.SetCachedIssueResponse(context.Background(), cacheKey, data)
+		}
+	}()
 
 	ginContext.JSON(http.StatusOK, issuesWithChild)
 }
@@ -862,6 +887,33 @@ func linkChildTask(ctx context.Context, accessToken string, parentIID int64, chi
 }
 
 func sendGraphQLRequest(ctx context.Context, endpoint, token, query string, variables map[string]interface{}) ([]byte, error) {
+	return sendGraphQLRequestWithClient(ctx, endpoint, token, query, variables, client.GetGraphQLHTTPClient(), client.CircuitBreakerGraphQL)
+}
+
+// sendGraphQLRequestWithClient uses a shared connection-pooled HTTP client for GraphQL requests
+// with circuit breaker protection. This replaces the previous implementation that created
+// a new http.Client per request, which caused TCP handshake overhead on every call.
+// The circuit breaker prevents cascade failures when GitLab API is struggling.
+func sendGraphQLRequestWithClient(ctx context.Context, endpoint, token, query string, variables map[string]interface{}, httpClient *http.Client, circuitBreakerName string) ([]byte, error) {
+	// Execute through circuit breaker
+	cb := client.GetCircuitBreaker(circuitBreakerName)
+
+	result, err := cb.Execute(func() (interface{}, error) {
+		return sendGraphQLRaw(ctx, endpoint, token, query, variables, httpClient)
+	})
+
+	if err != nil {
+		if errors.Is(err, gobreaker.ErrOpenState) {
+			return nil, client.ErrCircuitOpen
+		}
+		return nil, err
+	}
+
+	return result.([]byte), nil
+}
+
+// sendGraphQLRaw performs the actual GraphQL HTTP request without circuit breaker
+func sendGraphQLRaw(ctx context.Context, endpoint, token, query string, variables map[string]interface{}, httpClient *http.Client) ([]byte, error) {
 	reqBody, err := json.Marshal(map[string]interface{}{
 		"query":     query,
 		"variables": variables,
@@ -878,9 +930,12 @@ func sendGraphQLRequest(ctx context.Context, endpoint, token, query string, vari
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 
-	// Add 10-second timeout to prevent hanging requests
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	// Use shared connection-pooled client instead of creating new one per request
+	if httpClient == nil {
+		httpClient = client.GetGraphQLHTTPClient()
+	}
+
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

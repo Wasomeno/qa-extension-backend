@@ -2,16 +2,19 @@ package routes
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"qa-extension-backend/client"
 	"qa-extension-backend/auth"
+	"qa-extension-backend/database"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
+	"golang.org/x/sync/errgroup"
 	gitlab "gitlab.com/gitlab-org/api/client-go"
 	"golang.org/x/oauth2"
 )
@@ -282,6 +285,17 @@ func GetProjectBoards(ginContext *gin.Context) {
 
 	projectID := ginContext.Param("id")
 
+	// Check cache first
+	ctx := ginContext.Request.Context()
+	if cachedData, ok := database.GetCachedBoardResponse(ctx, projectID); ok {
+		var cached []*BoardResponse
+		if err := json.Unmarshal(cachedData, &cached); err == nil {
+			ginContext.Header("X-Cache", "HIT")
+			ginContext.JSON(http.StatusOK, gin.H{"boards": cached})
+			return
+		}
+	}
+
 	// 1. Fetch all boards
 	boards, _, err := gitlabClient.Boards.ListIssueBoards(projectID, &gitlab.ListIssueBoardsOptions{})
 	if err != nil {
@@ -289,27 +303,35 @@ func GetProjectBoards(ginContext *gin.Context) {
 		ginContext.Abort()
 		return
 	}
-	fmt.Printf("DEBUG: Fetched %d boards\n", len(boards))
 
-	// 2. Fetch all open issues for the project
-	opt := &gitlab.ListProjectIssuesOptions{
-		State: gitlab.Ptr("opened"),
-	}
-	allIssues, _, err := gitlabClient.Issues.ListProjectIssues(projectID, opt)
-	if err != nil {
-		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch issues: " + err.Error()})
-		ginContext.Abort()
-		return
-	}
-	fmt.Printf("DEBUG: Fetched %d issues\n", len(allIssues))
-	if len(allIssues) > 0 {
-		fmt.Printf("DEBUG: First issue ID: %d, Title: %s, Labels: %v\n", allIssues[0].ID, allIssues[0].Title, allIssues[0].Labels)
+	// 2. Fetch all open issues for the project WITH PAGINATION
+	// Previous implementation fetched ALL issues at once, which is slow for large projects
+	// Now we paginate to avoid memory explosion and reduce response time
+	var allIssues []*gitlab.Issue
+	perPage := 100
+	page := 1
+	for {
+		opt := &gitlab.ListProjectIssuesOptions{
+			State: gitlab.Ptr("opened"),
+			ListOptions: gitlab.ListOptions{
+				PerPage: int64(perPage),
+				Page:    int64(page),
+			},
+		}
+		issues, resp, err := gitlabClient.Issues.ListProjectIssues(projectID, opt)
+		if err != nil {
+			ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch issues: " + err.Error()})
+			ginContext.Abort()
+			return
+		}
+		allIssues = append(allIssues, issues...)
+		if resp.NextPage == 0 {
+			break
+		}
+		page++
 	}
 
 	// 3. Fetch all labels to get details (colors)
-	// We need to fetch all labels to map names to colors
-	// Pagination might initially limit this to 20/100, assuming we set a high per_page or loop.
-	// For this iteration, we'll request a large page size.
 	labelOpts := &gitlab.ListLabelsOptions{
 		ListOptions: gitlab.ListOptions{
 			PerPage: 100,
@@ -321,7 +343,6 @@ func GetProjectBoards(ginContext *gin.Context) {
 		ginContext.Abort()
 		return
 	}
-	fmt.Printf("DEBUG: Fetched %d labels\n", len(allLabels))
 
 	// Create a map for quick label lookup by name
 	labelMap := make(map[string]*LabelResponse)
@@ -334,51 +355,81 @@ func GetProjectBoards(ginContext *gin.Context) {
 		}
 	}
 
+	// 4. Fetch board lists IN PARALLEL using errgroup
+	// Previous implementation fetched sequentially per board - O(n) API calls
+	// Now we parallelize with semaphore limit to avoid overwhelming GitLab API
+	type boardListResult struct {
+		board   *gitlab.IssueBoard
+		lists   []*gitlab.BoardList
+		listErr error
+	}
+
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(5) // Semaphore: max 5 concurrent board list fetches
+
+	results := make([]*boardListResult, len(boards))
+
+	for i, board := range boards {
+		i, board := i, board
+		g.Go(func() error {
+			lists, _, err := gitlabClient.Boards.GetIssueBoardLists(projectID, board.ID, &gitlab.GetIssueBoardListsOptions{})
+			results[i] = &boardListResult{
+				board:   board,
+				lists:   lists,
+				listErr: err,
+			}
+			if err != nil {
+				return err
+			}
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch board lists: " + err.Error()})
+		ginContext.Abort()
+		return
+	}
+
+	// Helper to convert gitlab.Issue to IssueResponse
+	toResponse := func(i *gitlab.Issue) *IssueResponse {
+		issueLabels := make([]*LabelResponse, 0)
+		for _, labelName := range i.Labels {
+			if l, ok := labelMap[labelName]; ok {
+				issueLabels = append(issueLabels, l)
+			} else {
+				issueLabels = append(issueLabels, &LabelResponse{
+					Name:  labelName,
+					Color: "#808080",
+				})
+			}
+		}
+
+		return &IssueResponse{
+			ID:          int(i.ID),
+			IID:         int(i.IID),
+			Title:       i.Title,
+			Description: i.Description,
+			State:       i.State,
+			Labels:      issueLabels,
+			Assignees:   i.Assignees,
+			Author:      i.Author,
+			CreatedAt:   i.CreatedAt,
+		}
+	}
+
 	var boardResponses []*BoardResponse
 
-	for _, board := range boards {
-		// 4. Fetch lists for each board
-		lists, _, err := gitlabClient.Boards.GetIssueBoardLists(projectID, board.ID, &gitlab.GetIssueBoardListsOptions{})
-		if err != nil {
-			ginContext.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to fetch lists for board %d: %s", board.ID, err.Error())})
-			ginContext.Abort()
-			return
-		}
+	for _, result := range results {
+		board := result.board
+		lists := result.lists
 
 		listMap := make(map[int][]*IssueResponse)
 		var openListIssues []*IssueResponse
 
-		// Helper to convert gitlab.Issue to IssueResponse
-		toResponse := func(i *gitlab.Issue) *IssueResponse {
-			issueLabels := make([]*LabelResponse, 0)
-			for _, labelName := range i.Labels {
-				if l, ok := labelMap[labelName]; ok {
-					issueLabels = append(issueLabels, l)
-				} else {
-					// Fallback if label details not found (e.g. pagination or deleted)
-					issueLabels = append(issueLabels, &LabelResponse{
-						Name:  labelName,
-						Color: "#808080", // Default gray
-					})
-				}
-			}
-
-			return &IssueResponse{
-				ID:          int(i.ID),
-				IID:         int(i.IID),
-				Title:       i.Title,
-				Description: i.Description,
-				State:       i.State,
-				Labels:      issueLabels,
-				Assignees:   i.Assignees,
-				Author:      i.Author,
-				CreatedAt:   i.CreatedAt,
-			}
-		}
-
 		// Create a map of LabelID -> ListIndex for quick lookup
-		labelToListId := make(map[string]int) // Label Name -> List ID
-		
+		labelToListId := make(map[string]int)
+
 		var boardListResponses []*BoardListResponse
 
 		openBoardList := &BoardListResponse{
@@ -387,12 +438,12 @@ func GetProjectBoards(ginContext *gin.Context) {
 			Position: -1,
 			Issues:   []*IssueResponse{},
 		}
-		
+
 		for _, list := range lists {
 			if list.Label != nil {
 				labelToListId[list.Label.Name] = int(list.ID)
 				listMap[int(list.ID)] = []*IssueResponse{}
-				
+
 				boardListResponses = append(boardListResponses, &BoardListResponse{
 					ID:       int(list.ID),
 					Label:    list.Label,
@@ -410,16 +461,16 @@ func GetProjectBoards(ginContext *gin.Context) {
 					assigned = true
 				}
 			}
-			
+
 			if !assigned {
 				openListIssues = append(openListIssues, toResponse(issue))
 			}
 		}
 
 		openBoardList.Issues = openListIssues
-		
+
 		finalLists := []*BoardListResponse{openBoardList}
-		
+
 		for _, bl := range boardListResponses {
 			bl.Issues = listMap[bl.ID]
 			finalLists = append(finalLists, bl)
@@ -431,6 +482,13 @@ func GetProjectBoards(ginContext *gin.Context) {
 			Lists: finalLists,
 		})
 	}
+
+	// Cache the response asynchronously
+	go func() {
+		if data, err := json.Marshal(boardResponses); err == nil {
+			database.SetCachedBoardResponse(context.Background(), projectID, data)
+		}
+	}()
 
 	ginContext.JSON(http.StatusOK, gin.H{
 		"boards": boardResponses,
