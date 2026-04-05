@@ -417,9 +417,6 @@ func GetIssues(ginContext *gin.Context) {
 				queryBuilder.WriteString(fmt.Sprintf(`
 				%s: workItem(id: "%s") {
 					id
-					project {
-						nameWithNamespace
-					}
 					widgets {
 						... on WorkItemWidgetHierarchy {
 							children {
