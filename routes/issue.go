@@ -587,7 +587,10 @@ func GetIssues(ginContext *gin.Context) {
 	marshalStart := time.Now()
 	if data, err := json.Marshal(issuesWithChild); err == nil {
 		cacheWriteStart := time.Now()
-		database.SetCachedIssueResponse(ginContext, cacheKey, data)
+		// Use context.Background() - Gin context may be cancelled after response starts
+		if cacheErr := database.SetCachedIssueResponse(context.Background(), cacheKey, data); cacheErr != nil {
+			ginContext.Header("X-Cache-Error", cacheErr.Error())
+		}
 		ginContext.Header("X-Timing-CacheWrite", time.Since(cacheWriteStart).String())
 		ginContext.Header("X-Timing-JSONMarshal", time.Since(marshalStart).String())
 		ginContext.Header("X-Issues-Count", fmt.Sprintf("%d", len(issuesWithChild)))

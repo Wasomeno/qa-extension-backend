@@ -116,9 +116,10 @@ func GetCachedIssueResponse(ctx context.Context, cacheKey string) ([]byte, bool)
 }
 
 // SetCachedIssueResponse stores an issue response in cache
-func SetCachedIssueResponse(ctx context.Context, cacheKey string, data []byte) {
+func SetCachedIssueResponse(ctx context.Context, cacheKey string, data []byte) error {
 	key := fmt.Sprintf("issues:response:%s", cacheKey)
-	RedisClient.Set(ctx, key, data, IssueResponseCacheTTL)
+	err := RedisClient.Set(ctx, key, data, IssueResponseCacheTTL).Err()
+	return err
 }
 
 // InvalidateIssueResponseCache invalidates cached issue responses
