@@ -219,16 +219,21 @@ func GetIssues(ginContext *gin.Context) {
 	// Note: Caching is skipped when projectIds is specified as those are user-specific queries
 	if projectIds == "" {
 		cacheStart := time.Now()
-		if cachedData, ok := database.GetCachedIssueResponse(ginContext, cacheKey); ok {
+		cachedData, cacheHit := database.GetCachedIssueResponse(ginContext, cacheKey)
+		if cacheHit {
 			var cached []IssueWithChild
 			if err := json.Unmarshal(cachedData, &cached); err == nil {
+				log.Printf("[CACHE DEBUG] CACHE HIT - serving %d issues from cache, time: %v", len(cached), time.Since(cacheStart))
 				ginContext.Header("X-Cache", "HIT")
 				ginContext.Header("X-Timing-Cache", time.Since(cacheStart).String())
 				ginContext.Header("X-Timing-Total", time.Since(startTime).String())
 				ginContext.JSON(http.StatusOK, cached)
 				return
+			} else {
+				log.Printf("[CACHE DEBUG] CACHE GET OK but Unmarshal FAILED: %v", err)
 			}
 		}
+		log.Printf("[CACHE DEBUG] CACHE MISS - proceeding to REST/GraphQL")
 		ginContext.Header("X-Cache", "MISS")
 		ginContext.Header("X-Timing-Cache", time.Since(cacheStart).String())
 	}
