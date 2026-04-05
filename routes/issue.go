@@ -358,10 +358,9 @@ func GetIssues(ginContext *gin.Context) {
 	}
 
 	// 1. Concurrent GraphQL Batching with Semaphore (Primary Strategy)
-	// GitLab has Max Query Complexity of ~250. Processing 30 items per batch keeps us safe (~210 complexity).
-	// Increased from 15 to 30 to reduce number of HTTP round trips.
-	// We run up to 5 batches concurrently using a semaphore.
-	const BatchSize = 30
+	// GitLab has Max Query Complexity of ~250. Each issue with hierarchy widget uses ~14 complexity.
+	// Safe batch size: 250 / 14 ≈ 17. Using 15 to stay safely under the limit.
+	const BatchSize = 15
 	const MaxConcurrency = 5
 	graphqlStart := time.Now()
 
