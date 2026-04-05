@@ -363,6 +363,7 @@ func GetIssues(ginContext *gin.Context) {
 	// We run up to 5 batches concurrently using a semaphore.
 	const BatchSize = 30
 	const MaxConcurrency = 5
+	graphqlStart := time.Now()
 
 	graphqlEndpoint := "https://gitlab.com/api/graphql"
 	if url := os.Getenv("GITLAB_BASE_URL"); url != "" {
@@ -514,8 +515,7 @@ func GetIssues(ginContext *gin.Context) {
 	}
 
 	parseWg.Wait()
-	graphqlEnd := time.Now()
-	ginContext.Header("X-Timing-GraphQL", graphqlEnd.Sub(restStart).String())
+	ginContext.Header("X-Timing-GraphQL", time.Since(graphqlStart).String())
 
 	// Add debug header if any errors occurred
 	if len(parseErrors) > 0 {
