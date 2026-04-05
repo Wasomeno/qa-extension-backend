@@ -108,7 +108,7 @@ const IssueResponseCacheTTL = 5 * time.Minute
 // Returns the cached JSON bytes and true if found, or nil and false if not found
 func GetCachedIssueResponse(ctx context.Context, cacheKey string) ([]byte, bool) {
 	key := fmt.Sprintf("issues:response:%s", cacheKey)
-	data, err := RedisClient.Get(ctx, key).Bytes()
+	data, err := RedisClient.Get(context.Background(), key).Bytes() // Use Background to avoid ctx cancellation
 	if err != nil {
 		return nil, false
 	}
