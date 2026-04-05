@@ -228,6 +228,7 @@ func GetIssues(ginContext *gin.Context) {
 				return
 			}
 		}
+		ginContext.Header("X-Cache", "MISS")
 		ginContext.Header("X-Timing-Cache", time.Since(cacheStart).String())
 	}
 
