@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"time"
 	"qa-extension-backend/internal/models"
@@ -24,6 +25,7 @@ func InitRedis() error {
 		Addr:     redisAddr,
 		Password: "", // no password set
 		DB:       0,  // use default DB
+		PoolSize: 100, // Connection pool - prevents connection exhaustion
 	})
 
 	// Verify the connection
@@ -108,18 +110,26 @@ const IssueResponseCacheTTL = 5 * time.Minute
 // Returns the cached JSON bytes and true if found, or nil and false if not found
 func GetCachedIssueResponse(ctx context.Context, cacheKey string) ([]byte, bool) {
 	key := fmt.Sprintf("issues:response:%s", cacheKey)
-	data, err := RedisClient.Get(context.Background(), key).Bytes() // Use Background to avoid ctx cancellation
+	data, err := RedisClient.Get(context.Background(), key).Bytes()
 	if err != nil {
+		log.Printf("[CACHE DEBUG] Get key=%s, err=%v", key, err)
 		return nil, false
 	}
+	log.Printf("[CACHE DEBUG] Get key=%s, len=%d, SUCCESS", key, len(data))
 	return data, true
 }
 
 // SetCachedIssueResponse stores an issue response in cache
 func SetCachedIssueResponse(ctx context.Context, cacheKey string, data []byte) error {
 	key := fmt.Sprintf("issues:response:%s", cacheKey)
-	err := RedisClient.Set(ctx, key, data, IssueResponseCacheTTL).Err()
+	err := RedisClient.Set(context.Background(), key, data, IssueResponseCacheTTL).Err()
+	log.Printf("[CACHE DEBUG] Set key=%s, len=%d, err=%v", key, len(data), err)
 	return err
+}
+
+// GetRedisKeyForDebug returns the actual Redis key for a cache key
+func GetRedisKeyForDebug(cacheKey string) string {
+	return fmt.Sprintf("issues:response:%s", cacheKey)
 }
 
 // InvalidateIssueResponseCache invalidates cached issue responses

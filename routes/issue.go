@@ -595,6 +595,7 @@ func GetIssues(ginContext *gin.Context) {
 		ginContext.Header("X-Timing-JSONMarshal", time.Since(marshalStart).String())
 		ginContext.Header("X-Issues-Count", fmt.Sprintf("%d", len(issuesWithChild)))
 		ginContext.Header("X-Response-Size", fmt.Sprintf("%d bytes", len(data)))
+		ginContext.Header("X-Redis-Key", database.GetRedisKeyForDebug(cacheKey))
 	}
 
 	ginContext.Header("X-Timing-Total", time.Since(startTime).String())
