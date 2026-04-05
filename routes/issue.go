@@ -583,12 +583,16 @@ func GetIssues(ginContext *gin.Context) {
 		}
 	}
 
-	// Cache the response asynchronously - don't block the response
-	go func() {
-		if data, err := json.Marshal(issuesWithChild); err == nil {
-			database.SetCachedIssueResponse(context.Background(), cacheKey, data)
-		}
-	}()
+	// Cache the response synchronously for debugging
+	marshalStart := time.Now()
+	if data, err := json.Marshal(issuesWithChild); err == nil {
+		cacheWriteStart := time.Now()
+		database.SetCachedIssueResponse(ginContext, cacheKey, data)
+		ginContext.Header("X-Timing-CacheWrite", time.Since(cacheWriteStart).String())
+		ginContext.Header("X-Timing-JSONMarshal", time.Since(marshalStart).String())
+		ginContext.Header("X-Issues-Count", fmt.Sprintf("%d", len(issuesWithChild)))
+		ginContext.Header("X-Response-Size", fmt.Sprintf("%d bytes", len(data)))
+	}
 
 	ginContext.Header("X-Timing-Total", time.Since(startTime).String())
 	ginContext.JSON(http.StatusOK, issuesWithChild)
