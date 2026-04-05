@@ -213,6 +213,7 @@ func GetIssues(ginContext *gin.Context) {
 
 	// Generate cache key from query parameters
 	cacheKey := database.GenerateIssueCacheKey(labels, search, issueIds, assigneeId, assigneeIds, authorId, state, projectIds, limit)
+	ginContext.Header("X-Cache-Key", cacheKey) // Debug: see what cache key is generated
 
 	// Check cache first - return immediately if found
 	// Note: Caching is skipped when projectIds is specified as those are user-specific queries
