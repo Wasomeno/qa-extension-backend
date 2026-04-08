@@ -32,6 +32,21 @@ type TestRecording struct {
 	CreatedAt   time.Time       `json:"created_at"`
 }
 
+// RecordingSummary is a lightweight version of TestRecording for list responses
+// It excludes Steps and Parameters to keep response size manageable
+type RecordingSummary struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	Status      string    `json:"status"`
+	ProjectID   string    `json:"project_id,omitempty"`
+	IssueID     string    `json:"issue_id,omitempty"`
+	CreatorID   int       `json:"creator_id,omitempty"`
+	VideoURL    string    `json:"video_url,omitempty"`
+	StepCount   int       `json:"stepCount"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
 type TestStepResult struct {
 	StepIndex  int    `json:"stepIndex"`
 	Status     string `json:"status"` // "success", "failure"

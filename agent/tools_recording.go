@@ -250,7 +250,7 @@ type ListRecordedTestsArgs struct {
 }
 
 type ListRecordedTestsResponse struct {
-	Recordings []models.TestRecording `json:"recordings"`
+	Recordings []models.RecordingSummary `json:"recordings"`
 }
 
 func listRecordedTests(ctx tool.Context, args ListRecordedTestsArgs) (*ListRecordedTestsResponse, error) {
@@ -289,7 +289,8 @@ func listRecordedTests(ctx tool.Context, args ListRecordedTestsArgs) (*ListRecor
 
 	log.Printf("[AgentTool] listRecordedTests found %d recording IDs", len(ids))
 
-	var recordings []models.TestRecording
+	// Return summaries instead of full recordings to keep response size manageable
+	var summaries []models.RecordingSummary
 	for _, id := range ids {
 		val, err := database.RedisClient.Get(ctx, fmt.Sprintf("recording:%s", id)).Result()
 		if err != nil {
@@ -302,11 +303,24 @@ func listRecordedTests(ctx tool.Context, args ListRecordedTestsArgs) (*ListRecor
 			log.Printf("[AgentTool] listRecordedTests Unmarshal recording:%s error: %v", id, err)
 			continue
 		}
-		recordings = append(recordings, r)
+
+		// Convert to summary (excludes Steps and Parameters)
+		summaries = append(summaries, models.RecordingSummary{
+			ID:          r.ID,
+			Name:        r.Name,
+			Description: r.Description,
+			Status:      r.Status,
+			ProjectID:   r.ProjectID,
+			IssueID:     r.IssueID,
+			CreatorID:   r.CreatorID,
+			VideoURL:    r.VideoURL,
+			StepCount:   len(r.Steps),
+			CreatedAt:   r.CreatedAt,
+		})
 	}
-	
-	log.Printf("[AgentTool] listRecordedTests success, returning %d recordings", len(recordings))
-	return &ListRecordedTestsResponse{Recordings: recordings}, nil
+
+	log.Printf("[AgentTool] listRecordedTests success, returning %d recording summaries", len(summaries))
+	return &ListRecordedTestsResponse{Recordings: summaries}, nil
 }
 
 type InputOverride struct {

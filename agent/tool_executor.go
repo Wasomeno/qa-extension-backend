@@ -313,7 +313,8 @@ func listRecordedTestsDirect(ctx context.Context, args map[string]any) (*ListRec
 		return nil, fmt.Errorf("failed to fetch recordings: %w", err)
 	}
 
-	var recordings []models.TestRecording
+	// Return summaries instead of full recordings to keep response size manageable
+	var summaries []models.RecordingSummary
 	for _, id := range ids {
 		val, err := database.RedisClient.Get(ctx, fmt.Sprintf("recording:%s", id)).Result()
 		if err != nil {
@@ -324,10 +325,22 @@ func listRecordedTestsDirect(ctx context.Context, args map[string]any) (*ListRec
 		if err := json.Unmarshal([]byte(val), &r); err != nil {
 			continue
 		}
-		recordings = append(recordings, r)
+
+		summaries = append(summaries, models.RecordingSummary{
+			ID:          r.ID,
+			Name:        r.Name,
+			Description: r.Description,
+			Status:      r.Status,
+			ProjectID:   r.ProjectID,
+			IssueID:     r.IssueID,
+			CreatorID:   r.CreatorID,
+			VideoURL:    r.VideoURL,
+			StepCount:   len(r.Steps),
+			CreatedAt:   r.CreatedAt,
+		})
 	}
 
-	return &ListRecordedTestsResponse{Recordings: recordings}, nil
+	return &ListRecordedTestsResponse{Recordings: summaries}, nil
 }
 
 func runRecordedTestDirect(ctx context.Context, args map[string]any) (*models.TestResult, error) {
