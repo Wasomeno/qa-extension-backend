@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"qa-extension-backend/auth"
 	"qa-extension-backend/client"
 	"qa-extension-backend/database"
 	"qa-extension-backend/internal/models"
 	"qa-extension-backend/identity"
 	"qa-extension-backend/services"
-	"qa-extension-backend/auth"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -124,6 +125,19 @@ func UploadScenario(c *gin.Context) {
 func ListScenarios(c *gin.Context) {
 	ctx := c.Request.Context()
 	userID, _ := identity.GetCurrentUserID(c)
+	page := 1
+	limit := 20
+
+	if p := c.Query("page"); p != "" {
+		if parsed, err := strconv.Atoi(p); err == nil && parsed > 0 {
+			page = parsed
+		}
+	}
+	if l := c.Query("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 100 {
+			limit = parsed
+		}
+	}
 
 	var ids []string
 	var err error
@@ -166,7 +180,26 @@ func ListScenarios(c *gin.Context) {
 		return scenarios[i].CreatedAt.After(scenarios[j].CreatedAt)
 	})
 
-	c.JSON(http.StatusOK, scenarios)
+	total := len(scenarios)
+	totalPages := (total + limit - 1) / limit
+	start := (page - 1) * limit
+	end := start + limit
+
+	if start >= total {
+		c.JSON(http.StatusOK, gin.H{
+			"data":        []models.TestScenario{},
+			"pagination": gin.H{"page": page, "limit": limit, "total": total, "totalPages": totalPages},
+		})
+		return
+	}
+	if end > total {
+		end = total
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"data":        scenarios[start:end],
+		"pagination": gin.H{"page": page, "limit": limit, "total": total, "totalPages": totalPages},
+	})
 }
 
 // GetScenario gets a specific test scenario

@@ -9,6 +9,7 @@ import (
 	"qa-extension-backend/internal/models"
 	"qa-extension-backend/identity"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -83,7 +84,21 @@ func ListRecordings(c *gin.Context) {
 	projectID := c.Query("project_id")
 	issueID := c.Query("issue_id")
 	sortBy := c.Query("sort_by") // "created_at", "name"
-	order := c.Query("order")     // "asc", "desc"
+	order := c.Query("order")    // "asc", "desc"
+	page := 1
+	limit := 20
+
+	if p := c.Query("page"); p != "" {
+		if parsed, err := strconv.Atoi(p); err == nil && parsed > 0 {
+			page = parsed
+		}
+	}
+	if l := c.Query("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 100 {
+			limit = parsed
+		}
+	}
+
 	userID, _ := identity.GetCurrentUserID(c)
 
 	var ids []string
@@ -154,7 +169,26 @@ func ListRecordings(c *gin.Context) {
 		return condition
 	})
 
-	c.JSON(http.StatusOK, recordings)
+	total := len(recordings)
+	totalPages := (total + limit - 1) / limit
+	start := (page - 1) * limit
+	end := start + limit
+
+	if start >= total {
+		c.JSON(http.StatusOK, gin.H{
+			"data":        []models.TestRecording{},
+			"pagination": gin.H{"page": page, "limit": limit, "total": total, "totalPages": totalPages},
+		})
+		return
+	}
+	if end > total {
+		end = total
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"data":        recordings[start:end],
+		"pagination": gin.H{"page": page, "limit": limit, "total": total, "totalPages": totalPages},
+	})
 }
 
 func UpdateRecording(c *gin.Context) {
