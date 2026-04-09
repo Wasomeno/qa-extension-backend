@@ -10,6 +10,7 @@ import (
 	"qa-extension-backend/identity"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -83,7 +84,9 @@ func ListRecordings(c *gin.Context) {
 	ctx := context.Background()
 	projectID := c.Query("project_id")
 	issueID := c.Query("issue_id")
-	sortBy := c.Query("sort_by") // "created_at", "name"
+	search := c.Query("search")
+	status := c.Query("status")
+	sortBy := c.Query("sort_by") // "created_at", "name", "status"
 	order := c.Query("order")    // "asc", "desc"
 	page := 1
 	limit := 20
@@ -140,6 +143,30 @@ func ListRecordings(c *gin.Context) {
 		}
 	}
 
+	// Apply filters
+	if status != "" {
+		filtered := make([]models.TestRecording, 0)
+		for _, r := range recordings {
+			if r.Status == status {
+				filtered = append(filtered, r)
+			}
+		}
+		recordings = filtered
+	}
+
+	// Apply search
+	if search != "" {
+		searchLower := strings.ToLower(search)
+		filtered := make([]models.TestRecording, 0)
+		for _, r := range recordings {
+			if strings.Contains(strings.ToLower(r.Name), searchLower) ||
+				strings.Contains(strings.ToLower(r.Description), searchLower) {
+				filtered = append(filtered, r)
+			}
+		}
+		recordings = filtered
+	}
+
 	// Default sort if sortBy not provided
 	if sortBy == "" {
 		sortBy = "created_at"
@@ -156,6 +183,12 @@ func ListRecordings(c *gin.Context) {
 				condition = recordings[i].Name < recordings[j].Name
 			} else {
 				condition = recordings[i].Name > recordings[j].Name
+			}
+		case "status":
+			if order == "asc" {
+				condition = recordings[i].Status < recordings[j].Status
+			} else {
+				condition = recordings[i].Status > recordings[j].Status
 			}
 		case "created_at":
 			fallthrough

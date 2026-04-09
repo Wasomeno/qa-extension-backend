@@ -13,6 +13,7 @@ import (
 	"qa-extension-backend/services"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -125,6 +126,10 @@ func UploadScenario(c *gin.Context) {
 func ListScenarios(c *gin.Context) {
 	ctx := c.Request.Context()
 	userID, _ := identity.GetCurrentUserID(c)
+	search := c.Query("search")
+	status := c.Query("status")
+	sortBy := c.Query("sort_by") // "created_at", "file_name", "status"
+	order := c.Query("order")    // "asc", "desc"
 	page := 1
 	limit := 20
 
@@ -175,9 +180,63 @@ func ListScenarios(c *gin.Context) {
 		}
 	}
 
-	// Sort by CreatedAt desc
+	// Apply filters
+	if status != "" {
+		filtered := make([]models.TestScenario, 0)
+		for _, s := range scenarios {
+			if s.Status == status {
+				filtered = append(filtered, s)
+			}
+		}
+		scenarios = filtered
+	}
+
+	// Apply search
+	if search != "" {
+		searchLower := strings.ToLower(search)
+		filtered := make([]models.TestScenario, 0)
+		for _, s := range scenarios {
+			if strings.Contains(strings.ToLower(s.FileName), searchLower) ||
+				strings.Contains(strings.ToLower(s.ProjectName), searchLower) {
+				filtered = append(filtered, s)
+			}
+		}
+		scenarios = filtered
+	}
+
+	// Default sort
+	if sortBy == "" {
+		sortBy = "created_at"
+	}
+	if order == "" {
+		order = "desc"
+	}
+
 	sort.Slice(scenarios, func(i, j int) bool {
-		return scenarios[i].CreatedAt.After(scenarios[j].CreatedAt)
+		var condition bool
+		switch sortBy {
+		case "file_name":
+			if order == "asc" {
+				condition = scenarios[i].FileName < scenarios[j].FileName
+			} else {
+				condition = scenarios[i].FileName > scenarios[j].FileName
+			}
+		case "status":
+			if order == "asc" {
+				condition = scenarios[i].Status < scenarios[j].Status
+			} else {
+				condition = scenarios[i].Status > scenarios[j].Status
+			}
+		case "created_at":
+			fallthrough
+		default:
+			if order == "asc" {
+				condition = scenarios[i].CreatedAt.Before(scenarios[j].CreatedAt)
+			} else {
+				condition = scenarios[i].CreatedAt.After(scenarios[j].CreatedAt)
+			}
+		}
+		return condition
 	})
 
 	total := len(scenarios)
