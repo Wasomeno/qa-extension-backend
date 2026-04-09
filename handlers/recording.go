@@ -330,3 +330,65 @@ func GetRecording(c *gin.Context) {
 	c.JSON(http.StatusOK, recording)
 }
 
+// BulkDeleteRecordings deletes multiple recordings by their IDs
+func BulkDeleteRecordings(c *gin.Context) {
+	var req struct {
+		IDs []string `json:"ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if len(req.IDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ids array is required and cannot be empty"})
+		return
+	}
+
+	ctx := context.Background()
+	deletedCount := 0
+	var notFound []string
+	var errors []string
+
+	for _, id := range req.IDs {
+		key := fmt.Sprintf("recording:%s", id)
+
+		// Fetch to get ProjectID and IssueID for index cleanup
+		val, err := database.RedisClient.Get(ctx, key).Result()
+		if err != nil {
+			notFound = append(notFound, id)
+			continue
+		}
+
+		var recording models.TestRecording
+		if err := json.Unmarshal([]byte(val), &recording); err != nil {
+			errors = append(errors, fmt.Sprintf("%s: %v", id, err))
+			continue
+		}
+
+		// Delete from Redis
+		err = database.RedisClient.Del(ctx, key).Err()
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("%s: %v", id, err))
+			continue
+		}
+
+		// Remove from index sets
+		database.RedisClient.SRem(ctx, "recordings", id)
+		if recording.ProjectID != "" {
+			database.RedisClient.SRem(ctx, fmt.Sprintf("recordings:project:%s", recording.ProjectID), id)
+		}
+		if recording.IssueID != "" {
+			database.RedisClient.SRem(ctx, fmt.Sprintf("recordings:issue:%s", recording.IssueID), id)
+		}
+
+		deletedCount++
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":      fmt.Sprintf("deleted %d recordings", deletedCount),
+		"deletedCount": deletedCount,
+		"notFound":     notFound,
+		"errors":       errors,
+	})
+}
+

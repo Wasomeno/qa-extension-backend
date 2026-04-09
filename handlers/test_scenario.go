@@ -388,3 +388,67 @@ func updateScenarioStatus(id string, scenario models.TestScenario) {
 	val, _ := json.Marshal(scenario)
 	database.RedisClient.Set(ctx, key, val, 0)
 }
+
+// BulkDeleteScenarios deletes multiple test scenarios by their IDs
+func BulkDeleteScenarios(c *gin.Context) {
+	var req struct {
+		IDs []string `json:"ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if len(req.IDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ids array is required and cannot be empty"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	deletedCount := 0
+	var notFound []string
+	var errors []string
+
+	for _, id := range req.IDs {
+		key := fmt.Sprintf("scenario:%s", id)
+
+		val, err := database.RedisClient.Get(ctx, key).Result()
+		if err != nil {
+			notFound = append(notFound, id)
+			continue
+		}
+
+		var scenario models.TestScenario
+		if err := json.Unmarshal([]byte(val), &scenario); err != nil {
+			errors = append(errors, fmt.Sprintf("%s: %v", id, err))
+			continue
+		}
+
+		// Clean up generated recordings
+		for _, test := range scenario.GeneratedTests {
+			recKey := fmt.Sprintf("recording:%s", test.ID)
+			database.RedisClient.Del(ctx, recKey)
+			database.RedisClient.SRem(ctx, "recordings", test.ID)
+
+			if scenario.ProjectID != "" {
+				database.RedisClient.SRem(ctx, fmt.Sprintf("recordings:project:%s", scenario.ProjectID), test.ID)
+			}
+		}
+
+		// Delete scenario
+		err = database.RedisClient.Del(ctx, key).Err()
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("%s: %v", id, err))
+			continue
+		}
+
+		database.RedisClient.SRem(ctx, "scenarios", id)
+		deletedCount++
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":      fmt.Sprintf("deleted %d scenarios", deletedCount),
+		"deletedCount": deletedCount,
+		"notFound":     notFound,
+		"errors":       errors,
+	})
+}

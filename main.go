@@ -71,12 +71,14 @@ func main() {
 		protected.PUT("/recordings/:id", handlers.UpdateRecording)
 		protected.PATCH("/recordings/:id", handlers.UpdateRecording)
 		protected.DELETE("/recordings/:id", handlers.DeleteRecording)
+		protected.POST("/recordings/bulk-delete", handlers.BulkDeleteRecordings)
 
 		protected.POST("/test-scenarios/upload", handlers.UploadScenario)
 		protected.GET("/test-scenarios", handlers.ListScenarios)
 		protected.GET("/test-scenarios/:id", handlers.GetScenario)
 		protected.DELETE("/test-scenarios/:id", handlers.DeleteScenario)
 		protected.POST("/test-scenarios/:id/generate", handlers.GenerateTests)
+		protected.POST("/test-scenarios/bulk-delete", handlers.BulkDeleteScenarios)
 
 		protected.POST("/auth/logout", routes.LogoutEndpoint)
 		protected.GET("/current-user", routes.GetUser)
