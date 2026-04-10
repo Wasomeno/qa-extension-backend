@@ -124,6 +124,11 @@ func runTestScenario(ctx tool.Context, args RunTestScenarioArgs) (*RunTestScenar
 		return nil, fmt.Errorf("failed to parse scenario: %w", err)
 	}
 
+	// Verify ownership - only the creator can run their scenarios
+	if err := verifyScenarioOwnership(ctx, &scenario); err != nil {
+		return nil, err
+	}
+
 	if len(scenario.GeneratedTests) == 0 {
 		return nil, fmt.Errorf("no tests have been generated for this scenario yet. Use 'GenerateTests' endpoint or 'runScenarioTestCase' to generate them.")
 	}
@@ -188,6 +193,11 @@ func runScenarioTestCase(ctx tool.Context, args RunScenarioTestCaseArgs) (*model
 	var scenario models.TestScenario
 	if err := json.Unmarshal([]byte(val), &scenario); err != nil {
 		return nil, fmt.Errorf("failed to parse scenario: %w", err)
+	}
+
+	// Verify ownership - only the creator can run their scenarios
+	if err := verifyScenarioOwnership(ctx, &scenario); err != nil {
+		return nil, err
 	}
 
 	// Find the test case in sheets
@@ -347,6 +357,11 @@ func runRecordedTest(ctx tool.Context, args RunRecordedTestArgs) (*models.TestRe
 		return nil, fmt.Errorf("failed to parse recording: %w", err)
 	}
 
+	// Verify ownership - only the creator can run their recordings
+	if err := verifyRecordingOwnership(ctx, &recording); err != nil {
+		return nil, err
+	}
+
 	// Apply overrides if provided
 	if len(args.Overrides) > 0 {
 		for i, step := range recording.Steps {
@@ -398,6 +413,48 @@ func runRecordedTest(ctx tool.Context, args RunRecordedTestArgs) (*models.TestRe
 	for i := range result.StepResults {
 		result.StepResults[i].Screenshot = ""
 	}
-	
+
 	return result, nil
+}
+
+// verifyRecordingOwnership checks if the current user is the creator of the recording
+func verifyRecordingOwnership(ctx tool.Context, recording *models.TestRecording) error {
+	token, _ := ctx.Value("token").(*oauth2.Token)
+	sessionID, _ := ctx.Value("session_id").(string)
+
+	if token == nil || sessionID == "" {
+		return fmt.Errorf("unauthorized: missing authentication context")
+	}
+
+	userID, err := identity.GetCurrentUserIDFromCtx(ctx, token, sessionID)
+	if err != nil {
+		return fmt.Errorf("unauthorized: failed to verify user identity: %w", err)
+	}
+
+	if recording.CreatorID != userID {
+		return fmt.Errorf("unauthorized: you do not have permission to access this recording")
+	}
+
+	return nil
+}
+
+// verifyScenarioOwnership checks if the current user is the creator of the scenario
+func verifyScenarioOwnership(ctx tool.Context, scenario *models.TestScenario) error {
+	token, _ := ctx.Value("token").(*oauth2.Token)
+	sessionID, _ := ctx.Value("session_id").(string)
+
+	if token == nil || sessionID == "" {
+		return fmt.Errorf("unauthorized: missing authentication context")
+	}
+
+	userID, err := identity.GetCurrentUserIDFromCtx(ctx, token, sessionID)
+	if err != nil {
+		return fmt.Errorf("unauthorized: failed to verify user identity: %w", err)
+	}
+
+	if scenario.CreatorID != userID {
+		return fmt.Errorf("unauthorized: you do not have permission to access this scenario")
+	}
+
+	return nil
 }
