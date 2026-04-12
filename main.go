@@ -78,6 +78,7 @@ func main() {
 		protected.GET("/test-scenarios/:id", handlers.GetScenario)
 		protected.DELETE("/test-scenarios/:id", handlers.DeleteScenario)
 		protected.POST("/test-scenarios/:id/generate", handlers.GenerateTests)
+		protected.GET("/test-scenarios/:id/stream", handlers.StreamGenerateTests)
 		protected.POST("/test-scenarios/bulk-delete", handlers.BulkDeleteScenarios)
 
 		protected.POST("/auth/logout", routes.LogoutEndpoint)

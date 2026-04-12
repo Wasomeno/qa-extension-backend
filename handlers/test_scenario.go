@@ -22,6 +22,58 @@ import (
 	"golang.org/x/oauth2"
 )
 
+// StreamGenerateTests SSE endpoint — client connects here to receive real-time status updates
+func StreamGenerateTests(c *gin.Context) {
+	id := c.Param("id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "scenario id is required"})
+		return
+	}
+
+	// Set SSE headers
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no") // Disable nginx buffering if behind proxy
+
+	ctx := c.Request.Context()
+
+	// Subscribe to generation events for this scenario
+	sub := database.SubscribeGenerationEvents(ctx, id)
+	defer sub.Close()
+
+	ch := sub.Channel()
+
+	// Send initial connection event
+	fmt.Fprintf(c.Writer, "data: %s\n\n", `{"stage":"connected","message":"Connected to generation stream"}`)
+	c.Writer.Flush()
+
+	// Stream events as they come
+	for {
+		select {
+		case msg := <-ch:
+			// msg.Payload is the JSON we published via PublishGenerationEvent
+			eventJSON := strings.TrimSpace(msg.Payload)
+			fmt.Fprintf(c.Writer, "data: %s\n\n", eventJSON)
+			c.Writer.Flush()
+
+			// If it's a done or error event, close the stream
+			var ev database.GenerationEvent
+			if json.Unmarshal([]byte(eventJSON), &ev) == nil {
+				if ev.Stage == "done" || ev.Stage == "error" {
+					fmt.Fprintf(c.Writer, "data: %s\n\n", `{"stage":"closed","message":"Generation stream ended"}`)
+					c.Writer.Flush()
+					return
+				}
+			}
+
+		case <-ctx.Done():
+			// Client disconnected
+			return
+		}
+	}
+}
+
 // UploadScenario handles uploading an XLSX file and parsing it into a TestScenario
 func UploadScenario(c *gin.Context) {
 	// Parse multipart form
@@ -391,11 +443,31 @@ func GenerateTests(c *gin.Context) {
 	// We return immediately and do the heavy lifting in a goroutine
 	c.JSON(http.StatusAccepted, gin.H{"message": "generation started", "id": id})
 
-	go func(scenario models.TestScenario, sheetNames []string, gitlabClient interface{}) { // We cannot pass *gitlab.Client directly over to a goroutine without issues if it references expiring context, but let's use a background context
+	// Helper to publish contextual events
+	publish := func(stage, msg string) {
+		database.PublishGenerationEvent(context.Background(), id, database.GenerationEvent{
+			Stage:   stage,
+			Message: msg,
+		})
+	}
+
+	publishError := func(errMsg string) {
+		database.PublishGenerationEvent(context.Background(), id, database.GenerationEvent{
+			Stage:   "error",
+			Message: errMsg,
+		})
+	}
+
+	go func(scenario models.TestScenario, sheetNames []string, gitlabClient interface{}) {
 		bgCtx := context.Background()
 
-		// Re-instantiate client with bgCtx if possible, or assume it's fine
-		// Actually best to re-auth
+		// Build a descriptive context for messages
+		projectName := scenario.ProjectName
+		if projectName == "" {
+			projectName = scenario.ProjectID
+		}
+
+		// Re-instantiate client with bgCtx
 		clientObj, _ := client.GetClient(bgCtx, token, nil)
 		if clientObj == nil {
 			clientObj = gitlabClient.(*gitlab.Client) // fallback
@@ -403,39 +475,100 @@ func GenerateTests(c *gin.Context) {
 
 		// Collect test cases from all target sheets
 		var targetTestCases []models.ParsedTestCase
+		testCaseNames := []string{}
 		for _, s := range scenario.Sheets {
 			for _, name := range sheetNames {
 				if s.Name == name {
-					targetTestCases = append(targetTestCases, s.TestCases...)
+					for _, tc := range s.TestCases {
+						targetTestCases = append(targetTestCases, tc)
+						if len(testCaseNames) < 5 {
+							testCaseNames = append(testCaseNames, tc.Name)
+						}
+					}
 					break
 				}
 			}
 		}
 
 		if len(targetTestCases) == 0 {
+			publishError("No test cases found in selected sheets")
 			scenario.Status = "failed"
 			scenario.Error = "no test cases found in selected sheets"
 			updateScenarioStatus(id, scenario)
 			return
 		}
 
-		// Fetch codebase context
+		// Stage: start — contextual message based on actual data
+		totalSheets := len(sheetNames)
+		totalCases := len(targetTestCases)
+		publish("start", fmt.Sprintf(
+			"Starting generation of %d test recording%s for '%s' (%d sheet%s: %s)...",
+			totalCases, func() string { if totalCases > 1 { return "s" }; return "" }(),
+			projectName,
+			totalSheets, func() string { if totalSheets > 1 { return "s" }; return "" }(),
+			strings.Join(sheetNames, ", "),
+		))
+
+		// Stage: fetching codebase from GitLab
+		publish("fetching_codebase", fmt.Sprintf(
+			"Fetching source code from %s on GitLab...",
+			projectName,
+		))
+
 		codebaseCtx, err := services.FetchCodebaseContext(clientObj, scenario.ProjectID)
 		if err != nil {
+			publishError(fmt.Sprintf("Failed to fetch source code from GitLab: %v", err))
 			scenario.Status = "failed"
 			scenario.Error = fmt.Sprintf("failed to fetch codebase: %v", err)
 			updateScenarioStatus(id, scenario)
 			return
 		}
 
-		// Generate tests
+		// Stage: reading files — contextual based on what was fetched
+		numFiles := len(codebaseCtx.Files)
+		tokenEstimate := codebaseCtx.TotalTokens
+		publish("reading_files", fmt.Sprintf(
+			"Reading %d source files (~%d tokens) from %s...",
+			numFiles, tokenEstimate, projectName,
+		))
+
+		// Stage: sending to AI
+		if totalCases > 1 {
+			publish("sending_to_ai", fmt.Sprintf(
+				"Sending %d test cases to Gemini AI for Playwright test generation...",
+				totalCases,
+			))
+		} else {
+			tcName := ""
+			if len(testCaseNames) > 0 {
+				tcName = testCaseNames[0]
+			}
+			publish("sending_to_ai", fmt.Sprintf(
+				"Generating Playwright test for '%s' using AI...",
+				tcName,
+			))
+		}
+
 		recordings, err := services.GenerateTestsForScenario(bgCtx, targetTestCases, codebaseCtx, scenario.AuthConfig)
 		if err != nil {
+			publishError(fmt.Sprintf("AI generation failed: %v", err))
 			scenario.Status = "failed"
 			scenario.Error = fmt.Sprintf("failed to generate tests: %v", err)
 			updateScenarioStatus(id, scenario)
 			return
 		}
+
+		// Stage: processing AI response
+		publish("processing", fmt.Sprintf(
+			"Processing %d generated test recording%s from AI...",
+			len(recordings), func() string { if len(recordings) > 1 { return "s" }; return "" }(),
+		))
+
+		// Stage: saving recordings
+		publish("saving", fmt.Sprintf(
+			"Saving %d generated test recording%s to database...",
+			len(recordings), func() string { if len(recordings) > 1 { return "s" }; return "" }(),
+		))
 
 		// Save generated recordings to Redis
 		for _, rec := range recordings {
@@ -443,7 +576,6 @@ func GenerateTests(c *gin.Context) {
 			rec.CreatorID = scenario.CreatorID
 			rec.CreatedAt = time.Now()
 
-			// Same logic as SaveRecording
 			recKey := fmt.Sprintf("recording:%s", rec.ID)
 			recVal, _ := json.Marshal(rec)
 
@@ -459,18 +591,23 @@ func GenerateTests(c *gin.Context) {
 				database.RedisClient.SAdd(bgCtx, fmt.Sprintf("recordings:project:%s", rec.ProjectID), rec.ID)
 			}
 
-			// Link
 			scenario.GeneratedTests = append(scenario.GeneratedTests, models.TestScenarioRecording{
 				ID:   rec.ID,
 				Name: rec.Name,
 			})
 		}
 
+		// Stage: done
+		publish("done", fmt.Sprintf(
+			"Successfully generated %d test recording%s for '%s'",
+			len(recordings), func() string { if len(recordings) > 1 { return "s" }; return "" }(),
+			projectName,
+		))
+
 		// Update scenario as ready
 		scenario.Status = "ready"
 		scenario.Error = ""
 		updateScenarioStatus(id, scenario)
-
 	}(scenario, req.SheetNames, gitlabClient)
 }
 

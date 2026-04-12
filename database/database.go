@@ -175,3 +175,29 @@ func InvalidateBoardCache(ctx context.Context, projectID string) {
 	key := fmt.Sprintf("boards:response:%s", projectID)
 	RedisClient.Del(ctx, key)
 }
+
+// GenerationEvent represents a SSE event published during test generation
+type GenerationEvent struct {
+	ScenarioID string `json:"scenarioId"`
+	Stage      string `json:"stage"`      // "start", "fetching_codebase", "reading_files", "sending_to_ai", "processing", "saving", "done", "error"
+	Message    string `json:"message"`     // Human-readable contextual message
+	Data       string `json:"data,omitempty"` // Optional payload (final recordings JSON on "done")
+}
+
+// PublishGenerationEvent publishes a generation event to a Redis pub/sub channel
+func PublishGenerationEvent(ctx context.Context, scenarioID string, event GenerationEvent) error {
+	event.ScenarioID = scenarioID
+	data, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	channel := fmt.Sprintf("gen:%s", scenarioID)
+	return RedisClient.Publish(ctx, channel, string(data)).Err()
+}
+
+// SubscribeGenerationEvents subscribes to generation events for a scenario
+// Returns a Redis pub/sub subscription. Caller should call subscription.Close() when done.
+func SubscribeGenerationEvents(ctx context.Context, scenarioID string) *redis.PubSub {
+	channel := fmt.Sprintf("gen:%s", scenarioID)
+	return RedisClient.Subscribe(ctx, channel)
+}
