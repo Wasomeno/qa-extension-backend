@@ -154,6 +154,18 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 	// This ensures the agent finishes its work (like uploading video) even if the client disconnects.
 	agentCtx := context.WithoutCancel(c.Request.Context())
 
+	// Preserve context values from the original context (including GitLab token)
+	// Note: context.WithoutCancel doesn't inherit context values, so we need to copy them
+	if val := ctx.Value("token"); val != nil {
+		agentCtx = context.WithValue(agentCtx, "token", val)
+	}
+	if val := ctx.Value("session_id"); val != nil {
+		agentCtx = context.WithValue(agentCtx, "session_id", val)
+	}
+	if val := ctx.Value("progressCh"); val != nil {
+		agentCtx = context.WithValue(agentCtx, "progressCh", val)
+	}
+
 	// Create a wrapper to consume the iterator and send to a channel
 	type resultEvent struct {
 		event *session.Event
