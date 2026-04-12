@@ -22,56 +22,12 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// StreamGenerateTests SSE endpoint — client connects here to receive real-time status updates
-func StreamGenerateTests(c *gin.Context) {
-	id := c.Param("id")
-	if id == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "scenario id is required"})
-		return
+// pluralize returns "s" if n != 1, else ""
+func pluralize(n int) string {
+	if n == 1 {
+		return ""
 	}
-
-	// Set SSE headers
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no") // Disable nginx buffering if behind proxy
-
-	ctx := c.Request.Context()
-
-	// Subscribe to generation events for this scenario
-	sub := database.SubscribeGenerationEvents(ctx, id)
-	defer sub.Close()
-
-	ch := sub.Channel()
-
-	// Send initial connection event
-	fmt.Fprintf(c.Writer, "data: %s\n\n", `{"stage":"connected","message":"Connected to generation stream"}`)
-	c.Writer.Flush()
-
-	// Stream events as they come
-	for {
-		select {
-		case msg := <-ch:
-			// msg.Payload is the JSON we published via PublishGenerationEvent
-			eventJSON := strings.TrimSpace(msg.Payload)
-			fmt.Fprintf(c.Writer, "data: %s\n\n", eventJSON)
-			c.Writer.Flush()
-
-			// If it's a done or error event, close the stream
-			var ev database.GenerationEvent
-			if json.Unmarshal([]byte(eventJSON), &ev) == nil {
-				if ev.Stage == "done" || ev.Stage == "error" {
-					fmt.Fprintf(c.Writer, "data: %s\n\n", `{"stage":"closed","message":"Generation stream ended"}`)
-					c.Writer.Flush()
-					return
-				}
-			}
-
-		case <-ctx.Done():
-			// Client disconnected
-			return
-		}
-	}
+	return "s"
 }
 
 // UploadScenario handles uploading an XLSX file and parsing it into a TestScenario
@@ -443,18 +399,24 @@ func GenerateTests(c *gin.Context) {
 	// We return immediately and do the heavy lifting in a goroutine
 	c.JSON(http.StatusAccepted, gin.H{"message": "generation started", "id": id})
 
-	// Helper to publish contextual events
+	// Helper to publish contextual events to the unified stream
 	publish := func(stage, msg string) {
-		database.PublishGenerationEvent(context.Background(), id, database.GenerationEvent{
-			Stage:   stage,
-			Message: msg,
+		database.PublishStreamEvent(context.Background(), database.StreamEvent{
+			Type:         "generation",
+			ResourceType: "scenario",
+			ResourceID:   id,
+			Stage:        stage,
+			Message:      msg,
 		})
 	}
 
 	publishError := func(errMsg string) {
-		database.PublishGenerationEvent(context.Background(), id, database.GenerationEvent{
-			Stage:   "error",
-			Message: errMsg,
+		database.PublishStreamEvent(context.Background(), database.StreamEvent{
+			Type:         "generation",
+			ResourceType: "scenario",
+			ResourceID:   id,
+			Stage:        "error",
+			Message:      errMsg,
 		})
 	}
 
@@ -503,9 +465,9 @@ func GenerateTests(c *gin.Context) {
 		totalCases := len(targetTestCases)
 		publish("start", fmt.Sprintf(
 			"Starting generation of %d test recording%s for '%s' (%d sheet%s: %s)...",
-			totalCases, func() string { if totalCases > 1 { return "s" }; return "" }(),
+			totalCases, pluralize(totalCases),
 			projectName,
-			totalSheets, func() string { if totalSheets > 1 { return "s" }; return "" }(),
+			totalSheets, pluralize(totalSheets),
 			strings.Join(sheetNames, ", "),
 		))
 
@@ -561,13 +523,13 @@ func GenerateTests(c *gin.Context) {
 		// Stage: processing AI response
 		publish("processing", fmt.Sprintf(
 			"Processing %d generated test recording%s from AI...",
-			len(recordings), func() string { if len(recordings) > 1 { return "s" }; return "" }(),
+			len(recordings), pluralize(len(recordings)),
 		))
 
 		// Stage: saving recordings
 		publish("saving", fmt.Sprintf(
 			"Saving %d generated test recording%s to database...",
-			len(recordings), func() string { if len(recordings) > 1 { return "s" }; return "" }(),
+			len(recordings), pluralize(len(recordings)),
 		))
 
 		// Save generated recordings to Redis
@@ -600,7 +562,7 @@ func GenerateTests(c *gin.Context) {
 		// Stage: done
 		publish("done", fmt.Sprintf(
 			"Successfully generated %d test recording%s for '%s'",
-			len(recordings), func() string { if len(recordings) > 1 { return "s" }; return "" }(),
+			len(recordings), pluralize(len(recordings)),
 			projectName,
 		))
 
