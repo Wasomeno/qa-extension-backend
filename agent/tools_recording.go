@@ -265,6 +265,12 @@ type ListRecordedTestsResponse struct {
 
 func listRecordedTests(ctx tool.Context, args ListRecordedTestsArgs) (*ListRecordedTestsResponse, error) {
 	log.Printf("[AgentTool] listRecordedTests called with args: %+v", args)
+
+	database.PublishStreamEvent(ctx, database.StreamEvent{
+		Type:    "agent",
+		Stage:   "start",
+		Message: "Fetching recorded tests...",
+	})
 	
 	var ids []string
 	var err error
@@ -330,6 +336,13 @@ func listRecordedTests(ctx tool.Context, args ListRecordedTestsArgs) (*ListRecor
 	}
 
 	log.Printf("[AgentTool] listRecordedTests success, returning %d recording summaries", len(summaries))
+
+	database.PublishStreamEvent(ctx, database.StreamEvent{
+		Type:    "agent",
+		Stage:   "done",
+		Message: fmt.Sprintf("Loaded %d recorded tests", len(summaries)),
+	})
+
 	return &ListRecordedTestsResponse{Recordings: summaries}, nil
 }
 
@@ -345,6 +358,12 @@ type RunRecordedTestArgs struct {
 
 func runRecordedTest(ctx tool.Context, args RunRecordedTestArgs) (*models.TestResult, error) {
 	log.Printf("[AgentTool] runRecordedTest called with args: %+v", args)
+
+	database.PublishStreamEvent(ctx, database.StreamEvent{
+		Type:    "agent",
+		Stage:   "start",
+		Message: fmt.Sprintf("Running recorded test %s...", args.TestID),
+	})
 
 	// Fetch recording from Redis
 	val, err := database.RedisClient.Get(ctx, fmt.Sprintf("recording:%s", args.TestID)).Result()
@@ -412,6 +431,27 @@ func runRecordedTest(ctx tool.Context, args RunRecordedTestArgs) (*models.TestRe
 	// Base64 screenshots are too heavy for the LLM context.
 	for i := range result.StepResults {
 		result.StepResults[i].Screenshot = ""
+	}
+
+	// Publish completion event
+	if result.Status == "passed" {
+		database.PublishStreamEvent(ctx, database.StreamEvent{
+			Type:    "agent",
+			Stage:   "done",
+			Message: fmt.Sprintf("Test passed: %s", recording.Name),
+		})
+	} else if result.Status == "failed" || result.Status == "timeout" {
+		database.PublishStreamEvent(ctx, database.StreamEvent{
+			Type:    "agent",
+			Stage:   "error",
+			Message: fmt.Sprintf("Test %s: %s", result.Status, result.Log),
+		})
+	} else {
+		database.PublishStreamEvent(ctx, database.StreamEvent{
+			Type:    "agent",
+			Stage:   "done",
+			Message: fmt.Sprintf("Test completed: %s", recording.Name),
+		})
 	}
 
 	return result, nil
