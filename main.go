@@ -81,8 +81,10 @@ func main() {
 		protected.GET("/test-scenarios/:id/stream", handlers.StreamEvents)
 		protected.POST("/test-scenarios/bulk-delete", handlers.BulkDeleteScenarios)
 
-		protected.GET("/stream", handlers.StreamEvents)
 		protected.POST("/recordings/:id/run", handlers.RunRecording)
+
+		// Public SSE stream - no auth required, the connection will be authenticated via session_id cookie
+		api.GET("/stream", handlers.StreamEvents)
 
 		protected.POST("/auth/logout", routes.LogoutEndpoint)
 		protected.GET("/current-user", routes.GetUser)
