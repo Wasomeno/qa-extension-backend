@@ -8,9 +8,11 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"qa-extension-backend/agent"
 	"strings"
 	"time"
+
+	"qa-extension-backend/agent"
+	"qa-extension-backend/database"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/oauth2"
@@ -36,11 +38,8 @@ func ChatWithAgent(c *gin.Context) {
 
 	token := c.MustGet("token").(*oauth2.Token)
 
-	// Create a progress channel and add it to the context
-	progressCh := make(chan string, 10)
 	ctx := context.WithValue(c.Request.Context(), "token", token)
 	ctx = context.WithValue(ctx, "session_id", req.SessionID)
-	ctx = context.WithValue(ctx, "progressCh", progressCh)
 
 	r, err := agent.GetQARunner(ctx)
 	if err != nil {
@@ -162,9 +161,6 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 	if val := ctx.Value("session_id"); val != nil {
 		agentCtx = context.WithValue(agentCtx, "session_id", val)
 	}
-	if val := ctx.Value("progressCh"); val != nil {
-		agentCtx = context.WithValue(agentCtx, "progressCh", val)
-	}
 
 	// Create a wrapper to consume the iterator and send to a channel
 	type resultEvent struct {
@@ -197,18 +193,6 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 				if flusher, ok := w.(http.Flusher); ok {
 					flusher.Flush()
 				}
-			case progressMsg, ok := <-progressCh:
-				if !ok {
-					progressCh = nil
-					continue
-				}
-				c.SSEvent("progress", gin.H{
-					"status":  "processing",
-					"message": progressMsg,
-				})
-				if flusher, ok := w.(http.Flusher); ok {
-					flusher.Flush()
-				}
 			case res, ok := <-resCh:
 				if !ok {
 					return false
@@ -237,9 +221,25 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 						"content":    finalResponse,
 						"session_id": req.SessionID,
 					})
+					// Publish final event to Redis for unified stream consumers
+					database.PublishStreamEvent(agentCtx, database.StreamEvent{
+						Type:         "agent",
+						ResourceType: "session",
+						ResourceID:   req.SessionID,
+						Stage:        "final",
+						Message:      "[Agent completed]",
+					})
 				} else {
 					c.SSEvent("progress", gin.H{
 						"status": "processing",
+					})
+					// Publish thinking event to Redis
+					database.PublishStreamEvent(agentCtx, database.StreamEvent{
+						Type:         "agent",
+						ResourceType: "session",
+						ResourceID:   req.SessionID,
+						Stage:        "thinking",
+						Message:      "Agent is processing...",
 					})
 				}
 				if flusher, ok := w.(http.Flusher); ok {

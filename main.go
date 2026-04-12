@@ -78,8 +78,11 @@ func main() {
 		protected.GET("/test-scenarios/:id", handlers.GetScenario)
 		protected.DELETE("/test-scenarios/:id", handlers.DeleteScenario)
 		protected.POST("/test-scenarios/:id/generate", handlers.GenerateTests)
-		protected.GET("/test-scenarios/:id/stream", handlers.StreamGenerateTests)
+		protected.GET("/test-scenarios/:id/stream", handlers.StreamEvents)
 		protected.POST("/test-scenarios/bulk-delete", handlers.BulkDeleteScenarios)
+
+		protected.GET("/stream", handlers.StreamEvents)
+		protected.POST("/recordings/:id/run", handlers.RunRecording)
 
 		protected.POST("/auth/logout", routes.LogoutEndpoint)
 		protected.GET("/current-user", routes.GetUser)

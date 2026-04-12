@@ -176,28 +176,42 @@ func InvalidateBoardCache(ctx context.Context, projectID string) {
 	RedisClient.Del(ctx, key)
 }
 
-// GenerationEvent represents a SSE event published during test generation
-type GenerationEvent struct {
-	ScenarioID string `json:"scenarioId"`
-	Stage      string `json:"stage"`      // "start", "fetching_codebase", "reading_files", "sending_to_ai", "processing", "saving", "done", "error"
-	Message    string `json:"message"`     // Human-readable contextual message
-	Data       string `json:"data,omitempty"` // Optional payload (final recordings JSON on "done")
+// StreamEvent represents a unified SSE event for all long-running operations.
+// Follows AG-UI-inspired event patterns for agent-to-frontend real-time communication.
+type StreamEvent struct {
+	Type         string          `json:"type"`                    // "generation" | "execution" | "agent"
+	ResourceType string          `json:"resourceType,omitempty"`  // "scenario" | "recording" | ""
+	ResourceID   string          `json:"resourceId,omitempty"`    // ID of the resource being operated on
+	Stage        string          `json:"stage"`                    // e.g. "start", "step", "done", "error"
+	Message      string          `json:"message"`                 // Human-readable contextual message
+	StepInfo     *StreamStepInfo `json:"stepInfo,omitempty"`       // For execution step progress
+	Timestamp    string          `json:"timestamp"`                // RFC3339 timestamp
 }
 
-// PublishGenerationEvent publishes a generation event to a Redis pub/sub channel
-func PublishGenerationEvent(ctx context.Context, scenarioID string, event GenerationEvent) error {
-	event.ScenarioID = scenarioID
+// StreamStepInfo describes progress within a multi-step operation (e.g. test execution)
+type StreamStepInfo struct {
+	CurrentStep int    `json:"currentStep"` // 1-indexed
+	TotalSteps  int    `json:"totalSteps"`  // Total steps in the operation
+	StepName    string `json:"stepName"`    // Short description of current step
+	Action      string `json:"action,omitempty"` // e.g. "navigate", "click", "type"
+}
+
+// Unified Redis channel for all stream events
+const StreamChannel = "stream:events"
+
+// PublishStreamEvent publishes a unified event to the shared Redis pub/sub channel.
+// All SSE subscribers receive all events; frontend filters by resourceId.
+func PublishStreamEvent(ctx context.Context, event StreamEvent) error {
+	event.Timestamp = time.Now().Format(time.RFC3339)
 	data, err := json.Marshal(event)
 	if err != nil {
 		return err
 	}
-	channel := fmt.Sprintf("gen:%s", scenarioID)
-	return RedisClient.Publish(ctx, channel, string(data)).Err()
+	return RedisClient.Publish(ctx, StreamChannel, string(data)).Err()
 }
 
-// SubscribeGenerationEvents subscribes to generation events for a scenario
-// Returns a Redis pub/sub subscription. Caller should call subscription.Close() when done.
-func SubscribeGenerationEvents(ctx context.Context, scenarioID string) *redis.PubSub {
-	channel := fmt.Sprintf("gen:%s", scenarioID)
-	return RedisClient.Subscribe(ctx, channel)
+// SubscribeAllStreamEvents subscribes to the unified stream channel.
+// Returns a Redis pub/sub subscription. Caller MUST call sub.Close() when done.
+func SubscribeAllStreamEvents(ctx context.Context) *redis.PubSub {
+	return RedisClient.Subscribe(ctx, StreamChannel)
 }

@@ -64,8 +64,19 @@ func HasToolExecutor(toolName string) bool {
 func execListGitLabProjects(ctx context.Context, args map[string]any) (any, error) {
 	log.Printf("[ToolExecutor] execListGitLabProjects called with args: %+v", args)
 
+	database.PublishStreamEvent(ctx, database.StreamEvent{
+		Type:    "agent",
+		Stage:   "start",
+		Message: "Fetching GitLab projects...",
+	})
+
 	gitlabClient, err := getGitLabClientDirect(ctx)
 	if err != nil {
+		database.PublishStreamEvent(ctx, database.StreamEvent{
+			Type:    "agent",
+			Stage:   "error",
+			Message: "Failed to fetch GitLab projects: " + err.Error(),
+		})
 		return nil, err
 	}
 
@@ -93,6 +104,11 @@ func execListGitLabProjects(ctx context.Context, args map[string]any) (any, erro
 
 	projects, _, err := gitlabClient.Projects.ListProjects(opts)
 	if err != nil {
+		database.PublishStreamEvent(ctx, database.StreamEvent{
+			Type:    "agent",
+			Stage:   "error",
+			Message: "Failed to list GitLab projects: " + err.Error(),
+		})
 		return nil, err
 	}
 
@@ -107,14 +123,31 @@ func execListGitLabProjects(ctx context.Context, args map[string]any) (any, erro
 		})
 	}
 
+	database.PublishStreamEvent(ctx, database.StreamEvent{
+		Type:    "agent",
+		Stage:   "done",
+		Message: fmt.Sprintf("Loaded %d GitLab projects", len(result)),
+	})
+
 	return &ListProjectsResponse{Projects: result}, nil
 }
 
 func execListAllGitLabIssues(ctx context.Context, args map[string]any) (any, error) {
 	log.Printf("[ToolExecutor] execListAllGitLabIssues called with args: %+v", args)
 
+	database.PublishStreamEvent(ctx, database.StreamEvent{
+		Type:    "agent",
+		Stage:   "start",
+		Message: "Fetching all GitLab issues...",
+	})
+
 	gitlabClient, err := getGitLabClientDirect(ctx)
 	if err != nil {
+		database.PublishStreamEvent(ctx, database.StreamEvent{
+			Type:    "agent",
+			Stage:   "error",
+			Message: "Failed to fetch GitLab issues: " + err.Error(),
+		})
 		return nil, err
 	}
 
@@ -128,6 +161,11 @@ func execListAllGitLabIssues(ctx context.Context, args map[string]any) (any, err
 
 	issues, err := client.ListIssuesRelatedToMe(gitlabClient, opt)
 	if err != nil {
+		database.PublishStreamEvent(ctx, database.StreamEvent{
+			Type:    "agent",
+			Stage:   "error",
+			Message: "Failed to list GitLab issues: " + err.Error(),
+		})
 		return nil, err
 	}
 
@@ -145,14 +183,31 @@ func execListAllGitLabIssues(ctx context.Context, args map[string]any) (any, err
 		})
 	}
 
+	database.PublishStreamEvent(ctx, database.StreamEvent{
+		Type:    "agent",
+		Stage:   "done",
+		Message: fmt.Sprintf("Loaded %d GitLab issues", len(result)),
+	})
+
 	return &ListIssuesResponse{Issues: result}, nil
 }
 
 func execCreateGitLabIssue(ctx context.Context, args map[string]any) (any, error) {
 	log.Printf("[ToolExecutor] execCreateGitLabIssue called with args: %+v", args)
 
+	database.PublishStreamEvent(ctx, database.StreamEvent{
+		Type:    "agent",
+		Stage:   "start",
+		Message: "Creating GitLab issue...",
+	})
+
 	gitlabClient, err := getGitLabClientDirect(ctx)
 	if err != nil {
+		database.PublishStreamEvent(ctx, database.StreamEvent{
+			Type:    "agent",
+			Stage:   "error",
+			Message: "Failed to create GitLab issue: " + err.Error(),
+		})
 		return nil, err
 	}
 
@@ -179,8 +234,19 @@ func execCreateGitLabIssue(ctx context.Context, args map[string]any) (any, error
 
 	issue, _, err := gitlabClient.Issues.CreateIssue(fmt.Sprintf("%d", int(projectID)), opt)
 	if err != nil {
+		database.PublishStreamEvent(ctx, database.StreamEvent{
+			Type:    "agent",
+			Stage:   "error",
+			Message: "Failed to create GitLab issue: " + err.Error(),
+		})
 		return nil, err
 	}
+
+	database.PublishStreamEvent(ctx, database.StreamEvent{
+		Type:        "agent",
+		Stage:       "done",
+		Message:     "Created GitLab issue: " + issue.Title,
+	})
 
 	return issue, nil
 }
@@ -188,8 +254,19 @@ func execCreateGitLabIssue(ctx context.Context, args map[string]any) (any, error
 func execListGitLabIssues(ctx context.Context, args map[string]any) (any, error) {
 	log.Printf("[ToolExecutor] execListGitLabIssues called with args: %+v", args)
 
+	database.PublishStreamEvent(ctx, database.StreamEvent{
+		Type:    "agent",
+		Stage:   "start",
+		Message: "Fetching project GitLab issues...",
+	})
+
 	gitlabClient, err := getGitLabClientDirect(ctx)
 	if err != nil {
+		database.PublishStreamEvent(ctx, database.StreamEvent{
+			Type:    "agent",
+			Stage:   "error",
+			Message: "Failed to fetch project GitLab issues: " + err.Error(),
+		})
 		return nil, err
 	}
 
@@ -205,6 +282,11 @@ func execListGitLabIssues(ctx context.Context, args map[string]any) (any, error)
 
 	issues, _, err := gitlabClient.Issues.ListProjectIssues(fmt.Sprintf("%d", int(projectID)), opt)
 	if err != nil {
+		database.PublishStreamEvent(ctx, database.StreamEvent{
+			Type:    "agent",
+			Stage:   "error",
+			Message: "Failed to list project GitLab issues: " + err.Error(),
+		})
 		return nil, err
 	}
 
@@ -222,14 +304,31 @@ func execListGitLabIssues(ctx context.Context, args map[string]any) (any, error)
 		})
 	}
 
+	database.PublishStreamEvent(ctx, database.StreamEvent{
+		Type:    "agent",
+		Stage:   "done",
+		Message: fmt.Sprintf("Loaded %d project issues", len(result)),
+	})
+
 	return &ListIssuesResponse{Issues: result}, nil
 }
 
 func execUpdateGitLabIssue(ctx context.Context, args map[string]any) (any, error) {
 	log.Printf("[ToolExecutor] execUpdateGitLabIssue called with args: %+v", args)
 
+	database.PublishStreamEvent(ctx, database.StreamEvent{
+		Type:    "agent",
+		Stage:   "start",
+		Message: "Updating GitLab issue...",
+	})
+
 	gitlabClient, err := getGitLabClientDirect(ctx)
 	if err != nil {
+		database.PublishStreamEvent(ctx, database.StreamEvent{
+			Type:    "agent",
+			Stage:   "error",
+			Message: "Failed to update GitLab issue: " + err.Error(),
+		})
 		return nil, err
 	}
 
@@ -250,8 +349,19 @@ func execUpdateGitLabIssue(ctx context.Context, args map[string]any) (any, error
 
 	issue, _, err := gitlabClient.Issues.UpdateIssue(fmt.Sprintf("%d", int(projectID)), int64(issueIID), opt)
 	if err != nil {
+		database.PublishStreamEvent(ctx, database.StreamEvent{
+			Type:    "agent",
+			Stage:   "error",
+			Message: "Failed to update GitLab issue: " + err.Error(),
+		})
 		return nil, err
 	}
+
+	database.PublishStreamEvent(ctx, database.StreamEvent{
+		Type:        "agent",
+		Stage:       "done",
+		Message:     "Updated GitLab issue: " + issue.Title,
+	})
 
 	return issue, nil
 }
@@ -269,27 +379,166 @@ func getGitLabClientDirect(ctx context.Context) (*gitlab.Client, error) {
 
 func execListRecordedTests(ctx context.Context, args map[string]any) (any, error) {
 	log.Printf("[ToolExecutor] execListRecordedTests called with args: %+v", args)
-	return listRecordedTestsDirect(ctx, args)
+
+	database.PublishStreamEvent(ctx, database.StreamEvent{
+		Type:    "agent",
+		Stage:   "start",
+		Message: "Fetching recorded tests...",
+	})
+
+	result, err := listRecordedTestsDirect(ctx, args)
+	if err != nil {
+		database.PublishStreamEvent(ctx, database.StreamEvent{
+			Type:    "agent",
+			Stage:   "error",
+			Message: "Failed to fetch recorded tests: " + err.Error(),
+		})
+		return nil, err
+	}
+
+	database.PublishStreamEvent(ctx, database.StreamEvent{
+		Type:    "agent",
+		Stage:   "done",
+		Message: fmt.Sprintf("Loaded %d recorded tests", len(result.Recordings)),
+	})
+
+	return result, nil
 }
 
 func execRunRecordedTest(ctx context.Context, args map[string]any) (any, error) {
-	log.Printf("[ToolExecutor] execRunRecordedTest called with args: %+v", args)
-	return runRecordedTestDirect(ctx, args)
+	testID, _ := args["testID"].(string)
+	log.Printf("[ToolExecutor] execRunRecordedTest called with testID: %s", testID)
+
+	database.PublishStreamEvent(ctx, database.StreamEvent{
+		Type:         "agent",
+		ResourceType: "tool",
+		ResourceID:   testID,
+		Stage:        "start",
+		Message:      fmt.Sprintf("Running recorded test '%s'...", testID),
+	})
+
+	result, err := runRecordedTestDirect(ctx, args)
+	if err != nil {
+		database.PublishStreamEvent(ctx, database.StreamEvent{
+			Type:         "agent",
+			ResourceType: "tool",
+			ResourceID:   testID,
+			Stage:        "error",
+			Message:      fmt.Sprintf("Test '%s' failed: %v", testID, err),
+		})
+		return nil, err
+	}
+
+	database.PublishStreamEvent(ctx, database.StreamEvent{
+		Type:         "agent",
+		ResourceType: "tool",
+		ResourceID:   testID,
+		Stage:        "done",
+		Message:      fmt.Sprintf("Test '%s' finished: %s", testID, result.Status),
+	})
+
+	return result, nil
 }
 
 func execListTestScenarios(ctx context.Context, args map[string]any) (any, error) {
 	log.Printf("[ToolExecutor] execListTestScenarios called with args: %+v", args)
-	return listTestScenariosDirect(ctx)
+
+	database.PublishStreamEvent(ctx, database.StreamEvent{
+		Type:    "agent",
+		Stage:   "start",
+		Message: "Fetching test scenarios...",
+	})
+
+	result, err := listTestScenariosDirect(ctx)
+	if err != nil {
+		database.PublishStreamEvent(ctx, database.StreamEvent{
+			Type:    "agent",
+			Stage:   "error",
+			Message: "Failed to fetch test scenarios: " + err.Error(),
+		})
+		return nil, err
+	}
+
+	database.PublishStreamEvent(ctx, database.StreamEvent{
+		Type:    "agent",
+		Stage:   "done",
+		Message: fmt.Sprintf("Loaded %d test scenarios", len(result.Scenarios)),
+	})
+
+	return result, nil
 }
 
 func execRunTestScenario(ctx context.Context, args map[string]any) (any, error) {
-	log.Printf("[ToolExecutor] execRunTestScenario called with args: %+v", args)
-	return runTestScenarioDirect(ctx, args)
+	scenarioID, _ := args["scenarioID"].(string)
+	log.Printf("[ToolExecutor] execRunTestScenario called with scenarioID: %s", scenarioID)
+
+	database.PublishStreamEvent(ctx, database.StreamEvent{
+		Type:         "agent",
+		ResourceType: "tool",
+		ResourceID:   scenarioID,
+		Stage:        "start",
+		Message:      fmt.Sprintf("Running test scenario '%s'...", scenarioID),
+	})
+
+	result, err := runTestScenarioDirect(ctx, args)
+	if err != nil {
+		database.PublishStreamEvent(ctx, database.StreamEvent{
+			Type:         "agent",
+			ResourceType: "tool",
+			ResourceID:   scenarioID,
+			Stage:        "error",
+			Message:      fmt.Sprintf("Scenario '%s' failed: %v", scenarioID, err),
+		})
+		return nil, err
+	}
+
+	database.PublishStreamEvent(ctx, database.StreamEvent{
+		Type:         "agent",
+		ResourceType: "tool",
+		ResourceID:   scenarioID,
+		Stage:        "done",
+		Message:      fmt.Sprintf("Scenario '%s' finished: %s", scenarioID, result.Summary),
+	})
+
+	return result, nil
 }
 
 func execRunScenarioTestCase(ctx context.Context, args map[string]any) (any, error) {
-	log.Printf("[ToolExecutor] execRunScenarioTestCase called with args: %+v", args)
-	return runScenarioTestCaseDirect(ctx, args)
+	scenarioID, _ := args["scenarioID"].(string)
+	testCaseID, _ := args["testCaseID"].(string)
+	resourceID := scenarioID + ":" + testCaseID
+
+	log.Printf("[ToolExecutor] execRunScenarioTestCase called with scenarioID: %s, testCaseID: %s", scenarioID, testCaseID)
+
+	database.PublishStreamEvent(ctx, database.StreamEvent{
+		Type:         "agent",
+		ResourceType: "tool",
+		ResourceID:   resourceID,
+		Stage:        "start",
+		Message:      fmt.Sprintf("Running test case '%s' from scenario '%s'...", testCaseID, scenarioID),
+	})
+
+	result, err := runScenarioTestCaseDirect(ctx, args)
+	if err != nil {
+		database.PublishStreamEvent(ctx, database.StreamEvent{
+			Type:         "agent",
+			ResourceType: "tool",
+			ResourceID:   resourceID,
+			Stage:        "error",
+			Message:      fmt.Sprintf("Test case '%s' failed: %v", testCaseID, err),
+		})
+		return nil, err
+	}
+
+	database.PublishStreamEvent(ctx, database.StreamEvent{
+		Type:         "agent",
+		ResourceType: "tool",
+		ResourceID:   resourceID,
+		Stage:        "done",
+		Message:      fmt.Sprintf("Test case '%s' finished: %s", testCaseID, result.Status),
+	})
+
+	return result, nil
 }
 
 // Direct implementations that don't use ADK tool.Context

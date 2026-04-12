@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"qa-extension-backend/client"
+	"qa-extension-backend/database"
 	"qa-extension-backend/internal/models"
 	"time"
 
@@ -64,21 +65,24 @@ func StopPlaywright() {
 func RunTest(ctx context.Context, recording *models.TestRecording) (*models.TestResult, error) {
 	log.Printf("[Runner] Running test: %s", recording.Name)
 
-	// Get progress channel from context if available
-	progressCh, _ := ctx.Value("progressCh").(chan string)
-	sendProgress := func(msg string) {
-		if progressCh != nil {
-			select {
-			case progressCh <- msg:
-			default:
-				// Skip if channel is full
-			}
-		}
+	// Helper to publish execution events to the unified stream
+	publish := func(stage, msg string, stepInfo *database.StreamStepInfo) {
+		database.PublishStreamEvent(ctx, database.StreamEvent{
+			Type:         "execution",
+			ResourceType: "recording",
+			ResourceID:   recording.ID,
+			Stage:        stage,
+			Message:      msg,
+			StepInfo:     stepInfo,
+		})
 	}
 
-	sendProgress("Initializing Playwright browser...")
+	publish("start", fmt.Sprintf("Starting test '%s' (%d steps)...", recording.Name, len(recording.Steps)), nil)
+
 	if globalBrowser == nil {
+		publish("step", "Initializing Playwright browser...", &database.StreamStepInfo{CurrentStep: 0, TotalSteps: len(recording.Steps), StepName: "Initializing browser", Action: ""})
 		if err := InitPlaywright(); err != nil {
+			publish("error", fmt.Sprintf("Failed to initialize Playwright: %v", err), nil)
 			return nil, err
 		}
 	}
@@ -120,22 +124,31 @@ func RunTest(ctx context.Context, recording *models.TestRecording) (*models.Test
 		StepResults: make([]models.TestStepResult, 0),
 	}
 
+	totalSteps := len(recording.Steps)
 	for i, step := range recording.Steps {
 		// Create a per-step timeout context (60 seconds)
 		stepCtx, stepCancel := context.WithTimeout(ctx, 60*time.Second)
-		
+
 		select {
 		case <-ctx.Done():
 			stepCancel()
 			result.Status = "timeout"
 			result.Log = "Test execution timed out during step execution"
+			publish("error", "Test timed out during step execution", nil)
 			return result, nil
 		default:
 		}
 
-		sendProgress(fmt.Sprintf("Step %d: %s", i+1, step.Description))
-		log.Printf("[Runner] Step %d: %s (%s)", i+1, step.Description, step.Action)
-		
+		currentStep := i + 1
+		stepInfo := &database.StreamStepInfo{
+			CurrentStep: currentStep,
+			TotalSteps:  totalSteps,
+			StepName:    step.Description,
+			Action:      step.Action,
+		}
+		publish("step", fmt.Sprintf("Running '%s' — Step %d/%d: %s...", recording.Name, currentStep, totalSteps, step.Description), stepInfo)
+		log.Printf("[Runner] Step %d: %s (%s)", currentStep, step.Description, step.Action)
+
 		stepResult := models.TestStepResult{
 			StepIndex: i,
 			Status:    "success",
@@ -160,24 +173,25 @@ func RunTest(ctx context.Context, recording *models.TestRecording) (*models.Test
 			log.Printf("[Runner] Step %d failed: %v", i+1, err)
 			stepResult.Status = "failure"
 			stepResult.Error = err.Error()
-			
+
 			if stepCtx.Err() == context.DeadlineExceeded {
 				stepResult.Error = "Step timed out after 60 seconds"
 				result.Status = "timeout"
 			} else {
 				result.Status = "failed"
 			}
-			
+
 			// Take screenshot on failure
 			screenshot, _ := page.Screenshot()
 			if screenshot != nil {
 				stepResult.Screenshot = base64.StdEncoding.EncodeToString(screenshot)
 			}
-			
+
 			result.StepResults = append(result.StepResults, stepResult)
-			
+
 			// If it's a timeout or serious error, stop immediately
 			if result.Status == "timeout" || result.Status == "failed" {
+				publish("error", fmt.Sprintf("Test failed at Step %d/%d: %s", currentStep, totalSteps, step.Description), stepInfo)
 				return result, nil
 			}
 			break
@@ -199,6 +213,7 @@ func RunTest(ctx context.Context, recording *models.TestRecording) (*models.Test
 	case <-ctx.Done():
 		result.Status = "timeout"
 		result.Log = "Test execution timed out after final step"
+		publish("error", "Test timed out after final step", nil)
 		return result, nil
 	case <-time.After(200 * time.Millisecond):
 	}
@@ -215,11 +230,13 @@ func RunTest(ctx context.Context, recording *models.TestRecording) (*models.Test
 	case <-ctx.Done():
 		result.Status = "timeout"
 		result.Log = "Test execution timed out during video finalization"
+		publish("error", "Test timed out during video finalization", nil)
 		return result, nil
 	case <-time.After(300 * time.Millisecond):
 	}
 
 	// Upload video to R2 if available
+	publish("step", fmt.Sprintf("Test '%s' completed, uploading video...", recording.Name), &database.StreamStepInfo{CurrentStep: totalSteps, TotalSteps: totalSteps, StepName: "Uploading video", Action: ""})
 	if video != nil {
 		path, err := video.Path()
 		if err == nil {
@@ -244,25 +261,42 @@ func RunTest(ctx context.Context, recording *models.TestRecording) (*models.Test
 		}
 	}
 
+	publish("done", fmt.Sprintf("Test '%s' completed: %s", recording.Name, result.Status), &database.StreamStepInfo{CurrentStep: totalSteps, TotalSteps: totalSteps, StepName: "Completed", Action: ""})
 	return result, nil
 }
 
 func RunTestsParallel(ctx context.Context, recordings []models.TestRecording) []*models.TestResult {
 	log.Printf("[Runner] Running %d tests in parallel", len(recordings))
-	
+
+	// Helper to publish execution events to the unified stream
+	publish := func(stage, msg string, stepInfo *database.StreamStepInfo) {
+		database.PublishStreamEvent(ctx, database.StreamEvent{
+			Type:         "execution",
+			ResourceType: "recording",
+			ResourceID:   "", // Multiple recordings, no single resource ID
+			Stage:        stage,
+			Message:      msg,
+			StepInfo:     stepInfo,
+		})
+	}
+
+	total := len(recordings)
+	publish("start", fmt.Sprintf("Starting parallel execution of %d tests...", total), &database.StreamStepInfo{TotalSteps: total, StepName: "Starting parallel execution"})
+
 	results := make([]*models.TestResult, len(recordings))
-	
+
 	// Use a worker pool with a concurrency limit of 3
 	semaphore := make(chan struct{}, 3)
-	
+
 	for i := range recordings {
 		semaphore <- struct{}{}
 		go func(idx int) {
 			defer func() {
 				<-semaphore
 			}()
-			
+
 			rec := recordings[idx]
+			publish("step", fmt.Sprintf("Starting test '%s' (%d/%d)...", rec.Name, idx+1, total), &database.StreamStepInfo{CurrentStep: idx + 1, TotalSteps: total, StepName: rec.Name, Action: ""})
 			result, err := RunTest(ctx, &rec)
 			if err != nil {
 				results[idx] = &models.TestResult{
@@ -270,17 +304,33 @@ func RunTestsParallel(ctx context.Context, recordings []models.TestRecording) []
 					Status: "failed",
 					Log:    err.Error(),
 				}
+				publish("step", fmt.Sprintf("Test '%s' failed: %v", rec.Name, err), &database.StreamStepInfo{CurrentStep: idx + 1, TotalSteps: total, StepName: rec.Name, Action: ""})
 			} else {
 				results[idx] = result
+				statusMsg := result.Status
+				publish("step", fmt.Sprintf("Test '%s' completed: %s", rec.Name, statusMsg), &database.StreamStepInfo{CurrentStep: idx + 1, TotalSteps: total, StepName: rec.Name, Action: ""})
 			}
 		}(i)
 	}
-	
+
 	// Wait for all workers to finish by filling the semaphore
 	for i := 0; i < 3; i++ {
 		semaphore <- struct{}{}
 	}
-	
+
+	// Summarize results
+	passed := 0
+	failed := 0
+	for _, r := range results {
+		if r.Status == "passed" {
+			passed++
+		} else {
+			failed++
+		}
+	}
+
+	publish("done", fmt.Sprintf("Parallel execution complete: %d passed, %d failed out of %d total", passed, failed, total), &database.StreamStepInfo{TotalSteps: total, StepName: "Parallel execution complete"})
+
 	return results
 }
 
