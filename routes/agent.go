@@ -226,20 +226,33 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 						Type:         "agent",
 						ResourceType: "session",
 						ResourceID:   req.SessionID,
-						Stage:        "final",
-						Message:      "[Agent completed]",
+						Stage:        "done",
+						Message:      "Agent completed",
 					})
 				} else {
+					// Extract text from partial response for progress update
+					var progressText string
+					for _, part := range res.event.Content.Parts {
+						if part.Text != "" {
+							progressText = part.Text
+							break
+						}
+					}
+					// Use extracted text or default message
+					if progressText == "" {
+						progressText = "Agent is processing..."
+					}
 					c.SSEvent("progress", gin.H{
-						"status": "processing",
+						"status":  "processing",
+						"message": progressText,
 					})
-					// Publish thinking event to Redis
+					// Publish thinking event to Redis with extracted progress info
 					database.PublishStreamEvent(agentCtx, database.StreamEvent{
 						Type:         "agent",
 						ResourceType: "session",
 						ResourceID:   req.SessionID,
 						Stage:        "thinking",
-						Message:      "Agent is processing...",
+						Message:      progressText,
 					})
 				}
 				if flusher, ok := w.(http.Flusher); ok {
