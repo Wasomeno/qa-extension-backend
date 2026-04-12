@@ -16,11 +16,25 @@ import (
 //   - resourceId: only receive events for a specific resource (e.g. scenario-123, rec-456)
 //   - type: only receive events of a specific type (e.g. "generation", "execution")
 func StreamEvents(c *gin.Context) {
+	// Handle preflight CORS requests
+	if c.Request.Method == "OPTIONS" {
+		c.Header("Vary", "Origin")
+		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Access-Control-Allow-Headers", "Content-Type")
+		c.Header("Access-Control-Allow-Methods", "GET, OPTIONS")
+		c.Header("Access-Control-Max-Age", "86400")
+		c.AbortWithStatus(204)
+		return
+	}
+
 	// Set SSE headers
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no") // Disable nginx buffering if behind proxy
+	c.Header("Vary", "Origin")
+	c.Header("Access-Control-Allow-Origin", "*")
+	c.Header("Access-Control-Expose-Headers", "*")
 
 	// Optional filters from query params
 	filterResourceID := c.Query("resourceId")
