@@ -13,6 +13,8 @@ type RecordingStep struct {
 	ElementHints       ElementHints `json:"elementHints"`
 	Selector           string       `json:"selector"`
 	SelectorCandidates []string     `json:"selectorCandidates"`
+	XPath              string       `json:"xpath,omitempty"`
+	XPathCandidates    []string     `json:"xpathCandidates,omitempty"`
 	Value              string       `json:"value,omitempty"`
 	AssertionType      string       `json:"assertionType,omitempty"`
 	ExpectedValue      string       `json:"expectedValue,omitempty"`
