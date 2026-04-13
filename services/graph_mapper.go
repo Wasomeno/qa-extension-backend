@@ -285,7 +285,7 @@ func (m *GraphMapper) fetchSourceFilesForEnrichment(
 	}
 
 	// Limit to prevent huge context
-	maxFiles := 50
+	maxFiles := 30
 	if len(relevantPaths) > maxFiles {
 		relevantPaths = relevantPaths[:maxFiles]
 	}
@@ -437,12 +437,17 @@ Rules:
 
 	responseText := extractResponseText(resp)
 	if responseText == "" {
+		log.Printf("[GraphMapper] LLM returned empty response. Prompt length: %d chars, Route count: %d, Files: %d",
+			len(prompt), len(routeMap), len(sourceFiles))
 		return nil, fmt.Errorf("empty response from LLM")
 	}
+
+	log.Printf("[GraphMapper] LLM response length: %d chars", len(responseText))
 
 	// Parse into a raw map first
 	var rawResult map[string]interface{}
 	if err := json.Unmarshal([]byte(responseText), &rawResult); err != nil {
+		log.Printf("[GraphMapper] Failed to parse LLM response. Response preview: %.200s...", responseText)
 		return nil, fmt.Errorf("failed to parse LLM response: %w", err)
 	}
 
@@ -526,10 +531,10 @@ Rules:
 func (m *GraphMapper) buildFilesSummary(sourceFiles map[string]string) string {
 	var lines []string
 	for path, content := range sourceFiles {
-		// Truncate each file to first 100 lines
+		// Truncate each file to first 80 lines (testids are usually at top of file)
 		lineSlice := strings.Split(content, "\n")
-		if len(lineSlice) > 100 {
-			lineSlice = lineSlice[:100]
+		if len(lineSlice) > 80 {
+			lineSlice = lineSlice[:80]
 		}
 		truncated := strings.Join(lineSlice, "\n")
 
@@ -826,8 +831,6 @@ func (m *GraphMapper) catalogToKnowledgeGraph(catalog *ModuleCatalog) *models.Kn
 		Stats: models.KnowledgeGraphStats{},
 	}
 
-	selectorIdx := 0
-
 	for _, module := range catalog.Modules {
 		for route, routeEntry := range module.Routes {
 			ri := models.RouteInfo{
@@ -870,7 +873,6 @@ func (m *GraphMapper) catalogToKnowledgeGraph(catalog *ModuleCatalog) *models.Kn
 					SelectorID:  testid,
 					ElementType: elementType,
 				}
-				selectorIdx++
 			}
 
 			kg.RouteSummary[route] = ri
