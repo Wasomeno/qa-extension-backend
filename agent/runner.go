@@ -337,6 +337,71 @@ func RunTestsParallel(ctx context.Context, recordings []models.TestRecording) []
 func executeStep(page playwright.Page, step models.RecordingStep) error {
 	log.Printf("[Runner] Executing action: %s on selector: %s with value: %s", step.Action, step.Selector, step.Value)
 
+	// Helper function to try xpath-based selectors first, then fall back to CSS selectors
+	tryWithFallback := func(playwrightFunc func(selector string) error) error {
+		var lastErr error
+		success := false
+
+		// 1. Try XPath if available (primary selector)
+		if step.XPath != "" {
+			log.Printf("[Runner] Trying XPath: %s", step.XPath)
+			if err := playwrightFunc(step.XPath); err == nil {
+				success = true
+				log.Printf("[Runner] XPath succeeded: %s", step.XPath)
+			} else {
+				lastErr = err
+				log.Printf("[Runner] XPath failed: %v", err)
+			}
+		}
+
+		// 2. Try XPathCandidates (fallback xpath options)
+		if !success {
+			for i, xpath := range step.XPathCandidates {
+				log.Printf("[Runner] Trying XPathCandidate[%d]: %s", i, xpath)
+				if err := playwrightFunc(xpath); err == nil {
+					success = true
+					log.Printf("[Runner] XPathCandidate[%d] succeeded: %s", i, xpath)
+					break
+				} else {
+					lastErr = err
+					log.Printf("[Runner] XPathCandidate[%d] failed: %v", i, err)
+				}
+			}
+		}
+
+		// 3. Try CSS Selector (fallback to CSS)
+		if !success && step.Selector != "" {
+			log.Printf("[Runner] Trying CSS Selector: %s", step.Selector)
+			if err := playwrightFunc(step.Selector); err == nil {
+				success = true
+				log.Printf("[Runner] CSS Selector succeeded: %s", step.Selector)
+			} else {
+				lastErr = err
+				log.Printf("[Runner] CSS Selector failed: %v", err)
+			}
+		}
+
+		// 4. Try SelectorCandidates (fallback CSS options)
+		if !success {
+			for i, candidate := range step.SelectorCandidates {
+				log.Printf("[Runner] Trying SelectorCandidate[%d]: %s", i, candidate)
+				if err := playwrightFunc(candidate); err == nil {
+					success = true
+					log.Printf("[Runner] SelectorCandidate[%d] succeeded: %s", i, candidate)
+					break
+				} else {
+					lastErr = err
+					log.Printf("[Runner] SelectorCandidate[%d] failed: %v", i, err)
+				}
+			}
+		}
+
+		if !success {
+			return fmt.Errorf("all selectors failed (tried xpath, xpathCandidates, css, cssCandidates): %w", lastErr)
+		}
+		return nil
+	}
+
 	switch step.Action {
 	case "navigate":
 		url := step.Value
@@ -350,51 +415,76 @@ func executeStep(page playwright.Page, step models.RecordingStep) error {
 		typeOptions := playwright.PageTypeOptions{
 			Delay: playwright.Float(100),
 		}
-		if err := page.Type(step.Selector, step.Value, typeOptions); err != nil {
-			// Try candidates
-			success := false
-			for _, candidate := range step.SelectorCandidates {
-				if err := page.Type(candidate, step.Value, typeOptions); err == nil {
-					success = true
-					break
-				}
-			}
-			if !success {
-				return fmt.Errorf("type failed for all candidates: %w", err)
-			}
+		err := tryWithFallback(func(selector string) error {
+			return page.Type(selector, step.Value, typeOptions)
+		})
+		if err != nil {
+			return err
 		}
 	case "click":
 		clickOptions := playwright.PageClickOptions{
 			Delay: playwright.Float(150),
 		}
-		if err := page.Click(step.Selector, clickOptions); err != nil {
-			success := false
-			for _, candidate := range step.SelectorCandidates {
-				if err := page.Click(candidate, clickOptions); err == nil {
-					success = true
-					break
-				}
-			}
-			if !success {
-				return fmt.Errorf("click failed for all candidates: %w", err)
-			}
+		err := tryWithFallback(func(selector string) error {
+			return page.Click(selector, clickOptions)
+		})
+		if err != nil {
+			return err
 		}
 	case "press":
-		return page.Press(step.Selector, step.Value)
+		err := tryWithFallback(func(selector string) error {
+			return page.Press(selector, step.Value)
+		})
+		if err != nil {
+			return err
+		}
 	case "wait":
-		// wait for selector
+		// wait for selector - prioritize xpath
+		if step.XPath != "" {
+			_, err := page.WaitForSelector(step.XPath)
+			if err == nil {
+				return nil
+			}
+		}
+		for _, xpath := range step.XPathCandidates {
+			_, err := page.WaitForSelector(xpath)
+			if err == nil {
+				return nil
+			}
+		}
 		if step.Selector != "" {
 			_, err := page.WaitForSelector(step.Selector)
 			return err
 		}
 		return nil
 	case "assert":
-		// very basic assertion
+		// very basic assertion - prioritize xpath
 		if step.AssertionType == "visible" {
-			_, err := page.WaitForSelector(step.Selector, playwright.PageWaitForSelectorOptions{
-				State: playwright.WaitForSelectorStateVisible,
-			})
-			return err
+			// Try xpath first
+			if step.XPath != "" {
+				_, err := page.WaitForSelector(step.XPath, playwright.PageWaitForSelectorOptions{
+					State: playwright.WaitForSelectorStateVisible,
+				})
+				if err == nil {
+					return nil
+				}
+			}
+			// Try xpath candidates
+			for _, xpath := range step.XPathCandidates {
+				_, err := page.WaitForSelector(xpath, playwright.PageWaitForSelectorOptions{
+					State: playwright.WaitForSelectorStateVisible,
+				})
+				if err == nil {
+					return nil
+				}
+			}
+			// Fall back to CSS selector
+			if step.Selector != "" {
+				_, err := page.WaitForSelector(step.Selector, playwright.PageWaitForSelectorOptions{
+					State: playwright.WaitForSelectorStateVisible,
+				})
+				return err
+			}
 		}
 		return nil
 	default:
