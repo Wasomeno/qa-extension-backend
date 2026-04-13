@@ -363,8 +363,9 @@ func executeStep(page playwright.Page, step models.RecordingStep) error {
 			page.WaitForTimeout(1000)
 		}
 
-		// Final settling time - ensures React finishes rendering
-		page.WaitForTimeout(500)
+		// Additional wait after networkidle for React to finish rendering
+		// Critical: React apps often finish network requests but still have pending renders
+		page.WaitForTimeout(2000)
 		return nil
 	}
 
@@ -449,12 +450,21 @@ func executeStep(page playwright.Page, step models.RecordingStep) error {
 			}
 
 			// No selector worked this round, wait before retrying
-			page.WaitForTimeout(300)
+			// Use exponential backoff: wait longer if element still not found
+			waitTimeMs := 500
+			if attempts > 3 {
+				waitTimeMs = 1000
+			}
+			if attempts > 5 {
+				waitTimeMs = 1500
+			}
+			log.Printf("[Runner] Waiting %dms before retry (attempt %d)...", waitTimeMs, attempts+1)
+			page.WaitForTimeout(float64(waitTimeMs))
 
 			// Periodically wait for DOM to be quiet (helps with dynamic content)
 			if attempts%5 == 0 {
 				log.Printf("[Runner] Waiting for DOM to settle after %d attempts...", attempts)
-				page.WaitForTimeout(500)
+				page.WaitForTimeout(1000)
 			}
 		}
 
