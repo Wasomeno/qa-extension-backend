@@ -5,19 +5,97 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"qa-extension-backend/internal/models"
 	"strings"
+	"qa-extension-backend/internal/models"
 
 	"github.com/google/uuid"
 	"google.golang.org/genai"
 )
 
-// GenerateTestsForScenario uses Gemini to generate TestRecordings from parsed test cases and codebase context
+// GenerateTestsForScenario uses Gemini to generate TestRecordings from parsed test cases and codebase context.
+// It automatically detects and uses the knowledge graph if available in the codebase.
 func GenerateTestsForScenario(
 	ctx context.Context,
 	testCases []models.ParsedTestCase,
 	codebaseCtx *CodebaseContext,
+	graph *models.KnowledgeGraph,
 	authConfig models.AuthConfig,
+) ([]models.TestRecording, []string, error) {
+
+	// We batch test cases (e.g. 5 at a time) to prevent context limits/timeouts
+	var allRecordings []models.TestRecording
+	var allMissingRoutes []string
+
+	batchSize := 5
+	for i := 0; i < len(testCases); i += batchSize {
+		end := i + batchSize
+		if end > len(testCases) {
+			end = len(testCases)
+		}
+		batch := testCases[i:end]
+
+		var recordings []models.TestRecording
+		var missingRoutes []string
+		var err error
+
+		if graph != nil {
+			recordings, missingRoutes, err = processBatchGraphAware(ctx, batch, codebaseCtx, graph, authConfig)
+		} else {
+			recordings, err = processBatch(ctx, batch, codebaseCtx, authConfig)
+		}
+
+		if err != nil {
+			return allRecordings, allMissingRoutes, fmt.Errorf("failed processing batch %d: %w", i/batchSize, err)
+		}
+
+		allMissingRoutes = append(allMissingRoutes, missingRoutes...)
+		allRecordings = append(allRecordings, recordings...)
+	}
+
+	return allRecordings, allMissingRoutes, nil
+}
+
+func processBatch(
+	ctx context.Context,
+	batch []models.ParsedTestCase,
+	codebaseCtx *CodebaseContext,
+	authConfig models.AuthConfig,
+) ([]models.TestRecording, error) {
+
+	prompt := buildPrompt(batch, codebaseCtx, authConfig)
+	return generateRecordings(ctx, batch, prompt)
+}
+
+func processBatchGraphAware(
+	ctx context.Context,
+	batch []models.ParsedTestCase,
+	codebaseCtx *CodebaseContext,
+	graph *models.KnowledgeGraph,
+	authConfig models.AuthConfig,
+) ([]models.TestRecording, []string, error) {
+
+	prompt := buildGraphAwarePrompt(batch, graph, codebaseCtx, authConfig)
+
+	recordings, err := generateRecordings(ctx, batch, prompt)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Collect missing routes
+	var missingRoutes []string
+	for _, tc := range batch {
+		if tc.Route != "" && !graph.HasRoute(tc.Route) {
+			missingRoutes = append(missingRoutes, tc.Route)
+		}
+	}
+
+	return recordings, missingRoutes, nil
+}
+
+func generateRecordings(
+	ctx context.Context,
+	batch []models.ParsedTestCase,
+	prompt string,
 ) ([]models.TestRecording, error) {
 
 	projectID := os.Getenv("GOOGLE_CLOUD_PROJECT")
@@ -35,67 +113,27 @@ func GenerateTestsForScenario(
 		return nil, fmt.Errorf("failed to create genai client: %w", err)
 	}
 
-	// We'll batch test cases (e.g. 5 at a time) to prevent context limits/timeouts
-	var allRecordings []models.TestRecording
-
-	batchSize := 5
-	for i := 0; i < len(testCases); i += batchSize {
-		end := i + batchSize
-		if end > len(testCases) {
-			end = len(testCases)
-		}
-		batch := testCases[i:end]
-
-		recordings, err := processBatch(ctx, client, batch, codebaseCtx, authConfig)
-		if err != nil {
-			// Alternatively we could skip and continue, but let's just abort for now or wrap error
-			return allRecordings, fmt.Errorf("failed processing batch %d: %w", i/batchSize, err)
-		}
-		allRecordings = append(allRecordings, recordings...)
-	}
-
-	return allRecordings, nil
-}
-
-func processBatch(
-	ctx context.Context,
-	client *genai.Client,
-	batch []models.ParsedTestCase,
-	codebaseCtx *CodebaseContext,
-	authConfig models.AuthConfig,
-) ([]models.TestRecording, error) {
-
-	// Prepare the prompt
-	prompt := buildPrompt(batch, codebaseCtx, authConfig)
-
-	// We want JSON output directly. Configure Structured Output
 	recordingSchema := &genai.Schema{
 		Type: genai.TypeArray,
 		Items: &genai.Schema{
 			Type: genai.TypeObject,
 			Properties: map[string]*genai.Schema{
-				"id": {
-					Type: genai.TypeString,
-				},
-				"name": {
-					Type: genai.TypeString,
-				},
-				"description": {
-					Type: genai.TypeString,
-				},
+				"id":          {Type: genai.TypeString},
+				"name":        {Type: genai.TypeString},
+				"description": {Type: genai.TypeString},
 				"steps": {
 					Type: genai.TypeArray,
 					Items: &genai.Schema{
 						Type: genai.TypeObject,
 						Properties: map[string]*genai.Schema{
 							"action": {
-								Type: genai.TypeString,
-								Enum: []string{"navigate", "click", "type", "press", "assert", "wait"},
+								Type:     genai.TypeString,
+								Enum:     []string{"navigate", "click", "type", "press", "assert", "wait"},
 							},
 							"description": {Type: genai.TypeString},
 							"selector":    {Type: genai.TypeString},
 							"selectorCandidates": {
-								Type: genai.TypeArray,
+								Type:  genai.TypeArray,
 								Items: &genai.Schema{Type: genai.TypeString},
 							},
 							"value":         {Type: genai.TypeString},
@@ -141,23 +179,179 @@ func processBatch(
 		if i < len(generatedRecordings) {
 			generatedRecordings[i].ID = uuid.NewString()
 			
-			// Always prefix description with the test case ID
-			generatedRecordings[i].Description = fmt.Sprintf("[%s] %s\n%s", tCase.ID, tCase.Name, generatedRecordings[i].Description)
+			desc := fmt.Sprintf("[%s] %s", tCase.ID, tCase.Name)
+			if tCase.Route != "" {
+				desc = fmt.Sprintf("[%s] Route: %s — %s", tCase.ID, tCase.Route, tCase.Name)
+			}
+			if generatedRecordings[i].Description != "" {
+				desc += "\n" + generatedRecordings[i].Description
+			}
+			generatedRecordings[i].Description = desc
 			generatedRecordings[i].Status = "generated"
-			
-			// Optional: we can add `authConfig` elements to the first steps if we want
-			// But the prompt instructs the AI to do it. Let's make sure it's valid.
 		}
 	}
 
 	return generatedRecordings, nil
 }
 
+// buildGraphAwarePrompt builds a prompt using the knowledge graph.
+func buildGraphAwarePrompt(
+	testCases []models.ParsedTestCase,
+	graph *models.KnowledgeGraph,
+	codebaseCtx *CodebaseContext,
+	authConfig models.AuthConfig,
+) string {
+
+	routeContexts := []string{}
+	usedRoutes := make(map[string]bool)
+
+	for _, tc := range testCases {
+		route := tc.Route
+		if route == "" || usedRoutes[route] {
+			continue
+		}
+		usedRoutes[route] = true
+
+		ri, ok := graph.RouteSummary[route]
+		if !ok {
+			routeContexts = append(routeContexts, fmt.Sprintf(
+				"\nRoute: %s\n[WARNING: Route not found in knowledge graph - will use source code context only]\n",
+				route,
+			))
+			continue
+		}
+
+		// Build testid list
+		testidList := []string{}
+		for _, td := range ri.Testids {
+			fieldName := "<none>"
+			if td.FieldName != nil {
+				fieldName = *td.FieldName
+			}
+			boundAction := "<none>"
+			if td.BoundAction != nil {
+				boundAction = *td.BoundAction
+			}
+
+			testidList = append(testidList, fmt.Sprintf(
+				"  - %s (%s, field=%s, action=%s, handler=%s)",
+				td.Testid,
+				td.ElementType,
+				fieldName,
+				td.Action,
+				boundAction,
+			))
+
+			for _, sel := range td.SuggestedSelectors {
+				if sel.Confidence >= 0.7 {
+					testidList = append(testidList, fmt.Sprintf(
+						"    → %s: %s (confidence=%.0f%%)",
+						sel.Type, sel.Value, sel.Confidence*100,
+					))
+				}
+			}
+		}
+
+		// Form fields
+		formFields := []string{}
+		for _, form := range ri.Forms {
+			formFields = append(formFields, fmt.Sprintf("  Form %s:", form.SchemaName))
+			for _, f := range form.Fields {
+				req := ""
+				if f.Required {
+					req = " (required)"
+				}
+				formFields = append(formFields, fmt.Sprintf("    - %s: %s%s", f.Name, f.Label, req))
+			}
+		}
+
+		apis := []string{}
+		for _, api := range ri.APIs {
+			apis = append(apis, fmt.Sprintf("%s %s", api.HTTPMethod, api.Endpoint))
+		}
+
+		hooks := []string{}
+		for _, hook := range ri.Hooks {
+			hooks = append(hooks, fmt.Sprintf("%s (%s)", hook.HookName, hook.HookType))
+		}
+
+		formsStr := "None"
+		if len(formFields) > 0 {
+			formsStr = strings.Join(formFields, "\n")
+		}
+
+		apisStr := "None"
+		if len(apis) > 0 {
+			apisStr = strings.Join(apis, ", ")
+		}
+
+		hooksStr := "None"
+		if len(hooks) > 0 {
+			hooksStr = strings.Join(hooks, ", ")
+		}
+
+		ctx := fmt.Sprintf(`Route: %s
+Module: %s
+Testids (USE THESE ONLY - DO NOT GUESS SELECTORS):
+%s
+Form Fields:
+%s
+API Endpoints:
+  %s
+React Hooks:
+  %s`,
+			route,
+			ri.Module,
+			strings.Join(testidList, "\n"),
+			formsStr,
+			apisStr,
+			hooksStr,
+		)
+		routeContexts = append(routeContexts, ctx)
+	}
+
+	tcJSON, _ := json.MarshalIndent(testCases, "", "  ")
+
+	return fmt.Sprintf(`You are a QA automation expert writing Playwright test recordings for a Next.js application.
+
+### INSTRUCTIONS:
+1. Generate one TestRecording per Test Case, matching array order.
+2. The first steps MUST navigate to Login URL and authenticate using the provided credentials.
+   - Base URL: %s
+   - Login URL: %s
+   - Username: %s
+   - Password: %s
+3. SELECTOR RULES (CRITICAL):
+   - Use ONLY the testids listed in the route context below from the knowledge graph.
+   - For each step, pick the selector with HIGHEST confidence from suggestedSelectors.
+   - Format: Use Playwright selector format, e.g. [data-testid='foo'], text('Label'), button[type='submit']
+   - NEVER guess a selector not listed in the knowledge graph.
+   - If a selector is not provided for a testid, use: [data-testid='testid-value']
+4. ACTION RULES:
+   - For "fill" actions: use the fieldName from the form schema, not the testid.
+   - For "submit" buttons: use the testid that corresponds to a Form.Submit or htmlType="submit" button.
+   - For "assert" steps: use the expectedValue from the test case's expectedResult.
+5. ROUTE CONTEXT (from knowledge graph — USE THIS, NOT the source files):
+%s
+
+### SOURCE FILES (for reference only - use knowledge graph above for selectors):
+%s
+
+### TEST SCENARIOS:
+%s
+
+### RESPONSE FORMAT:
+Return ONLY a JSON array of TestRecording objects.`, 
+		authConfig.BaseURL, authConfig.LoginURL, authConfig.Username, authConfig.Password,
+		strings.Join(routeContexts, "\n\n"),
+		formatCodebaseContext(codebaseCtx),
+		string(tcJSON))
+}
+
 func buildPrompt(batch []models.ParsedTestCase, codebaseCtx *CodebaseContext, authConfig models.AuthConfig) string {
-	
 	tcJSON, _ := json.MarshalIndent(batch, "", "  ")
 
-	prompt := fmt.Sprintf(`You are a QA automation expert writing Playwright-ready test blueprints based on test scenarios and the actual application source code.
+	return fmt.Sprintf(`You are a QA automation expert writing Playwright-ready test blueprints based on test scenarios and the actual application source code.
 
 Your task is to convert the following %d Test Scenarios into an array of TestRecording JSON objects.
 
@@ -176,19 +370,35 @@ Your task is to convert the following %d Test Scenarios into an array of TestRec
 8. CRITICAL: Pay attention to the "testType" field. If it's a "Negative case" or similar, strictly ensure assertions check for expected error messages or validation states.
 
 ### SOURCE CODE CONTEXT (%s):
-`, len(batch), authConfig.BaseURL, authConfig.LoginURL, authConfig.Username, authConfig.Password, codebaseCtx.ProjectName)
-
-	// Append limited source files
-	for _, f := range codebaseCtx.Files {
-		prompt += fmt.Sprintf("============= File: %s =============\n%s\n\n", f.Path, f.Content)
-	}
-
-	prompt += fmt.Sprintf(`### TEST SCENARIOS TO AUTOMATE:
 %s
 
-RETURN ONLY THE JSON ARRAY OF RECORDINGS. DO NOT WRAP WITH MARKDOWN BLOCKS EXCEPT WHAT IS ALLOWED BY THE SCHEMA.`, string(tcJSON))
+### TEST SCENARIOS:
+%s
 
-	return prompt
+RETURN ONLY THE JSON ARRAY OF RECORDINGS.`, 
+		len(batch), authConfig.BaseURL, authConfig.LoginURL, authConfig.Username, authConfig.Password,
+		codebaseCtx.ProjectName,
+		formatCodebaseContext(codebaseCtx),
+		string(tcJSON))
+}
+
+func formatCodebaseContext(codebaseCtx *CodebaseContext) string {
+	if codebaseCtx == nil || len(codebaseCtx.Files) == 0 {
+		return "No source files available."
+	}
+
+	result := fmt.Sprintf("Project: %s (%d files, ~%d tokens)\n\n",
+		codebaseCtx.ProjectName, len(codebaseCtx.Files), codebaseCtx.TotalTokens)
+
+	for _, f := range codebaseCtx.Files {
+		lines := strings.Split(f.Content, "\n")
+		if len(lines) > 200 {
+			f.Content = strings.Join(lines[:200], "\n") + "\n... (truncated)"
+		}
+		result += fmt.Sprintf("============= File: %s =============\n%s\n\n", f.Path, f.Content)
+	}
+
+	return result
 }
 
 func getResponseString(resp *genai.GenerateContentResponse) string {
@@ -201,7 +411,6 @@ func getResponseString(resp *genai.GenerateContentResponse) string {
 			b.WriteString(part.Text)
 		}
 	}
-	// clean up any potential markdown wraps if structured output acts weirdly across models
 	res := strings.TrimSpace(b.String())
 	res = strings.TrimPrefix(res, "'''json")
 	res = strings.TrimPrefix(res, "```json")
@@ -209,3 +418,5 @@ func getResponseString(resp *genai.GenerateContentResponse) string {
 	res = strings.TrimSuffix(res, "```")
 	return res
 }
+
+

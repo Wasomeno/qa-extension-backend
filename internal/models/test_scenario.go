@@ -22,6 +22,7 @@ type ParsedStep struct {
 // ParsedTestCase represents a single test case extracted from the XLSX
 type ParsedTestCase struct {
 	ID           string       `json:"id"`
+	Route        string       `json:"route,omitempty"`        // Route this test case targets (e.g., "/otc/invoice/create")
 	UserStory    string       `json:"userStory,omitempty"`
 	TestType     string       `json:"testType,omitempty"`
 	Name         string       `json:"name"`
