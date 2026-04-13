@@ -521,6 +521,9 @@ func executeStep(page playwright.Page, step models.RecordingStep) error {
 			return fmt.Errorf("type action failed: %w", err)
 		}
 
+		// After typing, wait a moment for any validation/triggers to settle
+		page.WaitForTimeout(500)
+
 	case "click":
 		// First, wait for page to settle
 		waitForPageSettled()
@@ -550,6 +553,11 @@ func executeStep(page playwright.Page, step models.RecordingStep) error {
 		if err := locator.Click(clickOptions); err != nil {
 			return fmt.Errorf("click action failed: %w", err)
 		}
+
+		// After clicking, wait for page to settle (in case this triggered navigation)
+		// This ensures the next step waits for the new page to load
+		log.Printf("[Runner] Waiting for page to settle after click...")
+		waitForPageSettled()
 
 	case "press":
 		// Wait for page to settle
