@@ -352,7 +352,8 @@ func executeStep(page playwright.Page, step models.RecordingStep) error {
 	}
 
 	// Helper: Resolve element with polling - waits for element to appear and be actionable
-	resolveElement := func(timeout time.Duration) (playwright.Locator, string, error) {
+	// Returns the raw selector string (not a Locator) to avoid strict mode issues
+	resolveElement := func(timeout time.Duration) (string, error) {
 		allSelectors := []string{}
 
 		// Collect all selectors in priority order: XPath first, then CSS
@@ -366,7 +367,7 @@ func executeStep(page playwright.Page, step models.RecordingStep) error {
 		allSelectors = append(allSelectors, step.SelectorCandidates...)
 
 		if len(allSelectors) == 0 {
-			return nil, "", fmt.Errorf("no selectors available")
+			return "", fmt.Errorf("no selectors available")
 		}
 
 		start := time.Now()
@@ -384,7 +385,7 @@ func executeStep(page playwright.Page, step models.RecordingStep) error {
 
 				log.Printf("[Runner] Attempting selector (%d): %s", attempts, selector)
 
-				// Check if element exists
+				// Check if element exists - use .First() to avoid strict mode issues
 				locator := page.Locator(selector)
 				count, err := locator.Count()
 
@@ -400,10 +401,10 @@ func executeStep(page playwright.Page, step models.RecordingStep) error {
 				}
 
 				if count > 1 {
-					log.Printf("[Runner] Selector '%s' found %d elements (will use first)", selector, count)
+					log.Printf("[Runner] Selector '%s' found %d elements, will use first visible one", selector, count)
 				}
 
-				// Element found! Check if it's visible/actionable
+				// Check if FIRST matching element is visible/actionable
 				isVisible, err := locator.First().IsVisible()
 				if err != nil {
 					lastErr = err
@@ -411,13 +412,23 @@ func executeStep(page playwright.Page, step models.RecordingStep) error {
 				}
 
 				if !isVisible {
-					log.Printf("[Runner] Selector '%s' element found but not visible, waiting...", selector)
+					log.Printf("[Runner] Selector '%s' first element not visible, checking others...", selector)
+					// Try to find ANY visible element with this selector
+					for i := 0; i < int(count) && i < 10; i++ {
+						elem := locator.Nth(i)
+						if vis, err := elem.IsVisible(); err == nil && vis {
+							log.Printf("[Runner] Selector '%s' found visible element at index %d", selector, i)
+							log.Printf("[Runner] Successfully resolved element with selector: %s", selector)
+							return selector, nil
+						}
+					}
+					log.Printf("[Runner] Selector '%s' found elements but none visible, waiting...", selector)
 					continue
 				}
 
-				// Element is visible! Return it
+				// Element is visible! Return the selector string
 				log.Printf("[Runner] Successfully resolved element with selector: %s", selector)
-				return locator, selector, nil
+				return selector, nil
 			}
 
 			// No selector worked this round, wait before retrying
@@ -430,7 +441,7 @@ func executeStep(page playwright.Page, step models.RecordingStep) error {
 			}
 		}
 
-		return nil, "", fmt.Errorf("element not found after %d attempts over %v: %w", attempts, timeout, lastErr)
+		return "", fmt.Errorf("element not found after %d attempts over %v: %w", attempts, timeout, lastErr)
 	}
 
 	switch step.Action {
@@ -465,12 +476,15 @@ func executeStep(page playwright.Page, step models.RecordingStep) error {
 		waitForPageSettled()
 
 		// Resolve element with polling (30 second timeout)
-		locator, usedSelector, err := resolveElement(30 * time.Second)
+		usedSelector, err := resolveElement(30 * time.Second)
 		if err != nil {
 			return fmt.Errorf("type failed: %w", err)
 		}
 
 		log.Printf("[Runner] Typing '%s' into resolved element (selector: %s)", step.Value, usedSelector)
+
+		// Use .First() to avoid strict mode violation with multiple matches
+		locator := page.Locator(usedSelector).First()
 
 		// Clear existing value first
 		locator.Clear()
@@ -489,12 +503,15 @@ func executeStep(page playwright.Page, step models.RecordingStep) error {
 		waitForPageSettled()
 
 		// Resolve element with polling
-		locator, usedSelector, err := resolveElement(30 * time.Second)
+		usedSelector, err := resolveElement(30 * time.Second)
 		if err != nil {
 			return fmt.Errorf("click failed: %w", err)
 		}
 
 		log.Printf("[Runner] Clicking resolved element (selector: %s)", usedSelector)
+
+		// Use .First() to avoid strict mode violation with multiple matches
+		locator := page.Locator(usedSelector).First()
 
 		// Scroll element into view if needed
 		if err := locator.ScrollIntoViewIfNeeded(); err != nil {
@@ -516,20 +533,22 @@ func executeStep(page playwright.Page, step models.RecordingStep) error {
 		waitForPageSettled()
 
 		// Resolve element with polling
-		locator, usedSelector, err := resolveElement(30 * time.Second)
+		usedSelector, err := resolveElement(30 * time.Second)
 		if err != nil {
 			return fmt.Errorf("press failed: %w", err)
 		}
 
 		log.Printf("[Runner] Pressing '%s' on resolved element (selector: %s)", step.Value, usedSelector)
 
+		// Use .First() to avoid strict mode violation with multiple matches
+		locator := page.Locator(usedSelector).First()
 		if err := locator.Press(step.Value); err != nil {
 			return fmt.Errorf("press action failed: %w", err)
 		}
 
 	case "wait":
 		// Explicit wait - resolve element with longer timeout
-		_, _, err := resolveElement(60 * time.Second)
+		_, err := resolveElement(60 * time.Second)
 		return err
 
 	case "assert":
@@ -537,7 +556,7 @@ func executeStep(page playwright.Page, step models.RecordingStep) error {
 		waitForPageSettled()
 
 		// Resolve element and check visibility
-		locator, usedSelector, err := resolveElement(30 * time.Second)
+		usedSelector, err := resolveElement(30 * time.Second)
 		if err != nil {
 			if step.AssertionType == "not_exists" {
 				return nil // Expected: element should NOT exist
@@ -550,6 +569,8 @@ func executeStep(page playwright.Page, step models.RecordingStep) error {
 		}
 
 		// For visible assertions, verify element is actually visible
+		// Use .First() to avoid strict mode violation with multiple matches
+		locator := page.Locator(usedSelector).First()
 		isVisible, _ := locator.IsVisible()
 		if !isVisible && step.AssertionType == "visible" {
 			return fmt.Errorf("assert failed: element found but not visible")
