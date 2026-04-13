@@ -346,7 +346,16 @@ func executeStep(page playwright.Page, step models.RecordingStep) error {
 			log.Printf("[Runner] Load wait warning: %v", err)
 		}
 
-		// Additional wait for React/Angular hydration
+		// Wait for network to be idle (all API calls/data fetching complete)
+		// This is crucial for SPAs that fetch data after initial page load
+		if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
+			State:   playwright.LoadStateNetworkidle,
+			Timeout: playwright.Float(15000), // 15 second timeout
+		}); err != nil {
+			log.Printf("[Runner] NetworkIdle wait warning (non-fatal): %v", err)
+		}
+
+		// Additional wait for React/Angular hydration and render
 		page.WaitForTimeout(1000)
 		return nil
 	}
@@ -463,13 +472,18 @@ func executeStep(page playwright.Page, step models.RecordingStep) error {
 
 		// CRITICAL: Wait for page to settle after navigation
 		log.Printf("[Runner] Waiting for page to settle after navigation...")
-		page.WaitForTimeout(1500) // Give React/Angular time to hydrate
 
-		// Also try to wait for network to be idle
-		page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
-			State: playwright.LoadStateLoad,
-		})
-		page.WaitForTimeout(500)
+		// Wait for network to be idle (all API calls/data fetching complete)
+		// This is crucial for SPAs that fetch data after initial page load
+		if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
+			State:   playwright.LoadStateNetworkidle,
+			Timeout: playwright.Float(15000), // 15 second timeout
+		}); err != nil {
+			log.Printf("[Runner] NetworkIdle wait warning (non-fatal): %v", err)
+		}
+
+		// Additional wait for React/Angular hydration and render
+		page.WaitForTimeout(1000)
 
 	case "type":
 		// First, wait for page to settle if this is after a navigation
