@@ -337,69 +337,100 @@ func RunTestsParallel(ctx context.Context, recordings []models.TestRecording) []
 func executeStep(page playwright.Page, step models.RecordingStep) error {
 	log.Printf("[Runner] Executing action: %s on selector: %s with value: %s", step.Action, step.Selector, step.Value)
 
-	// Helper function to try xpath-based selectors first, then fall back to CSS selectors
-	tryWithFallback := func(playwrightFunc func(selector string) error) error {
-		var lastErr error
-		success := false
-
-		// 1. Try XPath if available (primary selector)
-		if step.XPath != "" {
-			log.Printf("[Runner] Trying XPath: %s", step.XPath)
-			if err := playwrightFunc(step.XPath); err == nil {
-				success = true
-				log.Printf("[Runner] XPath succeeded: %s", step.XPath)
-			} else {
-				lastErr = err
-				log.Printf("[Runner] XPath failed: %v", err)
-			}
+	// Helper: Wait for page to settle after navigation (React/Angular apps need time)
+	waitForPageSettled := func() error {
+		// Wait for DOM to be ready
+		if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
+			State: playwright.LoadStateLoad,
+		}); err != nil {
+			log.Printf("[Runner] Load wait warning: %v", err)
 		}
 
-		// 2. Try XPathCandidates (fallback xpath options)
-		if !success {
-			for i, xpath := range step.XPathCandidates {
-				log.Printf("[Runner] Trying XPathCandidate[%d]: %s", i, xpath)
-				if err := playwrightFunc(xpath); err == nil {
-					success = true
-					log.Printf("[Runner] XPathCandidate[%d] succeeded: %s", i, xpath)
-					break
-				} else {
-					lastErr = err
-					log.Printf("[Runner] XPathCandidate[%d] failed: %v", i, err)
-				}
-			}
-		}
-
-		// 3. Try CSS Selector (fallback to CSS)
-		if !success && step.Selector != "" {
-			log.Printf("[Runner] Trying CSS Selector: %s", step.Selector)
-			if err := playwrightFunc(step.Selector); err == nil {
-				success = true
-				log.Printf("[Runner] CSS Selector succeeded: %s", step.Selector)
-			} else {
-				lastErr = err
-				log.Printf("[Runner] CSS Selector failed: %v", err)
-			}
-		}
-
-		// 4. Try SelectorCandidates (fallback CSS options)
-		if !success {
-			for i, candidate := range step.SelectorCandidates {
-				log.Printf("[Runner] Trying SelectorCandidate[%d]: %s", i, candidate)
-				if err := playwrightFunc(candidate); err == nil {
-					success = true
-					log.Printf("[Runner] SelectorCandidate[%d] succeeded: %s", i, candidate)
-					break
-				} else {
-					lastErr = err
-					log.Printf("[Runner] SelectorCandidate[%d] failed: %v", i, err)
-				}
-			}
-		}
-
-		if !success {
-			return fmt.Errorf("all selectors failed (tried xpath, xpathCandidates, css, cssCandidates): %w", lastErr)
-		}
+		// Additional wait for React/Angular hydration
+		page.WaitForTimeout(1000)
 		return nil
+	}
+
+	// Helper: Resolve element with polling - waits for element to appear and be actionable
+	resolveElement := func(timeout time.Duration) (playwright.Locator, string, error) {
+		allSelectors := []string{}
+
+		// Collect all selectors in priority order: XPath first, then CSS
+		if step.XPath != "" {
+			allSelectors = append(allSelectors, step.XPath)
+		}
+		allSelectors = append(allSelectors, step.XPathCandidates...)
+		if step.Selector != "" {
+			allSelectors = append(allSelectors, step.Selector)
+		}
+		allSelectors = append(allSelectors, step.SelectorCandidates...)
+
+		if len(allSelectors) == 0 {
+			return nil, "", fmt.Errorf("no selectors available")
+		}
+
+		start := time.Now()
+		attempts := 0
+		var lastErr error
+
+		for time.Since(start) < timeout {
+			attempts++
+
+			// Try each selector in order
+			for _, selector := range allSelectors {
+				if selector == "" {
+					continue
+				}
+
+				log.Printf("[Runner] Attempting selector (%d): %s", attempts, selector)
+
+				// Check if element exists
+				locator := page.Locator(selector)
+				count, err := locator.Count()
+
+				if err != nil {
+					lastErr = err
+					log.Printf("[Runner] Selector '%s' error: %v", selector, err)
+					continue
+				}
+
+				if count == 0 {
+					log.Printf("[Runner] Selector '%s' found 0 elements", selector)
+					continue
+				}
+
+				if count > 1 {
+					log.Printf("[Runner] Selector '%s' found %d elements (will use first)", selector, count)
+				}
+
+				// Element found! Check if it's visible/actionable
+				isVisible, err := locator.First().IsVisible()
+				if err != nil {
+					lastErr = err
+					continue
+				}
+
+				if !isVisible {
+					log.Printf("[Runner] Selector '%s' element found but not visible, waiting...", selector)
+					continue
+				}
+
+				// Element is visible! Return it
+				log.Printf("[Runner] Successfully resolved element with selector: %s", selector)
+				return locator, selector, nil
+			}
+
+			// No selector worked this round, wait before retrying
+			page.WaitForTimeout(300)
+
+			// Periodically wait for DOM to be quiet (helps with dynamic content)
+			if attempts%5 == 0 {
+				log.Printf("[Runner] Waiting for DOM to settle after %d attempts...", attempts)
+				page.WaitForTimeout(500)
+			}
+		}
+
+		return nil, "", fmt.Errorf("element not found after %d attempts over %v: %w", attempts, timeout, lastErr)
 	}
 
 	switch step.Action {
@@ -408,85 +439,125 @@ func executeStep(page playwright.Page, step models.RecordingStep) error {
 		if url == "" && step.Selector != "" {
 			url = step.Selector
 		}
-		if _, err := page.Goto(url); err != nil {
+
+		log.Printf("[Runner] Navigating to: %s", url)
+
+		// Navigate with proper waiting
+		if _, err := page.Goto(url, playwright.PageGotoOptions{
+			WaitUntil: playwright.WaitUntilStateLoad,
+			Timeout:   playwright.Float(30000),
+		}); err != nil {
 			return fmt.Errorf("navigate failed: %w", err)
 		}
+
+		// CRITICAL: Wait for page to settle after navigation
+		log.Printf("[Runner] Waiting for page to settle after navigation...")
+		page.WaitForTimeout(1500) // Give React/Angular time to hydrate
+
+		// Also try to wait for network to be idle
+		page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
+			State: playwright.LoadStateLoad,
+		})
+		page.WaitForTimeout(500)
+
 	case "type":
-		typeOptions := playwright.PageTypeOptions{
-			Delay: playwright.Float(100),
-		}
-		err := tryWithFallback(func(selector string) error {
-			return page.Type(selector, step.Value, typeOptions)
-		})
+		// First, wait for page to settle if this is after a navigation
+		waitForPageSettled()
+
+		// Resolve element with polling (30 second timeout)
+		locator, usedSelector, err := resolveElement(30 * time.Second)
 		if err != nil {
-			return err
+			return fmt.Errorf("type failed: %w", err)
 		}
+
+		log.Printf("[Runner] Typing '%s' into resolved element (selector: %s)", step.Value, usedSelector)
+
+		// Clear existing value first
+		locator.Clear()
+
+		// Type with delay for realistic simulation
+		delay := float64(100)
+		typeOptions := playwright.LocatorTypeOptions{
+			Delay: &delay,
+		}
+		if err := locator.Type(step.Value, typeOptions); err != nil {
+			return fmt.Errorf("type action failed: %w", err)
+		}
+
 	case "click":
-		clickOptions := playwright.PageClickOptions{
-			Delay: playwright.Float(150),
-		}
-		err := tryWithFallback(func(selector string) error {
-			return page.Click(selector, clickOptions)
-		})
+		// First, wait for page to settle
+		waitForPageSettled()
+
+		// Resolve element with polling
+		locator, usedSelector, err := resolveElement(30 * time.Second)
 		if err != nil {
-			return err
+			return fmt.Errorf("click failed: %w", err)
 		}
+
+		log.Printf("[Runner] Clicking resolved element (selector: %s)", usedSelector)
+
+		// Scroll element into view if needed
+		if err := locator.ScrollIntoViewIfNeeded(); err != nil {
+			log.Printf("[Runner] ScrollIntoViewIfNeeded warning: %v", err)
+		}
+
+		// Click with small delay
+		delay := float64(150)
+		clickOptions := playwright.LocatorClickOptions{
+			Delay:  &delay,
+			Force:  playwright.Bool(false),
+		}
+		if err := locator.Click(clickOptions); err != nil {
+			return fmt.Errorf("click action failed: %w", err)
+		}
+
 	case "press":
-		err := tryWithFallback(func(selector string) error {
-			return page.Press(selector, step.Value)
-		})
+		// Wait for page to settle
+		waitForPageSettled()
+
+		// Resolve element with polling
+		locator, usedSelector, err := resolveElement(30 * time.Second)
 		if err != nil {
-			return err
+			return fmt.Errorf("press failed: %w", err)
 		}
+
+		log.Printf("[Runner] Pressing '%s' on resolved element (selector: %s)", step.Value, usedSelector)
+
+		if err := locator.Press(step.Value); err != nil {
+			return fmt.Errorf("press action failed: %w", err)
+		}
+
 	case "wait":
-		// wait for selector - prioritize xpath
-		if step.XPath != "" {
-			_, err := page.WaitForSelector(step.XPath)
-			if err == nil {
-				return nil
-			}
-		}
-		for _, xpath := range step.XPathCandidates {
-			_, err := page.WaitForSelector(xpath)
-			if err == nil {
-				return nil
-			}
-		}
-		if step.Selector != "" {
-			_, err := page.WaitForSelector(step.Selector)
-			return err
-		}
-		return nil
+		// Explicit wait - resolve element with longer timeout
+		_, _, err := resolveElement(60 * time.Second)
+		return err
+
 	case "assert":
-		// very basic assertion - prioritize xpath
-		if step.AssertionType == "visible" {
-			// Try xpath first
-			if step.XPath != "" {
-				_, err := page.WaitForSelector(step.XPath, playwright.PageWaitForSelectorOptions{
-					State: playwright.WaitForSelectorStateVisible,
-				})
-				if err == nil {
-					return nil
-				}
+		// Wait for page to settle
+		waitForPageSettled()
+
+		// Resolve element and check visibility
+		locator, usedSelector, err := resolveElement(30 * time.Second)
+		if err != nil {
+			if step.AssertionType == "not_exists" {
+				return nil // Expected: element should NOT exist
 			}
-			// Try xpath candidates
-			for _, xpath := range step.XPathCandidates {
-				_, err := page.WaitForSelector(xpath, playwright.PageWaitForSelectorOptions{
-					State: playwright.WaitForSelectorStateVisible,
-				})
-				if err == nil {
-					return nil
-				}
-			}
-			// Fall back to CSS selector
-			if step.Selector != "" {
-				_, err := page.WaitForSelector(step.Selector, playwright.PageWaitForSelectorOptions{
-					State: playwright.WaitForSelectorStateVisible,
-				})
-				return err
-			}
+			return fmt.Errorf("assert failed: %w", err)
 		}
+
+		if step.AssertionType == "not_exists" {
+			return fmt.Errorf("assert failed: element should not exist but was found with selector: %s", usedSelector)
+		}
+
+		// For visible assertions, verify element is actually visible
+		isVisible, _ := locator.IsVisible()
+		if !isVisible && step.AssertionType == "visible" {
+			return fmt.Errorf("assert failed: element found but not visible")
+		}
+
+		log.Printf("[Runner] Assert passed for selector: %s", usedSelector)
 		return nil
+
 	default:
 		return fmt.Errorf("unknown action: %s", step.Action)
 	}
