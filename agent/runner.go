@@ -346,17 +346,25 @@ func executeStep(page playwright.Page, step models.RecordingStep) error {
 			log.Printf("[Runner] Load wait warning: %v", err)
 		}
 
-		// Wait for network to be idle (all API calls/data fetching complete)
-		// This is crucial for SPAs that fetch data after initial page load
-		if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
-			State:   playwright.LoadStateNetworkidle,
-			Timeout: playwright.Float(15000), // 15 second timeout
-		}); err != nil {
-			log.Printf("[Runner] NetworkIdle wait warning (non-fatal): %v", err)
+		// Wait for React/Angular hydration and initial render
+		page.WaitForTimeout(2000)
+
+		// Try to wait for network idle (capped at reasonable time)
+		// This handles apps that fetch data on load
+		for i := 0; i < 2; i++ {
+			if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
+				State:   playwright.LoadStateNetworkidle,
+				Timeout: playwright.Float(5000), // 5 second timeout
+			}); err == nil {
+				log.Printf("[Runner] NetworkIdle reached")
+				break
+			}
+			log.Printf("[Runner] NetworkIdle not reached, waiting...")
+			page.WaitForTimeout(1000)
 		}
 
-		// Additional wait for React/Angular hydration and render
-		page.WaitForTimeout(1000)
+		// Final settling time - ensures React finishes rendering
+		page.WaitForTimeout(500)
 		return nil
 	}
 
@@ -473,17 +481,8 @@ func executeStep(page playwright.Page, step models.RecordingStep) error {
 		// CRITICAL: Wait for page to settle after navigation
 		log.Printf("[Runner] Waiting for page to settle after navigation...")
 
-		// Wait for network to be idle (all API calls/data fetching complete)
-		// This is crucial for SPAs that fetch data after initial page load
-		if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
-			State:   playwright.LoadStateNetworkidle,
-			Timeout: playwright.Float(15000), // 15 second timeout
-		}); err != nil {
-			log.Printf("[Runner] NetworkIdle wait warning (non-fatal): %v", err)
-		}
-
-		// Additional wait for React/Angular hydration and render
-		page.WaitForTimeout(1000)
+		// Use the same settling strategy as other actions
+		waitForPageSettled()
 
 	case "type":
 		// First, wait for page to settle if this is after a navigation
