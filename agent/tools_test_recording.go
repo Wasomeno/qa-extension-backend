@@ -1048,7 +1048,7 @@ func fetchSingleFileWithClient(glClient *gitlab.Client, projectID, branch, fileP
 }
 
 // agentGenerateSingleRecording uses GitLab tools to figure out what files to fetch
-// based on the test case content
+// based on the test case steps content
 func agentGenerateSingleRecording(ctx context.Context, glClient *gitlab.Client, projectID, branch string, tc *models.ParsedTestCase) (*models.TestRecording, []string, error) {
 	log.Printf("[TestRecordingAgent] agentGenerateSingleRecording: %s - %s", tc.ID, tc.Name)
 
@@ -1062,21 +1062,12 @@ func agentGenerateSingleRecording(ctx context.Context, glClient *gitlab.Client, 
 		ProjectID: projectID,
 	}
 
-	// Use the test case's route if available (from XLSX Route column)
-	route := tc.Route
-	
-	// If no route in XLSX, try to get it from the FIRST step that has a URL/navigate action
-	if route == "" {
-		route = extractRouteFromSteps(tc.Steps)
-	}
-	
-	// If still no route, infer from test case name
-	if route == "" {
-		route = inferRouteFromTestCaseName(tc.Name, glClient, projectID, branch)
-	}
+	// Build context from ALL step content - let the agent figure out what files are needed
+	stepContext := buildStepContext(tc.Steps)
+	log.Printf("[TestRecordingAgent] Step context for %s: %s", tc.ID, stepContext)
 
-	// Agent fetches the page file and related components based on inferred route
-	fetchedFiles, fetchWarnings := agentFetchRelevantFiles(ctx, glClient, projectID, branch, route, tc.Name)
+	// Use test case name + steps content to find relevant files in repo
+	fetchedFiles, fetchWarnings := agentFetchRelevantFilesFromContext(ctx, glClient, projectID, branch, tc.Name, stepContext)
 	warnings = append(warnings, fetchWarnings...)
 
 	// Agent extracts selectors from fetched files
@@ -1103,17 +1094,6 @@ func agentGenerateSingleRecording(ctx context.Context, glClient *gitlab.Client, 
 			models.RecordingStep{Action: "type", Description: "Enter username", Selector: findSelectorByKeyword(selectorMap, "username", "email", "user"), Value: authConfig.Username},
 			models.RecordingStep{Action: "type", Description: "Enter password", Selector: findSelectorByKeyword(selectorMap, "password"), Value: authConfig.Password},
 			models.RecordingStep{Action: "click", Description: "Click login button", Selector: findSelectorByKeyword(selectorMap, "login", "submit", "signin")},
-		)
-	}
-
-	// Navigate to target
-	if route != "" {
-		baseURL := authConfig.BaseURL
-		if baseURL == "" {
-			baseURL = "https://app.example.com"
-		}
-		recording.Steps = append(recording.Steps,
-			models.RecordingStep{Action: "navigate", Description: fmt.Sprintf("Navigate to %s", route), Value: baseURL + route},
 		)
 	}
 
@@ -1148,9 +1128,9 @@ func agentGenerateSingleRecording(ctx context.Context, glClient *gitlab.Client, 
 	return recording, warnings, nil
 }
 
-// agentFetchRelevantFiles uses GitLab API to find and fetch relevant files
-// The agent looks at test case to determine what files are needed
-func agentFetchRelevantFiles(ctx context.Context, glClient *gitlab.Client, projectID, branch, route, testCaseName string) ([]FetchedFile, []string) {
+// agentFetchRelevantFilesFromContext uses GitLab API to find and fetch relevant files
+// based on test case name and steps content
+func agentFetchRelevantFilesFromContext(ctx context.Context, glClient *gitlab.Client, projectID, branch, testCaseName, stepContext string) ([]FetchedFile, []string) {
 	var files []FetchedFile
 	var warnings []string
 
@@ -1158,26 +1138,28 @@ func agentFetchRelevantFiles(ctx context.Context, glClient *gitlab.Client, proje
 		return files, warnings
 	}
 
-	// Normalize route
-	if route == "" {
-		route = "/"
-	}
-	route = strings.TrimPrefix(route, "/")
-
-	// Common patterns for Next.js pages
-	searchPaths := []string{
-		fmt.Sprintf("app/%s/page.tsx", route),
-		fmt.Sprintf("app/%s", route),
-	}
-
-	// Also try to find based on test case name keywords
+	// Extract keywords from test case name + step content
 	keywords := extractKeywordsFromName(testCaseName)
+	
+	// Add keywords from step context
+	contextKeywords := extractKeywordsFromContext(stepContext)
+	keywords = append(keywords, contextKeywords...)
+	
+	// Deduplicate
+	seen := make(map[string]bool)
+	var uniqueKeywords []string
 	for _, kw := range keywords {
-		searchPaths = append(searchPaths, fmt.Sprintf("app/%s/page.tsx", kw))
-		searchPaths = append(searchPaths, fmt.Sprintf("components/%s.tsx", kw))
-		searchPaths = append(searchPaths, fmt.Sprintf("components/%sForm.tsx", kw))
-		searchPaths = append(searchPaths, fmt.Sprintf("components/%sTable.tsx", kw))
+		kwLower := strings.ToLower(kw)
+		if !seen[kwLower] && len(kwLower) >= 2 {
+			seen[kwLower] = true
+			uniqueKeywords = append(uniqueKeywords, kw)
+		}
 	}
+	
+	log.Printf("[TestRecordingAgent] Searching for keywords: %v", uniqueKeywords)
+
+	// Search the app directory for matching modules
+	searchPaths := buildSearchPathsFromKeywords(uniqueKeywords)
 
 	// Fetch each potential file
 	fetched := make(map[string]bool)
@@ -1185,12 +1167,12 @@ func agentFetchRelevantFiles(ctx context.Context, glClient *gitlab.Client, proje
 		if fetched[path] {
 			continue
 		}
-		
+
 		content, err := fetchSingleFileWithClient(glClient, projectID, branch, path)
 		if err != nil {
 			continue
 		}
-		
+
 		files = append(files, FetchedFile{
 			Path:    path,
 			Content: content,
@@ -1199,34 +1181,151 @@ func agentFetchRelevantFiles(ctx context.Context, glClient *gitlab.Client, proje
 		log.Printf("[TestRecordingAgent] Fetched: %s", path)
 	}
 
-	// If no files found, try to list the directory to find related files
+	// If no files found, search the repo tree for modules matching keywords
 	if len(files) == 0 {
-		dirPath := fmt.Sprintf("app/%s", route)
-		treeNodes, _, err := glClient.Repositories.ListTree(projectID, &gitlab.ListTreeOptions{
-			Path:      gitlab.Ptr(dirPath),
-			Recursive: gitlab.Ptr(false),
-		})
-		if err == nil {
-			for _, node := range treeNodes {
-				if node.Type == "blob" && (strings.HasSuffix(node.Path, ".tsx") || strings.HasSuffix(node.Path, ".ts")) {
-					content, err := fetchSingleFileWithClient(glClient, projectID, branch, node.Path)
-					if err == nil {
-						files = append(files, FetchedFile{
-							Path:    node.Path,
-							Content: content,
-						})
-						fetched[node.Path] = true
-					}
+		files, _ = searchRepoTreeForModules(ctx, glClient, projectID, branch, uniqueKeywords)
+	}
+
+	if len(files) == 0 {
+		warnings = append(warnings, fmt.Sprintf("Could not find files for test case '%s'", testCaseName))
+	}
+
+	return files, warnings
+}
+
+// buildSearchPathsFromKeywords builds file paths to search from keywords
+func buildSearchPathsFromKeywords(keywords []string) []string {
+	var paths []string
+
+	for _, kw := range keywords {
+		kwLower := strings.ToLower(kw)
+
+		// Common page patterns
+		paths = append(paths,
+			fmt.Sprintf("app/%s/page.tsx", kwLower),
+			fmt.Sprintf("app/%s", kwLower),
+			fmt.Sprintf("app/(group)/%s/page.tsx", kwLower),
+		)
+
+		// Component patterns
+		paths = append(paths,
+			fmt.Sprintf("components/%s.tsx", kwLower),
+			fmt.Sprintf("components/%sForm.tsx", kwLower),
+			fmt.Sprintf("components/%sTable.tsx", kwLower),
+			fmt.Sprintf("components/%sDialog.tsx", kwLower),
+			fmt.Sprintf("components/%sModal.tsx", kwLower),
+		)
+	}
+
+	// Also try with uppercase (for entity codes like MED)
+	paths = append(paths,
+		fmt.Sprintf("app/%s/page.tsx", strings.ToUpper(keywords[0])),
+		fmt.Sprintf("app/%s", strings.ToUpper(keywords[0])),
+	)
+
+	return paths
+}
+
+// extractKeywordsFromContext extracts keywords from step context
+func extractKeywordsFromContext(context string) []string {
+	if context == "" {
+		return nil
+	}
+
+	// Look for entity names, form fields, button labels
+	// Common patterns: "invoice", "form", "submit", "input", "field", etc.
+
+	var keywords []string
+
+	// Extract words that look like entity/module names
+	// e.g., "Invoice", "MED", "Entity", "District"
+	re := regexp.MustCompile(`[A-Z][a-z]+|[A-Z]{2,}`)
+	matches := re.FindAllString(context, -1)
+	for _, m := range matches {
+		if len(m) >= 2 {
+			keywords = append(keywords, strings.ToLower(m))
+		}
+	}
+
+	// Also look for common UI terms that might indicate files
+	uiTerms := []string{"form", "table", "dialog", "modal", "list", "create", "edit", "view"}
+	for _, term := range uiTerms {
+		if strings.Contains(strings.ToLower(context), term) {
+			keywords = append(keywords, term)
+		}
+	}
+
+	return keywords
+}
+
+// searchRepoTreeForModules searches the repo tree for modules matching keywords
+func searchRepoTreeForModules(ctx context.Context, glClient *gitlab.Client, projectID, branch string, keywords []string) ([]FetchedFile, []string) {
+	var files []FetchedFile
+	var warnings []string
+
+	treeNodes, _, err := glClient.Repositories.ListTree(projectID, &gitlab.ListTreeOptions{
+		Path:      gitlab.Ptr("app"),
+		Recursive: gitlab.Ptr(false),
+	})
+	if err != nil {
+		warnings = append(warnings, fmt.Sprintf("Failed to list app directory: %v", err))
+		return files, warnings
+	}
+
+	for _, node := range treeNodes {
+		if node.Type != "tree" {
+			continue
+		}
+
+		nodeName := strings.ToLower(node.Name)
+
+		// Check if any keyword matches this module
+		for _, kw := range keywords {
+			kwLower := strings.ToLower(kw)
+			if strings.Contains(nodeName, kwLower) || strings.Contains(kwLower, nodeName) {
+				// Try to fetch page.tsx in this module
+				pagePath := fmt.Sprintf("app/%s/page.tsx", node.Name)
+				content, err := fetchSingleFileWithClient(glClient, projectID, branch, pagePath)
+				if err == nil {
+					files = append(files, FetchedFile{
+						Path:    pagePath,
+						Content: content,
+					})
+					log.Printf("[TestRecordingAgent] Found module: %s", node.Name)
 				}
+
+				// Also fetch index.tsx if exists
+				indexPath := fmt.Sprintf("app/%s/index.tsx", node.Name)
+				content, err = fetchSingleFileWithClient(glClient, projectID, branch, indexPath)
+				if err == nil {
+					files = append(files, FetchedFile{
+						Path:    indexPath,
+						Content: content,
+					})
+				}
+				break // Found a match, don't search for other keywords in this module
 			}
 		}
 	}
 
-	if len(files) == 0 {
-		warnings = append(warnings, fmt.Sprintf("Could not find files for route '%s'", route))
-	}
-
 	return files, warnings
+}
+
+// buildStepContext creates a context string from all steps
+func buildStepContext(steps []models.ParsedStep) string {
+	var lines []string
+	for _, step := range steps {
+		if step.Action != "" {
+			lines = append(lines, step.Action)
+		}
+		if step.InputData != "" {
+			lines = append(lines, step.InputData)
+		}
+		if step.ExpectedResult != "" {
+			lines = append(lines, step.ExpectedResult)
+		}
+	}
+	return strings.Join(lines, " ")
 }
 
 // extractKeywordsFromName extracts meaningful keywords from test case name
