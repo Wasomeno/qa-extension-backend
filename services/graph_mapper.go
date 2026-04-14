@@ -854,7 +854,7 @@ func (m *GraphMapper) enrichWithLLM(
 
 	prompt := fmt.Sprintf(`You are a code structure analyzer. Analyze the provided source code files, route map, and available selectors to create a module catalog.
 
-### ROUTE MAP (route → file path):
+### ROUTE MAP (route -> file path):
 %s
 
 ### AVAILABLE SELECTORS (extract from source code - USE THESE ONLY, DO NOT INVENT NEW ONES):
@@ -872,44 +872,40 @@ func (m *GraphMapper) enrichWithLLM(
    - navigationPath: How to navigate to this module (menu hierarchy, e.g., ["Master Data", "Entity Districts"])
 3. For each route in a module, determine:
    - description: What the page does
-   - keyElements: IMPORTANT - map semantic names to ACTUAL selector values from the AVAILABLE SELECTORS section above
+   - keyElements: Map semantic names to ACTUAL selector values from AVAILABLE SELECTORS
    - availableActions: What actions users can perform on this page
 
 ### OUTPUT FORMAT:
-Return ONLY a JSON object with this exact structure:
+Return ONLY a valid JSON object with this exact structure (no markdown, no code blocks):
 {
   "modules": {
     "module-key": {
       "displayName": "string",
       "description": "string",
-      "features": ["list", "create", ...],
+      "features": ["list", "create"],
       "navigationPath": ["Menu", "Submenu"],
       "routes": {
         "/route/path": {
           "filePath": "app/path/page.tsx",
           "description": "string",
           "keyElements": {
-            "searchInput": "selector-value",  <-- MUST use a value from AVAILABLE SELECTORS above
-            "dataTable": "selector-value",   <-- MUST use a value from AVAILABLE SELECTORS above
-            ...
+            "searchInput": "selector-value"
           },
-          "availableActions": ["search", "filter", ...]
+          "availableActions": ["search", "filter"]
         }
       }
     }
   },
   "routeIndex": {
-    "/route/path": "module-key",
-    ...
+    "/route/path": "module-key"
   }
 }
 
 CRITICAL RULES:
-- keyElements values MUST be actual selector values from AVAILABLE SELECTORS above (testid, id, placeholder, aria-label, text, etc.)
-- DO NOT invent new selector values not in AVAILABLE SELECTORS
-- If a semantic element doesn't have a matching selector in AVAILABLE SELECTORS, omit it from keyElements
-- Use lowercase-with-hyphens for module keys (e.g., "entity-districts", "invoice-otc")
-- availableActions should match the features list but scoped to what's available on THIS specific page
+- Return ONLY JSON - no markdown code blocks, no explanations outside JSON
+- keyElements values MUST be actual selector values from AVAILABLE SELECTORS
+- If a semantic element doesn't have a matching selector, omit it from keyElements
+- Use lowercase-with-hyphens for module keys
 `, routesJSON, selectorSummary, filesSummary)
 
 	// Log prompt size for debugging
@@ -945,8 +941,21 @@ CRITICAL RULES:
 	// Parse into a raw map first
 	var rawResult map[string]interface{}
 	if err := json.Unmarshal([]byte(responseText), &rawResult); err != nil {
-		log.Printf("[GraphMapper] Failed to parse LLM response. Response preview: %.200s...", responseText)
-		return nil, fmt.Errorf("failed to parse LLM response: %w", err)
+		// Try to extract JSON from response if it has extra content
+		cleanJSON := extractJSONFromResponse(responseText)
+		if cleanJSON != responseText {
+			log.Printf("[GraphMapper] Attempting to parse cleaned JSON (removed %d chars)", len(responseText)-len(cleanJSON))
+			if err2 := json.Unmarshal([]byte(cleanJSON), &rawResult); err2 == nil {
+				responseText = cleanJSON
+				err = nil
+			}
+		}
+		
+		if err != nil {
+			log.Printf("[GraphMapper] Failed to parse LLM response. Error: %v", err)
+			log.Printf("[GraphMapper] Response length: %d, Preview: %.500s...", len(responseText), responseText)
+			return nil, fmt.Errorf("failed to parse LLM response: %w", err)
+		}
 	}
 
 	// Convert to ModuleCatalog
@@ -1603,9 +1612,46 @@ func extractResponseText(resp *genai.GenerateContentResponse) string {
 		}
 	}
 	res := strings.TrimSpace(b.String())
+	
+	// Handle markdown code blocks - strip outer ```json ... ``` 
 	res = strings.TrimPrefix(res, "```json")
 	res = strings.TrimPrefix(res, "```")
 	res = strings.TrimSuffix(res, "```")
 	res = strings.TrimSuffix(res, "'''")
+	
+	// Handle embedded code blocks inside the JSON (e.g., example selectors)
+	// Find the first { and last } to get the actual JSON boundaries
+	firstBrace := strings.Index(res, "{")
+	lastBrace := strings.LastIndex(res, "}")
+	
+	if firstBrace != -1 && lastBrace > firstBrace {
+		res = res[firstBrace : lastBrace+1]
+	}
+	
+	// Remove any remaining markdown formatting
+	res = strings.ReplaceAll(res, "\\`", "`")
+	res = strings.ReplaceAll(res, "```", "")
+	
 	return strings.TrimSpace(res)
+}
+
+// extractJSONFromResponse attempts to extract valid JSON from a response that may contain extra content
+func extractJSONFromResponse(response string) string {
+	// Try to find JSON boundaries
+	firstBrace := strings.Index(response, "{")
+	lastBrace := strings.LastIndex(response, "}")
+	
+	if firstBrace == -1 || lastBrace == -1 || lastBrace <= firstBrace {
+		return response
+	}
+	
+	// Extract content between first { and last }
+	result := response[firstBrace : lastBrace+1]
+	
+	// Validate it's parseable
+	if len(result) < 10 {
+		return response
+	}
+	
+	return result
 }
