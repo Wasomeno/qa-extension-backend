@@ -9,7 +9,6 @@ import (
 	"os"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -29,10 +28,8 @@ const (
 	GraphMapCacheTTL = 24 * time.Hour
 	GraphMapKeyPrefix = "graph_map"
 	
-	// File fetching limits
-	DefaultMaxFilesPerBatch = 100  // Max files to fetch per enrichment batch
-	DefaultMaxTotalFiles = 500     // Max total files to process
-	MaxLLMCallsPerCatalog = 5       // Max LLM calls to prevent runaway costs
+	// File fetching - fetch ALL files for complete coverage
+	MaxLLMCallsPerCatalog = 3
 	SelectorConfidenceThreshold = 0.7
 )
 
@@ -47,11 +44,12 @@ type CoverageReport struct {
 	TotalModules         int                   `json:"totalModules"`
 	TotalSelectors       int                   `json:"totalSelectors"`
 	PagesWithSelectors   int                   `json:"pagesWithSelectors"`
-	PagesWithoutSelectors int                 `json:"pagesWithoutSelectors"`
+	PagesWithoutSelectors int                  `json:"pagesWithoutSelectors"`
 	InvalidSelectors     int                   `json:"invalidSelectors"`
 	LLMCalls             int                   `json:"llmCalls"`
 	GenerationTimeMs     int64                 `json:"generationTimeMs"`
 	ModuleStats          map[string]ModuleCoverage `json:"moduleStats"`
+	SelectorBreakdown    map[string]int        `json:"selectorBreakdown"` // testid, id, placeholder, etc.
 }
 
 // ModuleCoverage contains coverage stats per module
@@ -702,8 +700,7 @@ func (m *GraphMapper) FetchFileTree(glClient *gitlab.Client, projectID, branch s
 	return m.fetchFileTree(glClient, projectID, branch)
 }
 
-// fetchSourceFilesForEnrichment fetches key source files for LLM enrichment
-// Now processes files in batches to cover more routes
+// fetchSourceFilesForEnrichment fetches ALL source files for complete selector coverage
 func (m *GraphMapper) fetchSourceFilesForEnrichment(
 	ctx context.Context,
 	glClient *gitlab.Client,
@@ -748,20 +745,9 @@ func (m *GraphMapper) fetchSourceFilesForEnrichment(
 	// Combine: pages first, then supporting files
 	allRelevant := append(pageFiles, otherFiles...)
 	
-	// Limit based on configuration
-	maxFiles := DefaultMaxFilesPerBatch
-	if envMax := os.Getenv("KG_MAX_FILES"); envMax != "" {
-		if parsed, err := strconv.Atoi(envMax); err == nil && parsed > 0 {
-			maxFiles = parsed
-		}
-	}
-	
-	if len(allRelevant) > maxFiles {
-		allRelevant = allRelevant[:maxFiles]
-	}
-
-	log.Printf("[GraphMapper] Fetching %d source files for enrichment (from %d total relevant files)", 
-		len(allRelevant), len(pageFiles)+len(otherFiles))
+	// FETCH ALL FILES - no limit for complete coverage
+	log.Printf("[GraphMapper] Fetching ALL %d source files (no limit) for complete selector extraction", 
+		len(allRelevant))
 
 	// Fetch each file with error tracking
 	fetchedCount := 0
@@ -770,18 +756,23 @@ func (m *GraphMapper) fetchSourceFilesForEnrichment(
 		content, err := m.fetchFileContent(glClient, projectID, branch, path)
 		if err != nil {
 			failedCount++
-			log.Printf("[GraphMapper] Warning: failed to fetch %s: %v", path, err)
+			if failedCount <= 10 { // Only log first 10 failures
+				log.Printf("[GraphMapper] Warning: failed to fetch %s: %v", path, err)
+			}
 			continue
 		}
 		sourceFiles[path] = content
 		fetchedCount++
 		
-		// Log progress for large fetches
-		if fetchedCount%50 == 0 {
+		// Log progress
+		if fetchedCount%100 == 0 {
 			log.Printf("[GraphMapper] Progress: %d/%d files fetched", fetchedCount, len(allRelevant))
 		}
 	}
 
+	if failedCount > 10 {
+		log.Printf("[GraphMapper] ... and %d more failed fetches (omitted)", failedCount-10)
+	}
 	log.Printf("[GraphMapper] Source files fetched: %d success, %d failed", fetchedCount, failedCount)
 	return sourceFiles, nil
 }
@@ -820,6 +811,7 @@ func decodeBase64(s string) ([]byte, error) {
 
 // EnrichWithLLM calls the LLM to generate module descriptions and features
 // It uses the pre-extracted selector index to ensure LLM only references EXISTING selectors
+// Now processes routes in batches to cover ALL routes, not just a subset
 func (m *GraphMapper) enrichWithLLM(
 	ctx context.Context,
 	projectID, branch string,
@@ -843,194 +835,73 @@ func (m *GraphMapper) enrichWithLLM(
 		return nil, fmt.Errorf("failed to create genai client: %w", err)
 	}
 
-	// Build the prompt
-	routesJSON, _ := json.MarshalIndent(routeMap, "", "  ")
-
 	// Build selector summary from the extracted selectors
 	selectorSummary := m.buildSelectorSummaryForPrompt(selectorIndex)
-	
-	// Get full file contents for context (not truncated)
-	filesSummary := m.buildFilesSummaryForPrompt(sourceFiles)
 
-	prompt := fmt.Sprintf(`You are a code structure analyzer. Analyze the provided source code files, route map, and available selectors to create a module catalog.
+	// First, group routes deterministically by module (first path segment)
+	moduleGroups := m.groupRoutesByModule(routeMap)
+	log.Printf("[GraphMapper] Grouped %d routes into %d modules deterministically", 
+		len(routeMap), len(moduleGroups))
 
-### ROUTE MAP (route -> file path):
-%s
-
-### AVAILABLE SELECTORS (extract from source code - USE THESE ONLY, DO NOT INVENT NEW ONES):
-%s
-
-### SOURCE FILES (for reference):
-%s
-
-### INSTRUCTIONS:
-1. Group the routes into functional MODULES based on their paths and code content
-2. For each module, determine:
-   - displayName: Human-readable name (e.g., "Master Data - Entity Districts")
-   - description: What the module does (1-2 sentences)
-   - features: List of available features (e.g., ["list", "create", "edit", "delete", "search", "filter", "sort"])
-   - navigationPath: How to navigate to this module (menu hierarchy, e.g., ["Master Data", "Entity Districts"])
-3. For each route in a module, determine:
-   - description: What the page does
-   - keyElements: Map semantic names to ACTUAL selector values from AVAILABLE SELECTORS
-   - availableActions: What actions users can perform on this page
-
-### OUTPUT FORMAT:
-Return ONLY a valid JSON object with this exact structure (no markdown, no code blocks):
-{
-  "modules": {
-    "module-key": {
-      "displayName": "string",
-      "description": "string",
-      "features": ["list", "create"],
-      "navigationPath": ["Menu", "Submenu"],
-      "routes": {
-        "/route/path": {
-          "filePath": "app/path/page.tsx",
-          "description": "string",
-          "keyElements": {
-            "searchInput": "selector-value"
-          },
-          "availableActions": ["search", "filter"]
-        }
-      }
-    }
-  },
-  "routeIndex": {
-    "/route/path": "module-key"
-  }
-}
-
-CRITICAL RULES:
-- Return ONLY JSON - no markdown code blocks, no explanations outside JSON
-- keyElements values MUST be actual selector values from AVAILABLE SELECTORS
-- If a semantic element doesn't have a matching selector, omit it from keyElements
-- Use lowercase-with-hyphens for module keys
-`, routesJSON, selectorSummary, filesSummary)
-
-	// Log prompt size for debugging
-	log.Printf("[GraphMapper] Prompt size: %d chars, %d routes, %d selectors, %d files",
-		len(prompt), len(routeMap), len(selectorIndex), len(sourceFiles))
-
-	// Call LLM
-	config := &genai.GenerateContentConfig{
-		Temperature:      genai.Ptr(float32(0.3)),
-		ResponseMIMEType: "application/json",
-	}
-
-	// Use gemini-3.1-pro for the heavy lifting (smarter model for structured output)
-	resp, err := client.Models.GenerateContent(
-		ctx,
-		"gemini-3.1-pro-preview",
-		genai.Text(prompt),
-		config,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("LLM call failed: %w", err)
-	}
-
-	responseText := extractResponseText(resp)
-	if responseText == "" {
-		log.Printf("[GraphMapper] LLM returned empty response. Prompt length: %d chars, Route count: %d, Files: %d",
-			len(prompt), len(routeMap), len(sourceFiles))
-		return nil, fmt.Errorf("empty response from LLM")
-	}
-
-	log.Printf("[GraphMapper] LLM response length: %d chars", len(responseText))
-
-	// Parse into a raw map first
-	var rawResult map[string]interface{}
-	if err := json.Unmarshal([]byte(responseText), &rawResult); err != nil {
-		// Try to extract JSON from response if it has extra content
-		cleanJSON := extractJSONFromResponse(responseText)
-		if cleanJSON != responseText {
-			log.Printf("[GraphMapper] Attempting to parse cleaned JSON (removed %d chars)", len(responseText)-len(cleanJSON))
-			if err2 := json.Unmarshal([]byte(cleanJSON), &rawResult); err2 == nil {
-				responseText = cleanJSON
-				err = nil
-			}
-		}
-		
-		if err != nil {
-			log.Printf("[GraphMapper] Failed to parse LLM response. Error: %v", err)
-			log.Printf("[GraphMapper] Response length: %d, Preview: %.500s...", len(responseText), responseText)
-			return nil, fmt.Errorf("failed to parse LLM response: %w", err)
-		}
-	}
-
-	// Convert to ModuleCatalog
+	// Build the catalog with deterministic structure
 	catalog := &ModuleCatalog{
 		ProjectID:   projectID,
 		Branch:      branch,
 		GeneratedAt: time.Now(),
 		Modules:     make(map[string]ModuleEntry),
 		RouteIndex:  make(map[string]string),
+		Selectors:   selectorIndex,
 	}
 
-	if modulesRaw, ok := rawResult["modules"].(map[string]interface{}); ok {
-		for key, moduleValue := range modulesRaw {
-			moduleEntry := ModuleEntry{
-				Routes: make(map[string]RouteEntry),
-			}
-			if moduleMap, ok := moduleValue.(map[string]interface{}); ok {
-				if displayName, ok := moduleMap["displayName"].(string); ok {
-					moduleEntry.DisplayName = displayName
-				}
-				if description, ok := moduleMap["description"].(string); ok {
-					moduleEntry.Description = description
-				}
-				if features, ok := moduleMap["features"].([]interface{}); ok {
-					for _, f := range features {
-						if s, ok := f.(string); ok {
-							moduleEntry.Features = append(moduleEntry.Features, s)
-						}
-					}
-				}
-				if navPath, ok := moduleMap["navigationPath"].([]interface{}); ok {
-					for _, n := range navPath {
-						if s, ok := n.(string); ok {
-							moduleEntry.NavigationPath = append(moduleEntry.NavigationPath, s)
-						}
-					}
-				}
-				if routesRaw, ok := moduleMap["routes"].(map[string]interface{}); ok {
-					for routePath, routeValue := range routesRaw {
-						routeEntry := RouteEntry{}
-						if routeMap_, ok := routeValue.(map[string]interface{}); ok {
-							if filePath, ok := routeMap_["filePath"].(string); ok {
-								routeEntry.FilePath = filePath
-							}
-							if desc, ok := routeMap_["description"].(string); ok {
-								routeEntry.Description = desc
-							}
-							if keyEl, ok := routeMap_["keyElements"].(map[string]interface{}); ok {
-								routeEntry.KeyElements = make(map[string]string)
-								for k, v := range keyEl {
-									if s, ok := v.(string); ok {
-										routeEntry.KeyElements[k] = s
-									}
-								}
-							}
-							if actions, ok := routeMap_["availableActions"].([]interface{}); ok {
-								for _, a := range actions {
-									if s, ok := a.(string); ok {
-										routeEntry.AvailableActions = append(routeEntry.AvailableActions, s)
-									}
-								}
-							}
-						}
-						moduleEntry.Routes[routePath] = routeEntry
-						catalog.RouteIndex[routePath] = key
-					}
-				}
-			}
-			catalog.Modules[key] = moduleEntry
+	// Process each module - use LLM to get descriptions for each module batch
+	llmCallCount := 0
+	for moduleKey, routes := range moduleGroups {
+		moduleEntry := ModuleEntry{
+			DisplayName: m.formatModuleName(moduleKey),
+			Description: m.inferModuleDescription(moduleKey, routes),
+			Features:    m.inferModuleFeatures(routes),
+			NavigationPath: m.inferNavigationPath(moduleKey),
+			Routes:      make(map[string]RouteEntry),
 		}
+
+		// Get selectors for routes in this module
+		moduleSelectors := m.getSelectorsForRoutes(routes, routeMap, selectorIndex)
+
+		// Process routes in batches (20 routes per batch to fit in LLM context)
+		batchSize := 20
+		for i := 0; i < len(routes); i += batchSize {
+			end := i + batchSize
+			if end > len(routes) {
+				end = len(routes)
+			}
+			batch := routes[i:end]
+			
+			// Build route context for this batch
+			routeContexts := m.buildRouteContexts(batch, routeMap, moduleSelectors)
+			
+			// Call LLM for this batch
+			enrichedRoutes, err := m.enrichRoutesBatch(ctx, client, routeContexts, selectorSummary)
+			if err != nil {
+				log.Printf("[GraphMapper] Warning: LLM batch failed for %s batch %d: %v", 
+					moduleKey, i/batchSize, err)
+				// Use fallback route entries
+				for _, route := range batch {
+					catalog.RouteIndex[route] = moduleKey
+					moduleEntry.Routes[route] = m.createFallbackRouteEntry(route, routeMap[route], moduleSelectors)
+				}
+			} else {
+				llmCallCount++
+				for route, entry := range enrichedRoutes {
+					catalog.RouteIndex[route] = moduleKey
+					moduleEntry.Routes[route] = entry
+				}
+			}
+		}
+
+		catalog.Modules[moduleKey] = moduleEntry
 	}
 
-	if len(catalog.Modules) == 0 {
-		return nil, fmt.Errorf("LLM returned no modules")
-	}
+	log.Printf("[GraphMapper] LLM enrichment complete: %d calls", llmCallCount)
 
 	// Validate keyElements against actual selectors - filter out hallucinated values
 	var invalidSelectorCount int
@@ -1038,6 +909,234 @@ CRITICAL RULES:
 	log.Printf("[GraphMapper] Total invalid selectors filtered: %d", invalidSelectorCount)
 	
 	return catalog, nil
+}
+
+// groupRoutesByModule deterministically groups routes by first path segment
+func (m *GraphMapper) groupRoutesByModule(routeMap map[string]string) map[string][]string {
+	modules := make(map[string][]string)
+	
+	for route := range routeMap {
+		parts := strings.Split(strings.TrimPrefix(route, "/"), "/")
+		if len(parts) > 0 && parts[0] != "" {
+			moduleKey := parts[0]
+			modules[moduleKey] = append(modules[moduleKey], route)
+		}
+	}
+	
+	// Sort routes within each module
+	for _, routes := range modules {
+		sort.Strings(routes)
+	}
+	
+	return modules
+}
+
+// formatModuleName creates a human-readable name from module key
+func (m *GraphMapper) formatModuleName(moduleKey string) string {
+	// Convert kebab-case or snake_case to Title Case
+	name := strings.ReplaceAll(moduleKey, "-", " ")
+	name = strings.ReplaceAll(name, "_", " ")
+	name = strings.Title(name)
+	return name
+}
+
+// inferModuleDescription guesses description based on module name
+func (m *GraphMapper) inferModuleDescription(moduleKey string, routes []string) string {
+	// Map common module keys to descriptions
+	descriptions := map[string]string{
+		"auth":          "Authentication and user session management",
+		"dashboard":     "Main dashboard with overview metrics and navigation",
+		"master-data":   "Master data management for core business entities",
+		"capex":         "Capital expenditure budget planning and management",
+		"opex":          "Operational expenditure budget management",
+		"invoice":       "Invoice processing and management",
+		"otc":           "Order to cash process management",
+		"tax-system":    "Tax compliance and reporting system",
+		"tax-monitoring": "Tax project monitoring and approval workflows",
+		"wbs":           "Work breakdown structure management",
+		"iam":           "Identity and access management",
+		"supplier":      "Supplier management and contracts",
+		"peminjaman":    "Asset borrowing and loan management",
+	}
+	
+	if desc, ok := descriptions[moduleKey]; ok {
+		return desc
+	}
+	
+	return fmt.Sprintf("%s module - %d routes", m.formatModuleName(moduleKey), len(routes))
+}
+
+// inferModuleFeatures guesses features from route patterns
+func (m *GraphMapper) inferModuleFeatures(routes []string) []string {
+	features := []string{"list", "view"}
+	hasCreate := false
+	hasEdit := false
+	
+	for _, route := range routes {
+		if strings.Contains(route, "/create") || strings.Contains(route, "/new") {
+			hasCreate = true
+		}
+		if strings.Contains(route, "/edit") || strings.Contains(route, "/[id]/edit") {
+			hasEdit = true
+		}
+	}
+	
+	if hasCreate {
+		features = append(features, "create")
+	}
+	if hasEdit {
+		features = append(features, "edit")
+	}
+	features = append(features, "search", "filter")
+	
+	return features
+}
+
+// inferNavigationPath guesses menu hierarchy from module key
+func (m *GraphMapper) inferNavigationPath(moduleKey string) []string {
+	// Map to common navigation paths
+	navPaths := map[string][]string{
+		"auth":           {"Authentication"},
+		"dashboard":      {"Dashboard"},
+		"master-data":    {"Master Data"},
+		"capex":          {"CAPEX"},
+		"opex":           {"OPEX"},
+		"invoice":        {"Invoices"},
+		"invoice-noi-external": {"Invoices", "Non-PO External"},
+		"invoice-noi-internal": {"Invoices", "Non-PO Internal"},
+		"invoice-oi":     {"Invoices", "Operating"},
+		"otc":            {"OTC"},
+		"tax-system":     {"Tax System"},
+		"tax-monitoring":  {"Tax Monitoring"},
+		"wbs":            {"WBS"},
+		"iam":            {"IAM"},
+		"supplier":       {"Supplier"},
+		"peminjaman":     {"Loan Management"},
+	}
+	
+	if path, ok := navPaths[moduleKey]; ok {
+		return path
+	}
+	
+	return []string{m.formatModuleName(moduleKey)}
+}
+
+// getSelectorsForRoutes builds selector context for a set of routes
+func (m *GraphMapper) getSelectorsForRoutes(routes []string, routeMap map[string]string, selectorIndex map[string][]ExtractedSelector) map[string][]ExtractedSelector {
+	result := make(map[string][]ExtractedSelector)
+	
+	for _, route := range routes {
+		filePath, ok := routeMap[route]
+		if !ok {
+			continue
+		}
+		if selectors, ok := selectorIndex[filePath]; ok {
+			result[route] = selectors
+		}
+	}
+	
+	return result
+}
+
+// buildRouteContexts creates route context strings for LLM
+func (m *GraphMapper) buildRouteContexts(routes []string, routeMap map[string]string, selectorIndex map[string][]ExtractedSelector) string {
+	var lines []string
+	
+	for _, route := range routes {
+		filePath := routeMap[route]
+		selectors := selectorIndex[filePath]
+		
+		line := fmt.Sprintf("Route: %s\nFile: %s", route, filePath)
+		
+		if len(selectors) > 0 {
+			var selLines []string
+			for _, sel := range selectors {
+				if sel.Testid != "" {
+					selLines = append(selLines, fmt.Sprintf("  [data-testid='%s']", sel.Testid))
+				}
+				if sel.ID != "" {
+					selLines = append(selLines, fmt.Sprintf("  #%s", sel.ID))
+				}
+				if sel.Name != "" {
+					selLines = append(selLines, fmt.Sprintf("  [name='%s']", sel.Name))
+				}
+				if sel.Placeholder != "" {
+					selLines = append(selLines, fmt.Sprintf("  [placeholder='%s']", sel.Placeholder))
+				}
+				if sel.Text != "" && len(sel.Text) < 50 {
+					selLines = append(selLines, fmt.Sprintf("  text('%s')", sel.Text))
+				}
+			}
+			if len(selLines) > 0 {
+				line += "\nSelectors:\n" + strings.Join(selLines, "\n")
+			}
+		}
+		
+		lines = append(lines, line)
+	}
+	
+	return strings.Join(lines, "\n\n")
+}
+
+// enrichRoutesBatch calls LLM to get enriched route entries
+func (m *GraphMapper) enrichRoutesBatch(ctx context.Context, client *genai.Client, routeContexts string, selectorSummary string) (map[string]RouteEntry, error) {
+	prompt := fmt.Sprintf(`Analyze these routes and return JSON with route details.
+
+Routes:
+%s
+
+AVAILABLE SELECTORS (use these ONLY):
+%s
+
+Return JSON like:
+{
+  "/route1": {"description": "...", "keyElements": {"searchInput": "selector-value"}, "availableActions": ["search"]},
+  "/route2": {"description": "...", "keyElements": {}, "availableActions": ["view"]}
+}`, routeContexts, selectorSummary)
+
+	config := &genai.GenerateContentConfig{
+		Temperature:      genai.Ptr(float32(0.2)),
+		ResponseMIMEType: "application/json",
+	}
+
+	resp, err := client.Models.GenerateContent(ctx, "gemini-3.1-pro-preview", genai.Text(prompt), config)
+	if err != nil {
+		return nil, err
+	}
+
+	responseText := extractResponseText(resp)
+	
+	var result map[string]RouteEntry
+	if err := json.Unmarshal([]byte(responseText), &result); err != nil {
+		return nil, err
+	}
+	
+	return result, nil
+}
+
+// createFallbackRouteEntry creates a basic route entry when LLM fails
+func (m *GraphMapper) createFallbackRouteEntry(route, filePath string, selectorIndex map[string][]ExtractedSelector) RouteEntry {
+	entry := RouteEntry{
+		FilePath:         filePath,
+		Description:      fmt.Sprintf("Page at %s", route),
+		KeyElements:      make(map[string]string),
+		AvailableActions: []string{"view"},
+	}
+	
+	// Try to add selectors from the file
+	if sels, ok := selectorIndex[filePath]; ok {
+		for _, sel := range sels {
+			if sel.Testid != "" {
+				if entry.KeyElements == nil {
+					entry.KeyElements = make(map[string]string)
+				}
+				entry.KeyElements["testid"] = sel.Testid
+				break
+			}
+		}
+	}
+	
+	return entry
 }
 
 // validateAndFilterKeyElements checks that keyElements reference actual selectors from the codebase
