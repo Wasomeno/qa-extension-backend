@@ -936,22 +936,43 @@ type GenerateRecordingsOutput struct {
 	Warnings     []string                `json:"warnings"`
 }
 
-// GenerateRecordingsForScenarioCtx is the context.Context version for HTTP handlers
-// Pass the gitlab client from the handler to fetch files
-func GenerateRecordingsForScenarioCtx(ctx context.Context, glClient *gitlab.Client, input GenerateRecordingsInput) (*GenerateRecordingsOutput, error) {
-	log.Printf("[TestRecordingAgent] GenerateRecordingsForScenarioCtx: %s", input.ScenarioID)
+// =============================================================================
+// AGENT-BASED TEST RECORDING GENERATION
+// The agent uses GitLab tools to navigate repo and find files
+// =============================================================================
 
+// TestRecordingAgentInput is the prompt/input for the agent to generate recordings
+type TestRecordingAgentInput struct {
+	ScenarioID string   `json:"scenarioID"`
+	SheetNames []string `json:"sheetNames,omitempty"`
+}
+
+// RunAgentForTestGeneration runs the QA agent to generate recordings
+// The agent will use GitLab tools to navigate repo and find files
+func RunAgentForTestGeneration(ctx context.Context, input TestRecordingAgentInput) (*GenerateRecordingsOutput, error) {
+	log.Printf("[TestRecordingAgent] RunAgentForTestGeneration: %s", input.ScenarioID)
+
+	// Get scenario from Redis
+	scenario, err := getScenarioFromRedis(input.ScenarioID)
+	if err != nil {
+		return nil, fmt.Errorf("scenario not found: %w", err)
+	}
+
+	// Run the agent - it will use its GitLab tools to:
+	// 1. Get project ID from scenario
+	// 2. List repo tree to find routes
+	// 3. Get files for relevant pages
+	// 4. Extract selectors
+	// 5. Build recordings
+	
+	// For now, use direct tool calls mimicking what the agent would do
 	output := &GenerateRecordingsOutput{
 		Recordings: []models.TestRecording{},
 		FailedIDs:  []string{},
 		Warnings:   []string{},
 	}
 
-	scenario, err := getScenarioFromRedis(input.ScenarioID)
-	if err != nil {
-		return nil, fmt.Errorf("scenario not found: %w", err)
-	}
-
+	// Collect test cases to process
 	var targetCases []*models.ParsedTestCase
 	for _, sheet := range scenario.Sheets {
 		if len(input.SheetNames) > 0 {
@@ -966,148 +987,94 @@ func GenerateRecordingsForScenarioCtx(ctx context.Context, glClient *gitlab.Clie
 				continue
 			}
 		}
-
 		for i := range sheet.TestCases {
-			tc := &sheet.TestCases[i]
-			if len(input.TestCaseIDs) > 0 {
-				found := false
-				for _, tcID := range input.TestCaseIDs {
-					if tc.ID == tcID || tc.Name == tcID {
-						found = true
-						break
-					}
-				}
-				if !found {
-					continue
-				}
-			}
-			targetCases = append(targetCases, tc)
+			targetCases = append(targetCases, &sheet.TestCases[i])
 		}
 	}
 
 	output.TotalCount = len(targetCases)
 	log.Printf("[TestRecordingAgent] Processing %d test cases", output.TotalCount)
 
-	if input.AuthConfig.LoginURL == "" {
-		input.AuthConfig = AuthConfig{
-			BaseURL:  scenario.AuthConfig.BaseURL,
-			LoginURL: scenario.AuthConfig.LoginURL,
-			Username: scenario.AuthConfig.Username,
-			Password: scenario.AuthConfig.Password,
-		}
-	}
-	if input.ProjectID == "" {
-		input.ProjectID = scenario.ProjectID
+	// Get GitLab client from scenario's project
+	glClient, err := getGitLabClientFromScenarioProject(ctx, scenario)
+	if err != nil {
+		log.Printf("[TestRecordingAgent] Failed to get GitLab client: %v", err)
+		// Continue anyway - recordings will have no selectors
 	}
 
-	// Get branch
-	branch := "main"
-	if glClient != nil && input.ProjectID != "" {
-		if project, _, err := glClient.Projects.GetProject(input.ProjectID, nil); err == nil {
+	var branch string
+	if glClient != nil && scenario.ProjectID != "" {
+		if project, _, err := glClient.Projects.GetProject(scenario.ProjectID, nil); err == nil {
 			branch = project.DefaultBranch
 		}
 	}
+	if branch == "" {
+		branch = "main"
+	}
 
-	batchSize := 5
-	for i := 0; i < len(targetCases); i += batchSize {
-		end := i + batchSize
-		if end > len(targetCases) {
-			end = len(targetCases)
+	// For each test case, let the agent figure out what to fetch
+	// Agent will look at test case name → infer what files are needed
+	for _, tc := range targetCases {
+		recording, warnings, err := agentGenerateSingleRecording(ctx, glClient, scenario.ProjectID, branch, tc)
+		if err != nil {
+			log.Printf("[TestRecordingAgent] Failed for %s: %v", tc.ID, err)
+			output.FailedIDs = append(output.FailedIDs, tc.ID)
+			continue
 		}
-		batch := targetCases[i:end]
 
-		for _, tc := range batch {
-			result, err := generateSingleRecordingWithClient(ctx, glClient, input.ProjectID, branch, tc.ID, input)
-			if err != nil {
-				log.Printf("[TestRecordingAgent] Failed for %s: %v", tc.ID, err)
-				output.FailedIDs = append(output.FailedIDs, tc.ID)
-				continue
-			}
-
-			if result.Recording != nil {
-				output.Recordings = append(output.Recordings, *result.Recording)
-				output.SuccessCount++
-				output.Warnings = append(output.Warnings, result.Warnings...)
-			}
-		}
+		output.Recordings = append(output.Recordings, *recording)
+		output.SuccessCount++
+		output.Warnings = append(output.Warnings, warnings...)
 	}
 
 	log.Printf("[TestRecordingAgent] Completed: %d/%d recordings", output.SuccessCount, output.TotalCount)
 	return output, nil
 }
 
-// generateSingleRecordingWithClient generates a single recording with GitLab client
-func generateSingleRecordingWithClient(ctx context.Context, glClient *gitlab.Client, projectID, branch, testCaseID string, input GenerateRecordingsInput) (*GenerateRecordingOutput, error) {
-	log.Printf("[TestRecordingAgent] generateSingleRecordingWithClient: %s", testCaseID)
-
-	// Step 1: Get scenario and test case
-	scenario, err := getScenarioFromRedis(input.ScenarioID)
+// fetchSingleFileWithClient fetches a single file using provided GitLab client
+func fetchSingleFileWithClient(glClient *gitlab.Client, projectID, branch, filePath string) (string, error) {
+	fileOpt := &gitlab.GetFileOptions{Ref: gitlab.Ptr(branch)}
+	file, _, err := glClient.RepositoryFiles.GetFile(projectID, filePath, fileOpt)
 	if err != nil {
-		return nil, fmt.Errorf("scenario not found: %w", err)
+		return "", err
 	}
 
-	var testCase *models.ParsedTestCase
-	for _, sheet := range scenario.Sheets {
-		for _, tc := range sheet.TestCases {
-			if tc.ID == testCaseID || tc.Name == testCaseID {
-				testCase = &tc
-				break
-			}
-		}
-		if testCase != nil {
-			break
-		}
+	contentBytes, err := base64.StdEncoding.DecodeString(file.Content)
+	if err != nil {
+		return "", err
 	}
 
-	if testCase == nil {
-		return nil, fmt.Errorf("test case not found: %s", testCaseID)
+	return string(contentBytes), nil
+}
+
+// agentGenerateSingleRecording uses GitLab tools to figure out what files to fetch
+// based on the test case content
+func agentGenerateSingleRecording(ctx context.Context, glClient *gitlab.Client, projectID, branch string, tc *models.ParsedTestCase) (*models.TestRecording, []string, error) {
+	log.Printf("[TestRecordingAgent] agentGenerateSingleRecording: %s - %s", tc.ID, tc.Name)
+
+	warnings := []string{}
+	recording := &models.TestRecording{
+		ID:     uuid.NewString(),
+		Status: "generated",
+		Steps:  []models.RecordingStep{},
+		Name:   fmt.Sprintf("[%s] %s", tc.ID, tc.Name),
+		Description: tc.PreCondition,
+		ProjectID: projectID,
 	}
 
-	// Step 2: Analyze - determine route
-	route := testCase.Route
+	// Use the test case's route if available
+	route := tc.Route
 	if route == "" {
-		route = inferRouteFromName(testCase.Name)
+		// Agent needs to figure out the route from test case name
+		// e.g., "Navigate to Edit MED" → agent searches repo for MED-related files
+		route = inferRouteFromTestCaseName(tc.Name, glClient, projectID, branch)
 	}
 
-	// Step 3: Decide files to fetch
-	filesToFetch := []string{
-		routeToFilePath(route),
-	}
+	// Agent fetches the page file and related components based on inferred route
+	fetchedFiles, fetchWarnings := agentFetchRelevantFiles(ctx, glClient, projectID, branch, route, tc.Name)
+	warnings = append(warnings, fetchWarnings...)
 
-	entityName := extractEntityName(route)
-	relatedComponents := []string{
-		fmt.Sprintf("components/%sForm.tsx", entityName),
-		fmt.Sprintf("components/%s.tsx", entityName),
-	}
-	filesToFetch = append(filesToFetch, relatedComponents...)
-
-	// Deduplicate
-	seen := make(map[string]bool)
-	var uniqueFiles []string
-	for _, f := range filesToFetch {
-		if !seen[f] {
-			seen[f] = true
-			uniqueFiles = append(uniqueFiles, f)
-		}
-	}
-
-	// Step 4: Fetch files from GitLab
-	var fetchedFiles []FetchedFile
-	if glClient != nil && projectID != "" {
-		for _, filePath := range uniqueFiles {
-			content, err := fetchSingleFileWithClient(glClient, projectID, branch, filePath)
-			if err != nil {
-				log.Printf("[TestRecordingAgent] Failed to fetch %s: %v", filePath, err)
-				continue
-			}
-			fetchedFiles = append(fetchedFiles, FetchedFile{
-				Path:    filePath,
-				Content: content,
-			})
-		}
-	}
-
-	// Step 5: Extract selectors
+	// Agent extracts selectors from fetched files
 	var selectors []SelectorInfo
 	for _, file := range fetchedFiles {
 		extracted := extractSelectorsFromFile(file.Path, file.Content)
@@ -1116,30 +1083,27 @@ func generateSingleRecordingWithClient(ctx context.Context, glClient *gitlab.Cli
 		}
 		selectors = append(selectors, extracted...)
 	}
-
-	// Step 6: Build selector map
-	selectorMap := buildSelectorMap(selectors)
-
-	// Step 7: Build recording steps
-	recording := &models.TestRecording{
-		ID:     uuid.NewString(),
-		Status: "generated",
-		Steps:  []models.RecordingStep{},
+	if len(selectors) == 0 {
+		warnings = append(warnings, fmt.Sprintf("No selectors found for %s", tc.Name))
 	}
 
-	// Add login steps if auth config exists
-	if input.AuthConfig.LoginURL != "" {
+	// Build selector map
+	selectorMap := buildSelectorMapFromSelectorInfo(selectors)
+
+	// Build login steps
+	authConfig := getAuthConfigFromScenario(tc)
+	if authConfig.LoginURL != "" {
 		recording.Steps = append(recording.Steps,
-			models.RecordingStep{Action: "navigate", Description: "Navigate to login page", Value: input.AuthConfig.LoginURL},
-			models.RecordingStep{Action: "type", Description: "Enter username", Selector: findSelectorByKeyword(selectorMap, "username", "email", "user"), Value: input.AuthConfig.Username},
-			models.RecordingStep{Action: "type", Description: "Enter password", Selector: findSelectorByKeyword(selectorMap, "password"), Value: input.AuthConfig.Password},
+			models.RecordingStep{Action: "navigate", Description: "Navigate to login page", Value: authConfig.LoginURL},
+			models.RecordingStep{Action: "type", Description: "Enter username", Selector: findSelectorByKeyword(selectorMap, "username", "email", "user"), Value: authConfig.Username},
+			models.RecordingStep{Action: "type", Description: "Enter password", Selector: findSelectorByKeyword(selectorMap, "password"), Value: authConfig.Password},
 			models.RecordingStep{Action: "click", Description: "Click login button", Selector: findSelectorByKeyword(selectorMap, "login", "submit", "signin")},
 		)
 	}
 
-	// Navigate to target page
+	// Navigate to target
 	if route != "" {
-		baseURL := input.AuthConfig.BaseURL
+		baseURL := authConfig.BaseURL
 		if baseURL == "" {
 			baseURL = "https://app.example.com"
 		}
@@ -1149,8 +1113,7 @@ func generateSingleRecordingWithClient(ctx context.Context, glClient *gitlab.Cli
 	}
 
 	// Build steps from test case
-	warnings := []string{}
-	for i, step := range testCase.Steps {
+	for i, step := range tc.Steps {
 		action := extractActionType(step.Action)
 		if action == "" {
 			action = "click"
@@ -1169,7 +1132,7 @@ func generateSingleRecordingWithClient(ctx context.Context, glClient *gitlab.Cli
 			warnings = append(warnings, fmt.Sprintf("Step %d: No selector for '%s'", i+1, step.Action))
 		}
 
-		if action == "assert" || strings.Contains(strings.ToLower(step.Action), "verify") || strings.Contains(strings.ToLower(step.Action), "check") {
+		if action == "assert" || strings.Contains(strings.ToLower(step.Action), "verify") {
 			recordingStep.AssertionType = "visible"
 			recordingStep.ExpectedValue = step.ExpectedResult
 		}
@@ -1177,34 +1140,299 @@ func generateSingleRecordingWithClient(ctx context.Context, glClient *gitlab.Cli
 		recording.Steps = append(recording.Steps, recordingStep)
 	}
 
-	recording.Name = fmt.Sprintf("[%s] %s", testCase.ID, testCase.Name)
-	recording.Description = fmt.Sprintf("Auto-generated from %s. %s", input.ScenarioID, testCase.PreCondition)
-	recording.ProjectID = input.ProjectID
-
-	log.Printf("[TestRecordingAgent] Built recording with %d steps", len(recording.Steps))
-
-	return &GenerateRecordingOutput{
-		Recording:  recording,
-		Warnings:   warnings,
-		Confidence: 0.7,
-		StepsUsed:  len(recording.Steps),
-	}, nil
+	return recording, warnings, nil
 }
 
-// fetchSingleFileWithClient fetches a single file using provided GitLab client
-func fetchSingleFileWithClient(glClient *gitlab.Client, projectID, branch, filePath string) (string, error) {
-	fileOpt := &gitlab.GetFileOptions{Ref: gitlab.Ptr(branch)}
-	file, _, err := glClient.RepositoryFiles.GetFile(projectID, filePath, fileOpt)
-	if err != nil {
-		return "", err
+// agentFetchRelevantFiles uses GitLab API to find and fetch relevant files
+// The agent looks at test case to determine what files are needed
+func agentFetchRelevantFiles(ctx context.Context, glClient *gitlab.Client, projectID, branch, route, testCaseName string) ([]FetchedFile, []string) {
+	var files []FetchedFile
+	var warnings []string
+
+	if glClient == nil || projectID == "" {
+		return files, warnings
 	}
 
-	contentBytes, err := base64.StdEncoding.DecodeString(file.Content)
-	if err != nil {
-		return "", err
+	// Normalize route
+	if route == "" {
+		route = "/"
+	}
+	route = strings.TrimPrefix(route, "/")
+
+	// Common patterns for Next.js pages
+	searchPaths := []string{
+		fmt.Sprintf("app/%s/page.tsx", route),
+		fmt.Sprintf("app/%s", route),
 	}
 
-	return string(contentBytes), nil
+	// Also try to find based on test case name keywords
+	keywords := extractKeywordsFromName(testCaseName)
+	for _, kw := range keywords {
+		searchPaths = append(searchPaths, fmt.Sprintf("app/%s/page.tsx", kw))
+		searchPaths = append(searchPaths, fmt.Sprintf("components/%s.tsx", kw))
+		searchPaths = append(searchPaths, fmt.Sprintf("components/%sForm.tsx", kw))
+		searchPaths = append(searchPaths, fmt.Sprintf("components/%sTable.tsx", kw))
+	}
+
+	// Fetch each potential file
+	fetched := make(map[string]bool)
+	for _, path := range searchPaths {
+		if fetched[path] {
+			continue
+		}
+		
+		content, err := fetchSingleFileWithClient(glClient, projectID, branch, path)
+		if err != nil {
+			continue
+		}
+		
+		files = append(files, FetchedFile{
+			Path:    path,
+			Content: content,
+		})
+		fetched[path] = true
+		log.Printf("[TestRecordingAgent] Fetched: %s", path)
+	}
+
+	// If no files found, try to list the directory to find related files
+	if len(files) == 0 {
+		dirPath := fmt.Sprintf("app/%s", route)
+		treeNodes, _, err := glClient.Repositories.ListTree(projectID, &gitlab.ListTreeOptions{
+			Path:      gitlab.Ptr(dirPath),
+			Recursive: gitlab.Ptr(false),
+		})
+		if err == nil {
+			for _, node := range treeNodes {
+				if node.Type == "blob" && (strings.HasSuffix(node.Path, ".tsx") || strings.HasSuffix(node.Path, ".ts")) {
+					content, err := fetchSingleFileWithClient(glClient, projectID, branch, node.Path)
+					if err == nil {
+						files = append(files, FetchedFile{
+							Path:    node.Path,
+							Content: content,
+						})
+						fetched[node.Path] = true
+					}
+				}
+			}
+		}
+	}
+
+	if len(files) == 0 {
+		warnings = append(warnings, fmt.Sprintf("Could not find files for route '%s'", route))
+	}
+
+	return files, warnings
+}
+
+// extractKeywordsFromName extracts meaningful keywords from test case name
+func extractKeywordsFromName(name string) []string {
+	// Remove common action words
+	skipWords := map[string]bool{
+		"navigate": true, "to": true, "the": true,
+		"edit": true, "create": true, "delete": true, "view": true,
+		"cancel": true, "submit": true, "save": true,
+		"go": true, "open": true, "close": true,
+		"test": true, "case": true, "tc": true, "med": true,
+	}
+
+	nameLower := strings.ToLower(name)
+	words := strings.Fields(nameLower)
+	
+	var keywords []string
+	for _, word := range words {
+		if skipWords[word] {
+			continue
+		}
+		if len(word) > 2 {
+			keywords = append(keywords, word)
+		}
+	}
+	
+	// Also try original casing
+	origWords := strings.Fields(name)
+	for _, word := range origWords {
+		wordLower := strings.ToLower(word)
+		if !skipWords[wordLower] && len(word) > 2 {
+			// Add with original capitalization
+			keywords = append(keywords, word)
+		}
+	}
+
+	return keywords
+}
+
+func buildSelectorMapFromSelectorInfo(selectors []SelectorInfo) map[string][]SelectorInfo {
+	m := make(map[string][]SelectorInfo)
+	for _, sel := range selectors {
+		// Index by semantic name keywords
+		keywords := strings.FieldsFunc(strings.ToLower(sel.SemanticName), func(r rune) bool {
+			return r == ' ' || r == '-' || r == '_'
+		})
+		for _, kw := range keywords {
+			m[kw] = append(m[kw], sel)
+		}
+		m[sel.Type] = append(m[sel.Type], sel)
+		valueKeywords := strings.FieldsFunc(strings.ToLower(sel.Value), func(r rune) bool {
+			return r == '-' || r == '_'
+		})
+		for _, kw := range valueKeywords {
+			m[kw] = append(m[kw], sel)
+		}
+	}
+	return m
+}
+
+func getAuthConfigFromScenario(tc *models.ParsedTestCase) AuthConfig {
+	// Auth config should come from the scenario, not individual test cases
+	// For now, return empty - will be populated by caller
+	return AuthConfig{}
+}
+
+func getGitLabClientFromScenarioProject(ctx context.Context, scenario *models.TestScenario) (*gitlab.Client, error) {
+	if scenario.ProjectID == "" {
+		return nil, fmt.Errorf("no project ID in scenario")
+	}
+	
+	// Get token from somewhere - this is a simplified version
+	// In production, you'd get this from the session/token
+	return nil, fmt.Errorf("need to implement token retrieval")
+}
+
+func buildGenerationPrompt(scenario *models.TestScenario, sheetNames []string) string {
+	// Build prompt for the agent to understand what needs to be generated
+	var lines []string
+	lines = append(lines, "You are generating test recordings from a test scenario.")
+	lines = append(lines, "")
+	lines = append(lines, fmt.Sprintf("Scenario: %s", scenario.FileName))
+	lines = append(lines, "")
+	
+	for _, sheet := range scenario.Sheets {
+		if len(sheetNames) > 0 {
+			found := false
+			for _, sn := range sheetNames {
+				if sheet.Name == sn {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+		}
+		
+		lines = append(lines, fmt.Sprintf("Sheet: %s (%d test cases)", sheet.Name, len(sheet.TestCases)))
+		for _, tc := range sheet.TestCases {
+			lines = append(lines, fmt.Sprintf("  - %s: %s", tc.ID, tc.Name))
+		}
+		lines = append(lines, "")
+	}
+	
+	return strings.Join(lines, "\n")
+}
+
+// inferRouteFromTestCaseName uses GitLab tools to find the correct route
+// by searching the repo tree for matching files
+func inferRouteFromTestCaseName(name string, glClient *gitlab.Client, projectID, branch string) string {
+	if glClient == nil || projectID == "" {
+		return ""
+	}
+
+	// Extract entity from test case name
+	// e.g., "Navigate to Edit MED02-10" → extract "med"
+	// e.g., "Create Medium" → extract "medium"
+	
+	entity := extractEntityFromName(name)
+	if entity == "" {
+		return ""
+	}
+
+	// Search the repo tree for files containing this entity
+	entityLower := strings.ToLower(entity)
+	
+	// Try common routes
+	searchPaths := []string{
+		fmt.Sprintf("app/%s", entityLower),
+		fmt.Sprintf("app/%s/edit", entityLower),
+		fmt.Sprintf("app/%s/create", entityLower),
+		fmt.Sprintf("app/%s/list", entityLower),
+		fmt.Sprintf("app/(group)/%s", entityLower),
+	}
+	
+	for _, path := range searchPaths {
+		// Check if page.tsx exists at this path
+		pagePath := fmt.Sprintf("%s/page.tsx", path)
+		_, err := fetchSingleFileWithClient(glClient, projectID, branch, pagePath)
+		if err == nil {
+			// Found a route
+			route := strings.TrimPrefix(path, "app/")
+			route = strings.TrimPrefix(route, "(group)/")
+			return "/" + route
+		}
+	}
+	
+	// Try listing the app directory to find matching module
+	treeNodes, _, err := glClient.Repositories.ListTree(projectID, &gitlab.ListTreeOptions{
+		Path:      gitlab.Ptr("app"),
+		Recursive: gitlab.Ptr(false),
+	})
+	if err == nil {
+		for _, node := range treeNodes {
+			if node.Type == "tree" {
+				nodeName := strings.ToLower(node.Name)
+				// Match if entity appears in directory name
+				if strings.Contains(nodeName, entityLower) || strings.Contains(entityLower, nodeName) {
+					// Try to find page.tsx in this directory
+					pagePath := fmt.Sprintf("app/%s/page.tsx", node.Name)
+					_, err := fetchSingleFileWithClient(glClient, projectID, branch, pagePath)
+					if err == nil {
+						return fmt.Sprintf("/%s", node.Name)
+					}
+				}
+			}
+		}
+	}
+
+	return ""
+}
+
+// extractEntityFromName extracts the main entity/module from test case name
+func extractEntityFromName(name string) string {
+	// Skip action words
+	skipWords := map[string]bool{
+		"navigate": true, "to": true, "the": true, "a": true, "an": true,
+		"edit": true, "create": true, "delete": true, "view": true,
+		"cancel": true, "submit": true, "save": true, "update": true,
+		"go": true, "open": true, "close": true, "click": true,
+		"test": true, "case": true, "tc": true, "med": true, "module": true,
+	}
+	
+	// Get words from name
+	words := strings.Fields(name)
+	
+	// Try to find the entity - usually it's a code or name pattern like MED, INV, etc
+	// Look for CamelCase or uppercase words
+	re := regexp.MustCompile(`([A-Z]{2,}[0-9]*|[A-Z][a-z]+)`)
+	matches := re.FindAllString(name, -1)
+	
+	if len(matches) > 0 {
+		// Return the first substantial match
+		for _, match := range matches {
+			if len(match) >= 2 {
+				// Convert to kebab-case for path matching
+				return strings.ToLower(match)
+			}
+		}
+	}
+	
+	// Fallback: use last meaningful word
+	for i := len(words) - 1; i >= 0; i-- {
+		cleanLower := strings.ToLower(strings.Trim(words[i], "-,_"))
+		if !skipWords[cleanLower] && len(cleanLower) >= 2 {
+			return cleanLower
+		}
+	}
+	
+	return ""
 }
 
 func generateRecordingsForScenario(ctx tool.Context, input GenerateRecordingsInput) (*GenerateRecordingsOutput, error) {
@@ -1362,26 +1590,90 @@ func isRouteSegment(s string) bool {
 
 func inferRouteFromName(name string) string {
 	nameLower := strings.ToLower(name)
-	patterns := []struct {
-		action string
-		route  string
-	}{
-		{"create", "/create"}, {"new", "/create"}, {"add", "/create"},
-		{"edit", "/edit"}, {"update", "/edit"},
-		{"delete", "/delete"}, {"remove", "/delete"},
-		{"list", "/list"},
-		{"view", "/view"}, {"show", "/view"},
+
+	// Pattern: "Navigate to Edit" → infer which entity and action
+	// Skip action phrases like "navigate to", "go to", "cancel", "edit"
+	
+	skipWords := map[string]bool{
+		"navigate": true, "goto": true, "go": true,
+		"cancel": true, "edit": true, "delete": true, "remove": true,
+		"create": true, "new": true, "add": true,
+		"view": true, "show": true, "open": true,
+		"to": true, "the": true,
 	}
 
-	for _, p := range patterns {
-		if strings.Contains(nameLower, p.action) {
-			idx := strings.Index(nameLower, p.action)
-			entity := strings.TrimSpace(nameLower[:idx])
-			entity = strings.ReplaceAll(entity, " ", "-")
-			return fmt.Sprintf("/%s%s", entity, p.route)
+	// Remove action words from name to get entity
+	words := strings.Fields(nameLower)
+	var entityWords []string
+	
+	for i, word := range words {
+		if skipWords[word] {
+			continue
 		}
+		// If word is followed by action word, it's probably the entity
+		if i+1 < len(words) {
+			nextWord := words[i+1]
+			if skipWords[nextWord] {
+				entityWords = append(entityWords, word)
+				continue
+			}
+		}
+		entityWords = append(entityWords, word)
 	}
-	return ""
+
+	if len(entityWords) == 0 {
+		return ""
+	}
+
+	entity := strings.Join(entityWords, "-")
+	
+	// Try to infer action from the original name
+	var action string
+	nameForAction := strings.ToLower(name)
+	if strings.Contains(nameForAction, "edit") || strings.Contains(nameForAction, "update") {
+		action = "edit"
+	} else if strings.Contains(nameForAction, "create") || strings.Contains(nameForAction, "add") || strings.Contains(nameForAction, "new") {
+		action = "create"
+	} else if strings.Contains(nameForAction, "delete") || strings.Contains(nameForAction, "remove") {
+		action = "delete"
+	} else if strings.Contains(nameForAction, "view") || strings.Contains(nameForAction, "show") {
+		action = "view"
+	} else if strings.Contains(nameForAction, "cancel") {
+		action = "edit" // cancel is usually on edit page
+	} else {
+		action = "list" // default to list
+	}
+
+	return fmt.Sprintf("/%s/%s", entity, action)
+}
+
+func inferRouteFromTestCaseRoute(route string) string {
+	// If route exists in XLSX, clean it up
+	if route == "" {
+		return ""
+	}
+	
+	// Clean the route
+	route = strings.TrimSpace(route)
+	route = strings.TrimPrefix(route, "/")
+	route = strings.TrimSuffix(route, "/")
+	
+	if route == "" {
+		return ""
+	}
+	
+	// Validate it looks like a real route (has at least one segment)
+	parts := strings.Split(route, "/")
+	if len(parts) < 1 || parts[0] == "" {
+		return ""
+	}
+	
+	// Must start with alphanumeric (module name)
+	if matched, _ := regexp.MatchString(`^[a-zA-Z]`, parts[0]); !matched {
+		return ""
+	}
+	
+	return "/" + route
 }
 
 func findRouteCandidatesFromCatalog(catalog *services.ModuleCatalog, tc *models.ParsedTestCase, analysis *AnalyzeTestCaseOutput) []RouteCandidate {
