@@ -342,7 +342,7 @@ func generateRecordings(
 
 	resp, err := client.Models.GenerateContent(
 		ctx,
-		"gemini-3.1-pro-preview",
+		LLMModel,
 		genai.Text(prompt),
 		config,
 	)

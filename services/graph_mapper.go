@@ -28,6 +28,10 @@ const (
 	GraphMapCacheTTL = 24 * time.Hour
 	GraphMapKeyPrefix = "graph_map"
 	
+	// LLM Model - change here to switch models
+	// Options: gemini-3.1-pro-preview, gemini-3-flash-preview, gemini-2.0-flash-exp
+	LLMModel = "gemini-3-flash-preview"
+	
 	// File fetching - fetch ALL files for complete coverage
 	MaxLLMCallsPerCatalog = 3
 	SelectorConfidenceThreshold = 0.7
@@ -1099,7 +1103,7 @@ Return JSON like:
 		ResponseMIMEType: "application/json",
 	}
 
-	resp, err := client.Models.GenerateContent(ctx, "gemini-3.1-pro-preview", genai.Text(prompt), config)
+	resp, err := client.Models.GenerateContent(ctx, LLMModel, genai.Text(prompt), config)
 	if err != nil {
 		return nil, err
 	}
