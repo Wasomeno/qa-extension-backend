@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"qa-extension-backend/agent"
 	"qa-extension-backend/auth"
 	"qa-extension-backend/client"
 	"qa-extension-backend/database"
@@ -472,113 +473,10 @@ func GenerateTests(c *gin.Context) {
 			strings.Join(sheetNames, ", "),
 		))
 
-		// ======== NEW: Module Catalog Flow ========
-		// Get project branch
-		project, _, err := clientObj.Projects.GetProject(scenario.ProjectID, nil)
-		if err != nil {
-			publishError(fmt.Sprintf("Failed to get project: %v", err))
-			scenario.Status = "failed"
-			scenario.Error = fmt.Sprintf("failed to get project: %v", err)
-			updateScenarioStatus(id, scenario)
-			return
-		}
-		branch := project.DefaultBranch
-
-		// Stage: fetching module catalog (cached)
-		publish("fetching_module_catalog", "Fetching module catalog...")
-		graphMapper := services.NewGraphMapper()
-		catalog, err := graphMapper.FetchAndEnrichCatalog(bgCtx, clientObj, scenario.ProjectID, branch)
-		if err != nil {
-			publishError(fmt.Sprintf("Failed to build module catalog: %v", err))
-			scenario.Status = "failed"
-			scenario.Error = fmt.Sprintf("failed to build module catalog: %v", err)
-			updateScenarioStatus(id, scenario)
-			return
-		}
-
-		// Stage: inferring routes from test case names
-		publish("inferring_routes", "Mapping test cases to routes...")
-		routeSet := make(map[string]bool)
-		sheetToRoutes := make(map[string][]string) // sheetName → routes
-
-		for _, sheet := range scenario.Sheets {
-			// Find routes for this sheet
-			sheetRoutes := catalog.InferRoutesFromSheetName(sheet.Name)
-			if len(sheetRoutes) > 0 {
-				sheetToRoutes[sheet.Name] = sheetRoutes
-				for _, r := range sheetRoutes {
-					routeSet[r] = true
-				}
-			}
-		}
-
-		// For each test case, try to infer the specific route from its name
-		for i, tc := range targetTestCases {
-			// Find which sheet this test case belongs to
-			var sheetName string
-			for _, s := range scenario.Sheets {
-				for _, name := range sheetNames {
-					if s.Name == name {
-						for _, existingTC := range s.TestCases {
-							if existingTC.Name == tc.Name || existingTC.ID == tc.ID {
-								sheetName = s.Name
-								break
-							}
-						}
-					}
-				}
-			}
-
-			// Infer route from sheet + test case name
-			inferredRoute := catalog.InferRouteFromSheetAndTestCase(sheetName, tc.Name)
-			if inferredRoute != "" {
-				targetTestCases[i].Route = inferredRoute
-				routeSet[inferredRoute] = true
-			} else if len(sheetToRoutes[sheetName]) > 0 {
-				// Fallback to first route in the sheet's module
-				targetTestCases[i].Route = sheetToRoutes[sheetName][0]
-				routeSet[sheetToRoutes[sheetName][0]] = true
-			}
-		}
-
-		// Collect unique routes
-		routes := make([]string, 0, len(routeSet))
-		for route := range routeSet {
-			routes = append(routes, route)
-		}
-
-		// Stage: fetching targeted files
-		publish("fetching_targeted_files", fmt.Sprintf("Fetching %d relevant files for %d routes...", len(routes), len(routes)))
-		codebaseCtx, graph, err := graphMapper.FetchCodebaseWithCatalog(bgCtx, clientObj, scenario.ProjectID, branch, catalog, routes)
-		if err != nil {
-			publishError(fmt.Sprintf("Failed to fetch targeted files: %v", err))
-			scenario.Status = "failed"
-			scenario.Error = fmt.Sprintf("failed to fetch targeted files: %v", err)
-			updateScenarioStatus(id, scenario)
-			return
-		}
-
-		numFiles := len(codebaseCtx.Files)
-		tokenEstimate := codebaseCtx.TotalTokens
-		publish("reading_files", fmt.Sprintf("Reading %d source files (~%d tokens) from %s...", numFiles, tokenEstimate, projectName))
-
-		if graph != nil && len(graph.RouteSummary) > 0 {
-			publish("using_module_catalog", fmt.Sprintf(
-				"Using module catalog with %d routes from %d modules (%d key elements)",
-				len(graph.RouteSummary), len(catalog.Modules), graph.Stats.TotalSelectors,
-			))
-		} else {
-			publish("no_catalog", "No module catalog found, falling back to standard generation")
-		}
-		// ======== END Module Catalog Flow ========
-
-		var recordings []models.TestRecording
-		var missingRoutes []string
-
-		// Stage: sending to AI
+		// Stage: sending to agent
 		if totalCases > 1 {
-			publish("sending_to_ai", fmt.Sprintf(
-				"Sending %d test cases to Gemini AI for Playwright test generation...",
+			publish("sending_to_agent", fmt.Sprintf(
+				"Generating %d test recordings using QA Agent...",
 				totalCases,
 			))
 		} else {
@@ -586,26 +484,30 @@ func GenerateTests(c *gin.Context) {
 			if len(testCaseNames) > 0 {
 				tcName = testCaseNames[0]
 			}
-			publish("sending_to_ai", fmt.Sprintf(
-				"Generating Playwright test for '%s' using AI...",
+			publish("sending_to_agent", fmt.Sprintf(
+				"Generating Playwright test for '%s' using QA Agent...",
 				tcName,
 			))
 		}
 
-		recordings, missingRoutes, err = services.GenerateTestsForScenario(
-			bgCtx, targetTestCases, codebaseCtx, catalog, scenario.AuthConfig,
-		)
+		// Use agent tools - agent handles route inference, file fetching, selector extraction
+		result, err := agent.GenerateRecordingsForScenarioCtx(bgCtx, clientObj, agent.GenerateRecordingsInput{
+			ScenarioID: id,
+			SheetNames: sheetNames,
+		})
 		if err != nil {
-			publishError(fmt.Sprintf("AI generation failed: %v", err))
+			publishError(fmt.Sprintf("Agent generation failed: %v", err))
 			scenario.Status = "failed"
 			scenario.Error = fmt.Sprintf("failed to generate tests: %v", err)
 			updateScenarioStatus(id, scenario)
 			return
 		}
 
+		recordings := result.Recordings
+
 		// Log missing routes if any
-		if len(missingRoutes) > 0 {
-			log.Printf("[GRAPH] Routes not found in knowledge graph: %v", missingRoutes)
+		if len(result.FailedIDs) > 0 {
+			log.Printf("[Agent] Failed to generate %d test cases: %v", len(result.FailedIDs), result.FailedIDs)
 		}
 
 		// Stage: processing AI response

@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"google.golang.org/genai"
+	"google.golang.org/adk/tool"
 
 	"google.golang.org/adk/agent/llmagent"
 	"google.golang.org/adk/artifact"
@@ -25,7 +26,19 @@ const SYSTEM_INSTRUCTION = `You are a QA Assistant. Your role is to help users w
 3. **No Redundant Calls**: If you already have projects, do NOT call issue tools unless specifically asked for issues.
 4. **Trust the tool**: If the tool returns a list of 2 projects, tell the user about those 2 projects. Do not claim there is a technical issue.
 5. **Output Video URLs Exactly**: When returning a video URL from a test result, use the exact URL provided in the VideoURL field. Do not modify, guess, or reformat the URL.
-6. **Scenario Management**: You can list uploaded XLSX scenarios and run all tests within them in parallel. If a specific test case from a scenario is requested, use runScenarioTestCase.
+
+## Test Scenario Generation
+
+You can generate Test Recordings from uploaded XLSX test scenarios using these tools:
+
+- **analyze_test_case**: Analyze a single test case to understand its requirements (routes, actions)
+- **generate_recording_for_test_case**: Generate a complete TestRecording for a single test case
+- **generate_recordings_for_scenario**: Generate recordings for ALL test cases in a scenario (batch)
+
+For batch generation, use generate_recordings_for_scenario with:
+- scenarioID: the ID of the uploaded scenario
+- sheetNames: which sheets to process (optional, defaults to all)
+- testCaseIDs: specific test cases to generate (optional, defaults to all)
 
 ## Slash Commands
 
@@ -73,12 +86,18 @@ func GetQARunner(ctx context.Context) (*runner.Runner, error) {
 		return nil, fmt.Errorf("failed to create Gemini model: %w", err)
 	}
 
+	// Collect all tools
+	allTools := make([]tool.Tool, 0)
+	allTools = append(allTools, GetGitLabTools()...)
+	allTools = append(allTools, GetTestTools()...)
+	allTools = append(allTools, GetTestRecordingTools()...)
+
 	mainAgent, err := llmagent.New(llmagent.Config{
 		Name:        "qa_agent",
 		Model:       llm,
-		Description: "A QA Assistant that helps with GitLab issues and automation tests.",
+		Description: "A QA Assistant that helps with GitLab issues, test scenarios, and automation test generation.",
 		Instruction: SYSTEM_INSTRUCTION,
-		Tools:       append(GetGitLabTools(), GetTestTools()...),
+		Tools:       allTools,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create main QA agent: %w", err)
