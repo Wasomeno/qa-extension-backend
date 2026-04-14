@@ -713,8 +713,8 @@ func (m *GraphMapper) fetchSourceFilesForEnrichment(
 ) (map[string]string, error) {
 	sourceFiles := make(map[string]string)
 
-	// Priority directories
-	priorityDirs := []string{"app/", "pages/", "components/"}
+	// Priority directories - check for /app/ or /pages/ or /components/ anywhere in path
+	priorityPatterns := []string{"/app/", "/pages/", "/components/"}
 
 	// Filter to relevant files (page files first, then other source files)
 	var pageFiles []string
@@ -724,8 +724,8 @@ func (m *GraphMapper) fetchSourceFilesForEnrichment(
 			continue
 		}
 		isPrioritized := false
-		for _, dir := range priorityDirs {
-			if strings.HasPrefix(path, dir) {
+		for _, pattern := range priorityPatterns {
+			if strings.Contains(path, pattern) {
 				isPrioritized = true
 				break
 			}
@@ -1092,14 +1092,14 @@ Routes:
 AVAILABLE SELECTORS (use these ONLY):
 %s
 
-Return JSON like:
-{
-  "/route1": {"description": "...", "keyElements": {"searchInput": "selector-value"}, "availableActions": ["search"]},
-  "/route2": {"description": "...", "keyElements": {}, "availableActions": ["view"]}
-}`, routeContexts, selectorSummary)
+IMPORTANT: Return ONLY valid JSON object, no trailing commas, no markdown, no extra text.
+Example format:
+{"/route1": {"description": "page description", "keyElements": {"searchInput": "testid-value"}, "availableActions": ["search"]}}
+
+Do NOT include trailing commas, do NOT wrap in code blocks, do NOT add extra text.`, routeContexts, selectorSummary)
 
 	config := &genai.GenerateContentConfig{
-		Temperature:      genai.Ptr(float32(0.2)),
+		Temperature:      genai.Ptr(float32(0.1)), // Lower temperature for more predictable output
 		ResponseMIMEType: "application/json",
 	}
 
@@ -1110,12 +1110,40 @@ Return JSON like:
 
 	responseText := extractResponseText(resp)
 	
+	// Robust JSON parsing with cleanup
+	cleanJSON := cleanupJSON(responseText)
+	
 	var result map[string]RouteEntry
-	if err := json.Unmarshal([]byte(responseText), &result); err != nil {
-		return nil, err
+	if err := json.Unmarshal([]byte(cleanJSON), &result); err != nil {
+		// Try extracting JSON from response
+		extracted := extractJSONFromResponse(responseText)
+		if extracted != responseText {
+			if err2 := json.Unmarshal([]byte(extracted), &result); err2 == nil {
+				return result, nil
+			}
+		}
+		return nil, fmt.Errorf("failed to parse JSON: %w (response: %.200s...)", err, responseText)
 	}
 	
 	return result, nil
+}
+
+// cleanupJSON removes common issues that cause JSON parse failures
+func cleanupJSON(s string) string {
+	// Remove trailing commas before closing braces/brackets
+	// Match }, or ] at end or before }
+	s = regexp.MustCompile(`,\s*([}\]])`).ReplaceAllString(s, "$1")
+	
+	// Remove any trailing commas at the end
+	s = regexp.MustCompile(`,\s*$`).ReplaceAllString(s, "")
+	
+	// Remove any text before first { (in case LLM added intro text)
+	firstBrace := strings.Index(s, "{")
+	if firstBrace > 0 {
+		s = s[firstBrace:]
+	}
+	
+	return strings.TrimSpace(s)
 }
 
 // createFallbackRouteEntry creates a basic route entry when LLM fails
