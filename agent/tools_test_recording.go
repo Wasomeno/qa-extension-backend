@@ -1062,11 +1062,16 @@ func agentGenerateSingleRecording(ctx context.Context, glClient *gitlab.Client, 
 		ProjectID: projectID,
 	}
 
-	// Use the test case's route if available
+	// Use the test case's route if available (from XLSX Route column)
 	route := tc.Route
+	
+	// If no route in XLSX, try to get it from the FIRST step that has a URL/navigate action
 	if route == "" {
-		// Agent needs to figure out the route from test case name
-		// e.g., "Navigate to Edit MED" → agent searches repo for MED-related files
+		route = extractRouteFromSteps(tc.Steps)
+	}
+	
+	// If still no route, infer from test case name
+	if route == "" {
 		route = inferRouteFromTestCaseName(tc.Name, glClient, projectID, branch)
 	}
 
@@ -1397,42 +1402,95 @@ func inferRouteFromTestCaseName(name string, glClient *gitlab.Client, projectID,
 
 // extractEntityFromName extracts the main entity/module from test case name
 func extractEntityFromName(name string) string {
-	// Skip action words
-	skipWords := map[string]bool{
-		"navigate": true, "to": true, "the": true, "a": true, "an": true,
-		"edit": true, "create": true, "delete": true, "view": true,
-		"cancel": true, "submit": true, "save": true, "update": true,
-		"go": true, "open": true, "close": true, "click": true,
-		"test": true, "case": true, "tc": true, "med": true, "module": true,
-	}
-	
 	// Get words from name
 	words := strings.Fields(name)
-	
-	// Try to find the entity - usually it's a code or name pattern like MED, INV, etc
-	// Look for CamelCase or uppercase words
+
+	// Try to find CamelCase or uppercase words (entity codes like MED, INV)
 	re := regexp.MustCompile(`([A-Z]{2,}[0-9]*|[A-Z][a-z]+)`)
 	matches := re.FindAllString(name, -1)
-	
+
 	if len(matches) > 0 {
-		// Return the first substantial match
 		for _, match := range matches {
 			if len(match) >= 2 {
-				// Convert to kebab-case for path matching
 				return strings.ToLower(match)
 			}
 		}
 	}
-	
-	// Fallback: use last meaningful word
+
+	// Fallback: use last word >= 3 chars
 	for i := len(words) - 1; i >= 0; i-- {
 		cleanLower := strings.ToLower(strings.Trim(words[i], "-,_"))
-		if !skipWords[cleanLower] && len(cleanLower) >= 2 {
+		if len(cleanLower) >= 3 {
 			return cleanLower
 		}
 	}
-	
+
 	return ""
+}
+
+// extractRouteFromSteps looks at test case steps to find the route/navigate action
+func extractRouteFromSteps(steps []models.ParsedStep) string {
+	for _, step := range steps {
+		actionLower := strings.ToLower(step.Action)
+
+		// Look for navigate, go to, open actions
+		if strings.Contains(actionLower, "navigate") ||
+			strings.Contains(actionLower, "go to") ||
+			strings.Contains(actionLower, "open") ||
+			strings.Contains(actionLower, "access") {
+
+			url := step.InputData
+			if url == "" {
+				url = extractUrlFromText(step.Action)
+			}
+
+			if url != "" {
+				route := cleanUrlToRoute(url)
+				if route != "" {
+					return route
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// extractUrlFromText extracts URL from action text
+func extractUrlFromText(text string) string {
+	urlRe := regexp.MustCompile(`https?://[^\s]+`)
+	matches := urlRe.FindString(text)
+	if matches != "" {
+		return matches
+	}
+
+	pathRe := regexp.MustCompile(`/([a-zA-Z0-9_-]+/?)+`)
+	matches = pathRe.FindString(text)
+	return matches
+}
+
+// cleanUrlToRoute converts a URL to a route path
+func cleanUrlToRoute(url string) string {
+	if url == "" {
+		return ""
+	}
+
+	url = strings.TrimSpace(url)
+
+	if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+		urlRe := regexp.MustCompile(`https?://[^/]+(.*)`)
+		matches := urlRe.FindStringSubmatch(url)
+		if len(matches) > 1 {
+			url = matches[1]
+		}
+	}
+
+	url = strings.Trim(url, "/")
+
+	if url == "" {
+		return ""
+	}
+
+	return "/" + url
 }
 
 func generateRecordingsForScenario(ctx tool.Context, input GenerateRecordingsInput) (*GenerateRecordingsOutput, error) {
