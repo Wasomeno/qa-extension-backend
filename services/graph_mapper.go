@@ -908,6 +908,39 @@ func (m *GraphMapper) InvalidateCatalog(ctx context.Context, projectID, branch s
 	return database.RedisClient.Del(ctx, key).Err()
 }
 
+// ListCachedCatalogs returns all cached knowledge graphs for a given project
+func (m *GraphMapper) ListCachedCatalogs(ctx context.Context, projectID string) ([]ModuleCatalog, error) {
+	pattern := fmt.Sprintf("%s:%s:*", GraphMapKeyPrefix, projectID)
+	
+	var cursor uint64
+	var catalogs []ModuleCatalog
+	
+	for {
+		keys, nextCursor, err := database.RedisClient.Scan(ctx, cursor, pattern, 100).Result()
+		if err != nil {
+			return nil, err
+		}
+		
+		for _, key := range keys {
+			val, err := database.RedisClient.Get(ctx, key).Result()
+			if err != nil {
+				continue
+			}
+			var catalog ModuleCatalog
+			if err := json.Unmarshal([]byte(val), &catalog); err == nil {
+				catalogs = append(catalogs, catalog)
+			}
+		}
+		
+		cursor = nextCursor
+		if cursor == 0 {
+			break
+		}
+	}
+	
+	return catalogs, nil
+}
+
 func (m *GraphMapper) cacheKey(projectID, branch string) string {
 	return fmt.Sprintf("%s:%s:%s", GraphMapKeyPrefix, projectID, branch)
 }

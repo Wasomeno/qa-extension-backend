@@ -77,6 +77,25 @@ func GetKnowledgeGraph(c *gin.Context) {
 	})
 }
 
+// ListKnowledgeGraphs returns all cached knowledge graphs for a project
+func ListKnowledgeGraphs(c *gin.Context) {
+	projectID := c.Param("id")
+
+	ctx := c.Request.Context()
+	graphMapper := services.NewGraphMapper()
+
+	catalogs, err := graphMapper.ListCachedCatalogs(ctx, projectID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list knowledge graphs: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"catalogs": catalogs,
+		"count":    len(catalogs),
+	})
+}
+
 // InvalidateKnowledgeGraph removes the cached knowledge graph for a project/branch
 func InvalidateKnowledgeGraph(c *gin.Context) {
 	projectID := c.Param("id")

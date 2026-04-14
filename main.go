@@ -108,6 +108,7 @@ func main() {
 		protected.DELETE("/projects/:id/issues/:issue_id/children/:child_id", routes.UnlinkChildIssue)
 		protected.GET("/projects/:id/members", routes.GetProjectMembers)
 		protected.GET("/projects/:id/boards", routes.GetProjectBoards)
+		protected.GET("/projects/:id/knowledge-graphs", routes.ListKnowledgeGraphs)
 		protected.GET("/projects/:id/knowledge-graph", routes.GetKnowledgeGraph)
 		protected.DELETE("/projects/:id/knowledge-graph", routes.InvalidateKnowledgeGraph)
 
