@@ -76,30 +76,13 @@ func processBatchWithCatalog(
 // validateAndFixSelectors checks that each step's selector exists in the catalog
 // If a selector doesn't exist, it tries to find a matching selector or marks as warning
 func validateAndFixSelectors(steps []models.RecordingStep, catalog *ModuleCatalog) []models.RecordingStep {
-	// Build a set of all valid selectors
-	validSelectors := make(map[string]ExtractedSelector)
-	for _, selectors := range catalog.Selectors {
-		for _, sel := range selectors {
-			if sel.Testid != "" {
-				validSelectors[sel.Testid] = sel
-			}
-			if sel.ID != "" {
-				validSelectors[sel.ID] = sel
-			}
-			if sel.Placeholder != "" {
-				validSelectors[sel.Placeholder] = sel
-			}
-			if sel.AriaLabel != "" {
-				validSelectors[sel.AriaLabel] = sel
-			}
-			if sel.Name != "" {
-				validSelectors[sel.Name] = sel
-			}
-			if sel.Text != "" {
-				validSelectors[sel.Text] = sel
-			}
-		}
-	}
+	// Build a comprehensive selector map including both raw values and formatted
+	validSelectors := buildValidSelectorMap(catalog)
+	
+	// Track validation stats
+	validCount := 0
+	fixedCount := 0
+	warningCount := 0
 
 	for i, step := range steps {
 		if step.Selector == "" {
@@ -111,19 +94,84 @@ func validateAndFixSelectors(steps []models.RecordingStep, catalog *ModuleCatalo
 		
 		if _, exists := validSelectors[selectorValue]; !exists {
 			// Try to find an alternative selector by text matching
-			if alternative := findAlternativeSelector(step.Description, catalog); alternative != "" {
+			if alternative := findAlternativeSelector(step.Description, validSelectors); alternative != "" {
 				log.Printf("[TestGenerator] Step %d: Selector '%s' not found, using alternative '%s'", 
-					i, step.Selector, alternative)
+					i+1, step.Selector, alternative)
 				steps[i].Selector = alternative
 				steps[i].SelectorCandidates = append(steps[i].SelectorCandidates, step.Selector) // Keep original as fallback
+				fixedCount++
 			} else {
 				log.Printf("[TestGenerator] Warning: Step %d selector '%s' not validated against codebase", 
-					i, step.Selector)
+					i+1, step.Selector)
+				warningCount++
 			}
+		} else {
+			validCount++
 		}
 	}
 
+	if warningCount > 0 || fixedCount > 0 {
+		log.Printf("[TestGenerator] Selector validation: %d valid, %d fixed, %d warnings", 
+			validCount, fixedCount, warningCount)
+	}
+
 	return steps
+}
+
+// buildValidSelectorMap builds a comprehensive map of all valid selectors
+func buildValidSelectorMap(catalog *ModuleCatalog) map[string]string {
+	validSelectors := make(map[string]string)
+	
+	for filePath, selectors := range catalog.Selectors {
+		for _, sel := range selectors {
+			// Add formatted selectors
+			if sel.Testid != "" {
+				validSelectors[sel.Testid] = fmt.Sprintf("[data-testid='%s']", sel.Testid)
+			}
+			if sel.ID != "" {
+				validSelectors[sel.ID] = fmt.Sprintf("#%s", sel.ID)
+			}
+			if sel.Placeholder != "" {
+				validSelectors[sel.Placeholder] = fmt.Sprintf("[placeholder='%s']", sel.Placeholder)
+			}
+			if sel.AriaLabel != "" {
+				validSelectors[sel.AriaLabel] = fmt.Sprintf("[aria-label='%s']", sel.AriaLabel)
+			}
+			if sel.Name != "" {
+				validSelectors[sel.Name] = fmt.Sprintf("[name='%s']", sel.Name)
+			}
+			if sel.Text != "" {
+				validSelectors[sel.Text] = fmt.Sprintf("text('%s')", sel.Text)
+				validSelectors[strings.ToLower(sel.Text)] = fmt.Sprintf("text('%s')", sel.Text)
+			}
+			if sel.Title != "" {
+				validSelectors[sel.Title] = fmt.Sprintf("[title='%s']", sel.Title)
+			}
+			if sel.Role != "" {
+				validSelectors[sel.Role] = fmt.Sprintf("[role='%s']", sel.Role)
+			}
+			
+			// Also add formatted versions directly
+			if sel.Testid != "" {
+				validSelectors[fmt.Sprintf("[data-testid='%s']", sel.Testid)] = fmt.Sprintf("[data-testid='%s']", sel.Testid)
+			}
+			if sel.ID != "" {
+				validSelectors[fmt.Sprintf("#%s", sel.ID)] = fmt.Sprintf("#%s", sel.ID)
+			}
+			if sel.Placeholder != "" {
+				validSelectors[fmt.Sprintf("[placeholder='%s']", sel.Placeholder)] = fmt.Sprintf("[placeholder='%s']", sel.Placeholder)
+			}
+			if sel.Name != "" {
+				validSelectors[fmt.Sprintf("[name='%s']", sel.Name)] = fmt.Sprintf("[name='%s']", sel.Name)
+			}
+			if sel.Text != "" {
+				validSelectors[fmt.Sprintf("text('%s')", sel.Text)] = fmt.Sprintf("text('%s')", sel.Text)
+			}
+		}
+		log.Printf("[TestGenerator] Loaded %d selectors from %s", len(selectors), filePath)
+	}
+	
+	return validSelectors
 }
 
 // extractSelectorValue extracts the actual value from various Playwright selector formats
@@ -163,36 +211,67 @@ func extractSelectorValue(selector string) string {
 	if matches := re.FindStringSubmatch(selector); len(matches) > 1 {
 		return matches[1]
 	}
+	// h1:has-text('value') → value (and other element selectors with has-text)
+	re = regexp.MustCompile(`\w+:has-text\(['"]([^'"]+)['"]\)`)
+	if matches := re.FindStringSubmatch(selector); len(matches) > 1 {
+		return matches[1]
+	}
+	// span:has-text('value') → value
+	re = regexp.MustCompile(`span:has-text\(['"]([^'"]+)['"]\)`)
+	if matches := re.FindStringSubmatch(selector); len(matches) > 1 {
+		return matches[1]
+	}
+	// th:has-text('value') → value
+	re = regexp.MustCompile(`th:has-text\(['"]([^'"]+)['"]\)`)
+	if matches := re.FindStringSubmatch(selector); len(matches) > 1 {
+		return matches[1]
+	}
+	// button[aria-label='value'] → value
+	re = regexp.MustCompile(`button\[aria-label=['"]([^'"]+)['"]\]`)
+	if matches := re.FindStringSubmatch(selector); len(matches) > 1 {
+		return matches[1]
+	}
+	// XPath patterns - (//input[@type='checkbox'])[2] → extract the type
+	re = regexp.MustCompile(`\[\d+\]$`) // Trailing [n] in XPath
+	if re.FindString(selector) != "" {
+		// For XPath selectors, try to extract meaningful content
+		if strings.Contains(selector, "checkbox") {
+			return "checkbox"
+		}
+		if strings.Contains(selector, "button") {
+			return "button"
+		}
+	}
 	// Just return the original if no pattern matches
 	return selector
 }
 
-// findAlternativeSelector tries to find a matching selector based on step description
-func findAlternativeSelector(description string, catalog *ModuleCatalog) string {
+// findAlternativeSelector tries to find a matching selector based on step description and available selectors
+func findAlternativeSelector(description string, validSelectors map[string]string) string {
 	descLower := strings.ToLower(description)
-
-	// Build selector list for searching
-	var allSelectors []ExtractedSelector
-	for _, selectors := range catalog.Selectors {
-		allSelectors = append(allSelectors, selectors...)
-	}
 
 	// Keywords to match
 	keywords := []string{
 		"submit", "save", "click", "button", "login", "sign in",
 		"search", "input", "field", "email", "password", "name",
 		"close", "cancel", "delete", "remove", "add", "create", "new",
+		"edit", "update", "confirm", "proceed", "next", "continue",
 	}
 
 	for _, keyword := range keywords {
 		if strings.Contains(descLower, keyword) {
-			// Find selector with matching text or aria-label
-			for _, sel := range allSelectors {
-				selText := strings.ToLower(sel.Text)
-				selAria := strings.ToLower(sel.AriaLabel)
-				
-				if strings.Contains(selText, keyword) || strings.Contains(selAria, keyword) {
-					return sel.GeneratePlaywrightSelector()
+			// Find selector with matching text
+			for selValue, formatted := range validSelectors {
+				selLower := strings.ToLower(selValue)
+				if strings.Contains(selLower, keyword) {
+					return formatted
+				}
+			}
+			// Try partial match
+			for selValue, formatted := range validSelectors {
+				selLower := strings.ToLower(selValue)
+				if len(keyword) >= 4 && strings.Contains(selLower, keyword[:min(len(keyword), 6)]) {
+					return formatted
 				}
 			}
 		}
