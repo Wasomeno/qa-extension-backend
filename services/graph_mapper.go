@@ -25,32 +25,195 @@ const (
 )
 
 // =============================================================================
+// SELECTOR EXTRACTION - Programmatic extraction of actual selectors from code
+// =============================================================================
+
+// ExtractedSelector represents a UI element that can be selected
+type ExtractedSelector struct {
+	ElementType  string   // button, input, div, etc.
+	Testid       string   // data-testid value (if exists)
+	ID           string   // id attribute (if exists)
+	Placeholder  string   // placeholder attribute (if exists)
+	AriaLabel    string   // aria-label attribute (if exists)
+	Text         string   // visible text content
+	Classes      []string // class names
+	Name         string   // name attribute (for form elements)
+	FilePath     string   // which file this was found in
+	LineNumber   int      // approximate line number
+	ParentPath   string   // css-like path: "div >> button"
+}
+
+// ExtractSelectorsFromFile scans a full source file and extracts all selectable elements
+func (m *GraphMapper) ExtractSelectorsFromFile(content, filePath string) []ExtractedSelector {
+	var selectors []ExtractedSelector
+	lines := strings.Split(content, "\n")
+
+	// Regex patterns for extraction
+	testidRe := regexp.MustCompile(`data-testid\s*=\s*["']([^"']+)["']`)
+	idRe := regexp.MustCompile(`\bid\s*=\s*["']([^"']+)["']`)
+	placeholderRe := regexp.MustCompile(`placeholder\s*=\s*["']([^"']+)["']`)
+	ariaLabelRe := regexp.MustCompile(`aria-label\s*=\s*["']([^"']+)["']`)
+	nameRe := regexp.MustCompile(`\bname\s*=\s*["']([^"']+)["']`)
+	classRe := regexp.MustCompile(`className?\s*=\s*["']([^"']+)["']`)
+
+	for i, line := range lines {
+		lineNum := i + 1
+
+		// Only look at JSX/TSX lines (lines with self-closing or opening tags)
+		if !strings.Contains(line, "<") || strings.Contains(line, "//") || strings.Contains(line, "/*") {
+			continue
+		}
+
+		sel := ExtractedSelector{
+			FilePath:   filePath,
+			LineNumber: lineNum,
+		}
+
+		// Extract element type from tag
+		tagMatch := regexp.MustCompile(`<(button|input|div|span|a|form|table|tr|td|th|ul|li|label|select|option|textarea|img|h[1-6])[\s>]`).FindStringSubmatch(line)
+		if len(tagMatch) > 1 {
+			sel.ElementType = tagMatch[1]
+		} else {
+			// Try to find closing tag
+			tagMatch = regexp.MustCompile(`</([a-zA-Z]+)`).FindStringSubmatch(line)
+			if len(tagMatch) > 1 {
+				sel.ElementType = tagMatch[1]
+			}
+		}
+
+		// Extract attributes
+		if matches := testidRe.FindStringSubmatch(line); len(matches) > 1 {
+			sel.Testid = matches[1]
+		}
+		if matches := idRe.FindStringSubmatch(line); len(matches) > 1 {
+			sel.ID = matches[1]
+		}
+		if matches := placeholderRe.FindStringSubmatch(line); len(matches) > 1 {
+			sel.Placeholder = matches[1]
+		}
+		if matches := ariaLabelRe.FindStringSubmatch(line); len(matches) > 1 {
+			sel.AriaLabel = matches[1]
+		}
+		if matches := nameRe.FindStringSubmatch(line); len(matches) > 1 {
+			sel.Name = matches[1]
+		}
+		if matches := classRe.FindStringSubmatch(line); len(matches) > 1 {
+			classStr := matches[1]
+			// Split by spaces and filter
+			for _, c := range strings.Fields(classStr) {
+				if c != "" {
+					sel.Classes = append(sel.Classes, c)
+				}
+			}
+		}
+
+		// Only add if it has at least one useful selector
+		if sel.Testid != "" || sel.ID != "" || sel.Placeholder != "" || sel.AriaLabel != "" || sel.Name != "" {
+			selectors = append(selectors, sel)
+		}
+	}
+
+	return selectors
+}
+
+// BuildSelectorIndexFromFiles extracts selectors from all source files and builds an index
+func (m *GraphMapper) BuildSelectorIndexFromFiles(sourceFiles map[string]string) map[string][]ExtractedSelector {
+	selectorIndex := make(map[string][]ExtractedSelector)
+
+	for filePath, content := range sourceFiles {
+		selectors := m.ExtractSelectorsFromFile(content, filePath)
+		selectorIndex[filePath] = selectors
+	}
+
+	return selectorIndex
+}
+
+// GeneratePlaywrightSelector creates a Playwright-compatible selector string for an ExtractedSelector
+func (s *ExtractedSelector) GeneratePlaywrightSelector() string {
+	// Priority order: testid > id > aria-label > placeholder > name > text
+	if s.Testid != "" {
+		return fmt.Sprintf("[data-testid='%s']", s.Testid)
+	}
+	if s.ID != "" {
+		return fmt.Sprintf("#%s", s.ID)
+	}
+	if s.AriaLabel != "" {
+		return fmt.Sprintf("[aria-label='%s']", s.AriaLabel)
+	}
+	if s.Placeholder != "" {
+		return fmt.Sprintf("[placeholder='%s']", s.Placeholder)
+	}
+	if s.Name != "" {
+		return fmt.Sprintf("[name='%s']", s.Name)
+	}
+	if s.Text != "" {
+		return fmt.Sprintf("text('%s')", s.Text)
+	}
+	// Fallback to element type with classes
+	if len(s.Classes) > 0 {
+		return fmt.Sprintf("%s.%s", s.ElementType, strings.Join(s.Classes[:min(2, len(s.Classes))], "."))
+	}
+	return s.ElementType
+}
+
+// FormatSelectorForPrompt creates a human-readable selector string for the LLM prompt
+func (s *ExtractedSelector) FormatSelectorForPrompt() string {
+	var parts []string
+
+	if s.Testid != "" {
+		parts = append(parts, fmt.Sprintf("data-testid='%s'", s.Testid))
+	}
+	if s.ID != "" {
+		parts = append(parts, fmt.Sprintf("id='%s'", s.ID))
+	}
+	if s.Placeholder != "" {
+		parts = append(parts, fmt.Sprintf("placeholder='%s'", s.Placeholder))
+	}
+	if s.AriaLabel != "" {
+		parts = append(parts, fmt.Sprintf("aria-label='%s'", s.AriaLabel))
+	}
+	if s.Text != "" {
+		parts = append(parts, fmt.Sprintf("text='%s'", s.Text))
+	}
+	if s.Name != "" {
+		parts = append(parts, fmt.Sprintf("name='%s'", s.Name))
+	}
+
+	if len(parts) == 0 {
+		return fmt.Sprintf("<%s>", s.ElementType)
+	}
+
+	return fmt.Sprintf("<%s %s>", s.ElementType, strings.Join(parts, ", "))
+}
+
+// =============================================================================
 // MODULE CATALOG - The enriched map structure
 // =============================================================================
 
 // ModuleCatalog is the complete enriched knowledge map for a project/branch
 type ModuleCatalog struct {
-	ProjectID   string                 `json:"projectId"`
-	Branch      string                 `json:"branch"`
-	GeneratedAt time.Time              `json:"generatedAt"`
-	Modules     map[string]ModuleEntry `json:"modules"`
-	RouteIndex  map[string]string      `json:"routeIndex"` // route → moduleKey
+	ProjectID    string                     `json:"projectId"`
+	Branch       string                     `json:"branch"`
+	GeneratedAt  time.Time                  `json:"generatedAt"`
+	Modules      map[string]ModuleEntry     `json:"modules"`
+	RouteIndex   map[string]string          `json:"routeIndex"` // route → moduleKey
+	Selectors    map[string][]ExtractedSelector `json:"selectors"` // filePath → selectors
 }
 
 // ModuleEntry represents a functional module in the application
 type ModuleEntry struct {
-	DisplayName      string                `json:"displayName"`
-	Description      string                `json:"description"`
-	Features         []string              `json:"features"`          // e.g. ["list", "create", "edit", "delete", "search", "filter"]
-	NavigationPath   []string              `json:"navigationPath"`   // e.g. ["Master Data", "Entity Districts"]
-	Routes           map[string]RouteEntry `json:"routes"`
+	DisplayName    string                `json:"displayName"`
+	Description    string                `json:"description"`
+	Features       []string              `json:"features"`          // e.g. ["list", "create", "create", "delete", "search", "filter"]
+	NavigationPath []string              `json:"navigationPath"`   // e.g. ["Master Data", "Entity Districts"]
+	Routes         map[string]RouteEntry `json:"routes"`
 }
 
 // RouteEntry represents a single route/page in the module
 type RouteEntry struct {
 	FilePath         string            `json:"filePath"`
 	Description      string            `json:"description"`
-	KeyElements      map[string]string `json:"keyElements"`      // e.g. "searchInput" → "entity-districts-search-input"
+	KeyElements      map[string]string `json:"keyElements"`      // semantic name → selector value
 	AvailableActions []string          `json:"availableActions"` // e.g. ["search", "filter", "sort"]
 }
 
@@ -215,11 +378,18 @@ func (m *GraphMapper) FetchAndEnrichCatalog(
 		// Continue anyway - LLM can work with minimal context
 	}
 
-	// Enrich with LLM
-	catalog, err = m.enrichWithLLM(ctx, projectID, branch, routeMap, sourceFiles)
+	// Extract actual selectors from the full source files
+	selectorIndex := m.BuildSelectorIndexFromFiles(sourceFiles)
+	log.Printf("[GraphMapper] Extracted selectors from %d files", len(selectorIndex))
+
+	// Enrich with LLM (pass route map and selector index)
+	catalog, err = m.enrichWithLLM(ctx, projectID, branch, routeMap, sourceFiles, selectorIndex)
 	if err != nil {
 		return nil, fmt.Errorf("failed to enrich with LLM: %w", err)
 	}
+
+	// Attach selector index to catalog
+	catalog.Selectors = selectorIndex
 
 	// Cache it
 	if err := m.CacheCatalog(ctx, catalog); err != nil {
@@ -335,11 +505,13 @@ func decodeBase64(s string) ([]byte, error) {
 }
 
 // EnrichWithLLM calls the LLM to generate module descriptions and features
+// It uses the pre-extracted selector index to ensure LLM only references EXISTING selectors
 func (m *GraphMapper) enrichWithLLM(
 	ctx context.Context,
 	projectID, branch string,
 	routeMap map[string]string,
 	sourceFiles map[string]string,
+	selectorIndex map[string][]ExtractedSelector,
 ) (*ModuleCatalog, error) {
 
 	projectIDEnv := os.Getenv("GOOGLE_CLOUD_PROJECT")
@@ -360,14 +532,21 @@ func (m *GraphMapper) enrichWithLLM(
 	// Build the prompt
 	routesJSON, _ := json.MarshalIndent(routeMap, "", "  ")
 
-	filesSummary := m.buildFilesSummary(sourceFiles)
+	// Build selector summary from the extracted selectors
+	selectorSummary := m.buildSelectorSummaryForPrompt(selectorIndex)
+	
+	// Get full file contents for context (not truncated)
+	filesSummary := m.buildFilesSummaryForPrompt(sourceFiles)
 
-	prompt := fmt.Sprintf(`You are a code structure analyzer. Analyze the provided source code files and route map to create a module catalog.
+	prompt := fmt.Sprintf(`You are a code structure analyzer. Analyze the provided source code files, route map, and available selectors to create a module catalog.
 
 ### ROUTE MAP (route → file path):
 %s
 
-### SOURCE FILES SUMMARY:
+### AVAILABLE SELECTORS (extract from source code - USE THESE ONLY, DO NOT INVENT NEW ONES):
+%s
+
+### SOURCE FILES (for reference):
 %s
 
 ### INSTRUCTIONS:
@@ -379,7 +558,7 @@ func (m *GraphMapper) enrichWithLLM(
    - navigationPath: How to navigate to this module (menu hierarchy, e.g., ["Master Data", "Entity Districts"])
 3. For each route in a module, determine:
    - description: What the page does
-   - keyElements: Important UI elements (search inputs, filters, tables, action buttons) with semantic names
+   - keyElements: IMPORTANT - map semantic names to ACTUAL selector values from the AVAILABLE SELECTORS section above
    - availableActions: What actions users can perform on this page
 
 ### OUTPUT FORMAT:
@@ -396,8 +575,8 @@ Return ONLY a JSON object with this exact structure:
           "filePath": "app/path/page.tsx",
           "description": "string",
           "keyElements": {
-            "searchInput": "element-testid",
-            "dataTable": "table-testid",
+            "searchInput": "selector-value",  <-- MUST use a value from AVAILABLE SELECTORS above
+            "dataTable": "selector-value",   <-- MUST use a value from AVAILABLE SELECTORS above
             ...
           },
           "availableActions": ["search", "filter", ...]
@@ -411,12 +590,13 @@ Return ONLY a JSON object with this exact structure:
   }
 }
 
-Rules:
+CRITICAL RULES:
+- keyElements values MUST be actual selector values from AVAILABLE SELECTORS above (testid, id, placeholder, aria-label, text, etc.)
+- DO NOT invent new selector values not in AVAILABLE SELECTORS
+- If a semantic element doesn't have a matching selector in AVAILABLE SELECTORS, omit it from keyElements
 - Use lowercase-with-hyphens for module keys (e.g., "entity-districts", "invoice-otc")
-- keyElements should map semantic names to actual testid values found in the code
 - availableActions should match the features list but scoped to what's available on THIS specific page
-- Be specific about testid values - they must match exactly what's in the source code
-`, routesJSON, filesSummary)
+`, routesJSON, selectorSummary, filesSummary)
 
 	// Call LLM
 	config := &genai.GenerateContentConfig{
@@ -525,21 +705,164 @@ Rules:
 		return nil, fmt.Errorf("LLM returned no modules")
 	}
 
+	// Validate keyElements against actual selectors - filter out hallucinated values
+	catalog = m.validateAndFilterKeyElements(catalog, selectorIndex)
+	
 	return catalog, nil
 }
 
-func (m *GraphMapper) buildFilesSummary(sourceFiles map[string]string) string {
+// validateAndFilterKeyElements checks that keyElements reference actual selectors from the codebase
+// Removes or flags selectors that don't exist in the extracted selector index
+func (m *GraphMapper) validateAndFilterKeyElements(catalog *ModuleCatalog, selectorIndex map[string][]ExtractedSelector) *ModuleCatalog {
+	// Build a set of all valid selector values for quick lookup
+	validSelectors := make(map[string]bool)
+	for _, selectors := range selectorIndex {
+		for _, sel := range selectors {
+			if sel.Testid != "" {
+				validSelectors[sel.Testid] = true
+			}
+			if sel.ID != "" {
+				validSelectors[sel.ID] = true
+			}
+			if sel.Placeholder != "" {
+				validSelectors[sel.Placeholder] = true
+			}
+			if sel.AriaLabel != "" {
+				validSelectors[sel.AriaLabel] = true
+			}
+			if sel.Name != "" {
+				validSelectors[sel.Name] = true
+			}
+			if sel.Text != "" {
+				validSelectors[sel.Text] = true
+			}
+		}
+	}
+
+	log.Printf("[GraphMapper] Valid selector pool has %d entries", len(validSelectors))
+
+	// Filter each route's keyElements
+	for moduleKey, module := range catalog.Modules {
+		for routePath, route := range module.Routes {
+			validKeyElements := make(map[string]string)
+			invalidCount := 0
+			
+			for semanticName, selectorValue := range route.KeyElements {
+				if validSelectors[selectorValue] {
+					validKeyElements[semanticName] = selectorValue
+				} else {
+					// Check if it's a compound selector format
+					if strings.HasPrefix(selectorValue, "[data-testid='") || 
+					   strings.HasPrefix(selectorValue, "#") ||
+					   strings.HasPrefix(selectorValue, "[placeholder='") ||
+					   strings.HasPrefix(selectorValue, "[aria-label='") ||
+					   strings.HasPrefix(selectorValue, "text('") {
+						// Extract the value from the selector format
+						extracted := extractValueFromSelector(selectorValue)
+						if extracted != "" && validSelectors[extracted] {
+							validKeyElements[semanticName] = extracted
+							continue
+						}
+					}
+					invalidCount++
+					log.Printf("[GraphMapper] Warning: Invalid selector '%s' for key '%s' in route %s", selectorValue, semanticName, routePath)
+				}
+			}
+			
+			if invalidCount > 0 {
+				log.Printf("[GraphMapper] Route %s: %d/%d keyElements were filtered out (not found in codebase)", 
+					routePath, invalidCount, len(route.KeyElements))
+			}
+			
+			route.KeyElements = validKeyElements
+			catalog.Modules[moduleKey].Routes[routePath] = route
+		}
+	}
+
+	return catalog
+}
+
+// extractValueFromSelector extracts the actual value from a Playwright selector format
+func extractValueFromSelector(selector string) string {
+	// [data-testid='value'] → value
+	re := regexp.MustCompile(`\[data-testid=['"]([^'"]+)['"]\]`)
+	if matches := re.FindStringSubmatch(selector); len(matches) > 1 {
+		return matches[1]
+	}
+	// #id → id
+	re = regexp.MustCompile(`#([a-zA-Z0-9_-]+)`)
+	if matches := re.FindStringSubmatch(selector); len(matches) > 1 {
+		return matches[1]
+	}
+	// [placeholder='value'] → value
+	re = regexp.MustCompile(`\[placeholder=['"]([^'"]+)['"]\]`)
+	if matches := re.FindStringSubmatch(selector); len(matches) > 1 {
+		return matches[1]
+	}
+	// [aria-label='value'] → value
+	re = regexp.MustCompile(`\[aria-label=['"]([^'"]+)['"]\]`)
+	if matches := re.FindStringSubmatch(selector); len(matches) > 1 {
+		return matches[1]
+	}
+	// text('value') → value
+	re = regexp.MustCompile(`text\(['"]([^'"]+)['"]\)`)
+	if matches := re.FindStringSubmatch(selector); len(matches) > 1 {
+		return matches[1]
+	}
+	return ""
+}
+
+// buildFilesSummaryForPrompt creates a summary of source files for the LLM prompt
+// Uses full file content (no truncation) to preserve selector context
+func (m *GraphMapper) buildFilesSummaryForPrompt(sourceFiles map[string]string) string {
 	var lines []string
 	for path, content := range sourceFiles {
-		// Truncate each file to first 80 lines (testids are usually at top of file)
-		lineSlice := strings.Split(content, "\n")
-		if len(lineSlice) > 80 {
-			lineSlice = lineSlice[:80]
-		}
-		truncated := strings.Join(lineSlice, "\n")
-
-		lines = append(lines, fmt.Sprintf("=== FILE: %s ===\n%s\n", path, truncated))
+		// Use full file content - selectors can be anywhere in the file
+		lines = append(lines, fmt.Sprintf("=== FILE: %s ===\n%s\n", path, content))
 	}
+	return strings.Join(lines, "\n")
+}
+
+// buildSelectorSummaryForPrompt formats the extracted selectors into a readable prompt section
+// This ensures the LLM only references selectors that actually exist in the codebase
+func (m *GraphMapper) buildSelectorSummaryForPrompt(selectorIndex map[string][]ExtractedSelector) string {
+	var lines []string
+	
+	lines = append(lines, "Available selectors grouped by file:")
+	lines = append(lines, "")
+	
+	// Group selectors by file
+	for filePath, selectors := range selectorIndex {
+		lines = append(lines, fmt.Sprintf("--- %s (%d elements) ---", filePath, len(selectors)))
+		
+		// Group by element type for readability
+		typeGroups := make(map[string][]string)
+		for _, sel := range selectors {
+			key := sel.ElementType
+			if key == "" {
+				key = "element"
+			}
+			typeGroups[key] = append(typeGroups[key], sel.FormatSelectorForPrompt())
+		}
+		
+		for elemType, items := range typeGroups {
+			lines = append(lines, fmt.Sprintf("  %s: [%s]", elemType, strings.Join(items, ", ")))
+		}
+		lines = append(lines, "")
+	}
+	
+	// Add selector format reference
+	lines = append(lines, "")
+	lines = append(lines, "Selector formats you can use:")
+	lines = append(lines, "  - data-testid='value' → [data-testid='value']")
+	lines = append(lines, "  - id='myId' → #myId")
+	lines = append(lines, "  - placeholder='Search...' → [placeholder='Search...']")
+	lines = append(lines, "  - aria-label='Close' → [aria-label='Close']")
+	lines = append(lines, "  - text='Submit' → text('Submit')")
+	lines = append(lines, "  - name='email' → [name='email']")
+	lines = append(lines, "  - Compound: button:has-text('Save')")
+	lines = append(lines, "  - Nth fallback: >> nth=0")
+	
 	return strings.Join(lines, "\n")
 }
 

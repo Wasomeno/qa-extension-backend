@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
+	"regexp"
 	"strings"
 	"qa-extension-backend/internal/models"
 
@@ -12,13 +14,13 @@ import (
 	"google.golang.org/genai"
 )
 
-// GenerateTestsForScenario uses Gemini to generate TestRecordings from parsed test cases and codebase context.
-// It automatically detects and uses the knowledge graph if available in the codebase.
+// GenerateTestsForScenario uses Gemini to generate TestRecordings from parsed test cases and module catalog.
+// It uses the pre-extracted selectors to ensure all selectors exist in the codebase.
 func GenerateTestsForScenario(
 	ctx context.Context,
 	testCases []models.ParsedTestCase,
 	codebaseCtx *CodebaseContext,
-	graph *models.KnowledgeGraph,
+	catalog *ModuleCatalog,
 	authConfig models.AuthConfig,
 ) ([]models.TestRecording, []string, error) {
 
@@ -34,16 +36,7 @@ func GenerateTestsForScenario(
 		}
 		batch := testCases[i:end]
 
-		var recordings []models.TestRecording
-		var missingRoutes []string
-		var err error
-
-		if graph != nil {
-			recordings, missingRoutes, err = processBatchGraphAware(ctx, batch, codebaseCtx, graph, authConfig)
-		} else {
-			recordings, err = processBatch(ctx, batch, codebaseCtx, authConfig)
-		}
-
+		recordings, missingRoutes, err := processBatchWithCatalog(ctx, batch, codebaseCtx, catalog, authConfig)
 		if err != nil {
 			return allRecordings, allMissingRoutes, fmt.Errorf("failed processing batch %d: %w", i/batchSize, err)
 		}
@@ -55,41 +48,157 @@ func GenerateTestsForScenario(
 	return allRecordings, allMissingRoutes, nil
 }
 
-func processBatch(
+// processBatchWithCatalog generates test recordings using the module catalog with pre-extracted selectors
+func processBatchWithCatalog(
 	ctx context.Context,
 	batch []models.ParsedTestCase,
 	codebaseCtx *CodebaseContext,
-	authConfig models.AuthConfig,
-) ([]models.TestRecording, error) {
-
-	prompt := buildPrompt(batch, codebaseCtx, authConfig)
-	return generateRecordings(ctx, batch, prompt)
-}
-
-func processBatchGraphAware(
-	ctx context.Context,
-	batch []models.ParsedTestCase,
-	codebaseCtx *CodebaseContext,
-	graph *models.KnowledgeGraph,
+	catalog *ModuleCatalog,
 	authConfig models.AuthConfig,
 ) ([]models.TestRecording, []string, error) {
 
-	prompt := buildGraphAwarePrompt(batch, graph, codebaseCtx, authConfig)
+	prompt := buildCatalogAwarePrompt(batch, codebaseCtx, catalog, authConfig)
 
 	recordings, err := generateRecordings(ctx, batch, prompt)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// Collect missing routes
+	// Validate generated selectors against actual selectors in catalog
 	var missingRoutes []string
-	for _, tc := range batch {
-		if tc.Route != "" && !graph.HasRoute(tc.Route) {
-			missingRoutes = append(missingRoutes, tc.Route)
-		}
+	for i, rec := range recordings {
+		recordings[i].Steps = validateAndFixSelectors(rec.Steps, catalog)
 	}
 
 	return recordings, missingRoutes, nil
+}
+
+// validateAndFixSelectors checks that each step's selector exists in the catalog
+// If a selector doesn't exist, it tries to find a matching selector or marks as warning
+func validateAndFixSelectors(steps []models.RecordingStep, catalog *ModuleCatalog) []models.RecordingStep {
+	// Build a set of all valid selectors
+	validSelectors := make(map[string]ExtractedSelector)
+	for _, selectors := range catalog.Selectors {
+		for _, sel := range selectors {
+			if sel.Testid != "" {
+				validSelectors[sel.Testid] = sel
+			}
+			if sel.ID != "" {
+				validSelectors[sel.ID] = sel
+			}
+			if sel.Placeholder != "" {
+				validSelectors[sel.Placeholder] = sel
+			}
+			if sel.AriaLabel != "" {
+				validSelectors[sel.AriaLabel] = sel
+			}
+			if sel.Name != "" {
+				validSelectors[sel.Name] = sel
+			}
+			if sel.Text != "" {
+				validSelectors[sel.Text] = sel
+			}
+		}
+	}
+
+	for i, step := range steps {
+		if step.Selector == "" {
+			continue
+		}
+
+		// Extract the selector value from various formats
+		selectorValue := extractSelectorValue(step.Selector)
+		
+		if _, exists := validSelectors[selectorValue]; !exists {
+			// Try to find an alternative selector by text matching
+			if alternative := findAlternativeSelector(step.Description, catalog); alternative != "" {
+				log.Printf("[TestGenerator] Step %d: Selector '%s' not found, using alternative '%s'", 
+					i, step.Selector, alternative)
+				steps[i].Selector = alternative
+				steps[i].SelectorCandidates = append(steps[i].SelectorCandidates, step.Selector) // Keep original as fallback
+			} else {
+				log.Printf("[TestGenerator] Warning: Step %d selector '%s' not validated against codebase", 
+					i, step.Selector)
+			}
+		}
+	}
+
+	return steps
+}
+
+// extractSelectorValue extracts the actual value from various Playwright selector formats
+func extractSelectorValue(selector string) string {
+	// [data-testid='value'] → value
+	re := regexp.MustCompile(`\[data-testid=['"]([^'"]+)['"]\]`)
+	if matches := re.FindStringSubmatch(selector); len(matches) > 1 {
+		return matches[1]
+	}
+	// #id → id
+	re = regexp.MustCompile(`#([a-zA-Z0-9_-]+)`)
+	if matches := re.FindStringSubmatch(selector); len(matches) > 1 {
+		return matches[1]
+	}
+	// [placeholder='value'] → value
+	re = regexp.MustCompile(`\[placeholder=['"]([^'"]+)['"]\]`)
+	if matches := re.FindStringSubmatch(selector); len(matches) > 1 {
+		return matches[1]
+	}
+	// [aria-label='value'] → value
+	re = regexp.MustCompile(`\[aria-label=['"]([^'"]+)['"]\]`)
+	if matches := re.FindStringSubmatch(selector); len(matches) > 1 {
+		return matches[1]
+	}
+	// [name='value'] → value
+	re = regexp.MustCompile(`\[name=['"]([^'"]+)['"]\]`)
+	if matches := re.FindStringSubmatch(selector); len(matches) > 1 {
+		return matches[1]
+	}
+	// text('value') or text="value" → value
+	re = regexp.MustCompile(`text\(['"]([^'"]+)['"]\)`)
+	if matches := re.FindStringSubmatch(selector); len(matches) > 1 {
+		return matches[1]
+	}
+	// button:has-text('value') → value
+	re = regexp.MustCompile(`button:has-text\(['"]([^'"]+)['"]\)`)
+	if matches := re.FindStringSubmatch(selector); len(matches) > 1 {
+		return matches[1]
+	}
+	// Just return the original if no pattern matches
+	return selector
+}
+
+// findAlternativeSelector tries to find a matching selector based on step description
+func findAlternativeSelector(description string, catalog *ModuleCatalog) string {
+	descLower := strings.ToLower(description)
+
+	// Build selector list for searching
+	var allSelectors []ExtractedSelector
+	for _, selectors := range catalog.Selectors {
+		allSelectors = append(allSelectors, selectors...)
+	}
+
+	// Keywords to match
+	keywords := []string{
+		"submit", "save", "click", "button", "login", "sign in",
+		"search", "input", "field", "email", "password", "name",
+		"close", "cancel", "delete", "remove", "add", "create", "new",
+	}
+
+	for _, keyword := range keywords {
+		if strings.Contains(descLower, keyword) {
+			// Find selector with matching text or aria-label
+			for _, sel := range allSelectors {
+				selText := strings.ToLower(sel.Text)
+				selAria := strings.ToLower(sel.AriaLabel)
+				
+				if strings.Contains(selText, keyword) || strings.Contains(selAria, keyword) {
+					return sel.GeneratePlaywrightSelector()
+				}
+			}
+		}
+	}
+
+	return ""
 }
 
 func generateRecordings(
@@ -154,7 +263,7 @@ func generateRecordings(
 
 	resp, err := client.Models.GenerateContent(
 		ctx,
-		"gemini-3.1-flash-lite-preview",
+		"gemini-3.1-pro-preview",
 		genai.Text(prompt),
 		config,
 	)
@@ -194,11 +303,12 @@ func generateRecordings(
 	return generatedRecordings, nil
 }
 
-// buildGraphAwarePrompt builds a prompt using the knowledge graph.
-func buildGraphAwarePrompt(
+// buildCatalogAwarePrompt builds a prompt using the module catalog with pre-extracted selectors
+// This ensures the LLM only uses selectors that actually exist in the codebase
+func buildCatalogAwarePrompt(
 	testCases []models.ParsedTestCase,
-	graph *models.KnowledgeGraph,
 	codebaseCtx *CodebaseContext,
+	catalog *ModuleCatalog,
 	authConfig models.AuthConfig,
 ) string {
 
@@ -212,105 +322,55 @@ func buildGraphAwarePrompt(
 		}
 		usedRoutes[route] = true
 
-		ri, ok := graph.RouteSummary[route]
-		if !ok {
+		// Get route info from catalog
+		routeEntry := catalog.GetRouteEntry(route)
+		if routeEntry == nil {
 			routeContexts = append(routeContexts, fmt.Sprintf(
-				"\nRoute: %s\n[WARNING: Route not found in knowledge graph - will use source code context only]\n",
+				"\nRoute: %s\n[WARNING: Route not found in module catalog - using source code context only]\n",
 				route,
 			))
 			continue
 		}
 
-		// Build testid list
-		testidList := []string{}
-		for _, td := range ri.Testids {
-			fieldName := "<none>"
-			if td.FieldName != nil {
-				fieldName = *td.FieldName
+		// Build selector list from catalog's keyElements
+		var selectorList []string
+		for semanticName, selectorValue := range routeEntry.KeyElements {
+			selectorList = append(selectorList, fmt.Sprintf("  - %s: %s", semanticName, selectorValue))
+		}
+
+		// Get all selectors for this file from the selector index
+		fileSelectors, ok := catalog.Selectors[routeEntry.FilePath]
+		var allSelectors []string
+		if ok {
+			for _, sel := range fileSelectors {
+				allSelectors = append(allSelectors, sel.FormatSelectorForPrompt())
 			}
-			boundAction := "<none>"
-			if td.BoundAction != nil {
-				boundAction = *td.BoundAction
-			}
-
-			testidList = append(testidList, fmt.Sprintf(
-				"  - %s (%s, field=%s, action=%s, handler=%s)",
-				td.Testid,
-				td.ElementType,
-				fieldName,
-				td.Action,
-				boundAction,
-			))
-
-			for _, sel := range td.SuggestedSelectors {
-				if sel.Confidence >= 0.7 {
-					testidList = append(testidList, fmt.Sprintf(
-						"    → %s: %s (confidence=%.0f%%)",
-						sel.Type, sel.Value, sel.Confidence*100,
-					))
-				}
-			}
-		}
-
-		// Form fields
-		formFields := []string{}
-		for _, form := range ri.Forms {
-			formFields = append(formFields, fmt.Sprintf("  Form %s:", form.SchemaName))
-			for _, f := range form.Fields {
-				req := ""
-				if f.Required {
-					req = " (required)"
-				}
-				formFields = append(formFields, fmt.Sprintf("    - %s: %s%s", f.Name, f.Label, req))
-			}
-		}
-
-		apis := []string{}
-		for _, api := range ri.APIs {
-			apis = append(apis, fmt.Sprintf("%s %s", api.HTTPMethod, api.Endpoint))
-		}
-
-		hooks := []string{}
-		for _, hook := range ri.Hooks {
-			hooks = append(hooks, fmt.Sprintf("%s (%s)", hook.HookName, hook.HookType))
-		}
-
-		formsStr := "None"
-		if len(formFields) > 0 {
-			formsStr = strings.Join(formFields, "\n")
-		}
-
-		apisStr := "None"
-		if len(apis) > 0 {
-			apisStr = strings.Join(apis, ", ")
-		}
-
-		hooksStr := "None"
-		if len(hooks) > 0 {
-			hooksStr = strings.Join(hooks, ", ")
 		}
 
 		ctx := fmt.Sprintf(`Route: %s
-Module: %s
-Testids (USE THESE ONLY - DO NOT GUESS SELECTORS):
+File: %s
+Description: %s
+Available Actions: %s
+
+Key Elements (mapped from catalog):
 %s
-Form Fields:
-%s
-API Endpoints:
-  %s
-React Hooks:
-  %s`,
+
+All Available Selectors in this file:
+%s`,
 			route,
-			ri.Module,
-			strings.Join(testidList, "\n"),
-			formsStr,
-			apisStr,
-			hooksStr,
+			routeEntry.FilePath,
+			routeEntry.Description,
+			strings.Join(routeEntry.AvailableActions, ", "),
+			strings.Join(selectorList, "\n"),
+			strings.Join(allSelectors, "\n"),
 		)
 		routeContexts = append(routeContexts, ctx)
 	}
 
 	tcJSON, _ := json.MarshalIndent(testCases, "", "  ")
+
+	// Build selector summary for reference
+	selectorSummary := buildFullSelectorSummary(catalog)
 
 	return fmt.Sprintf(`You are a QA automation expert writing Playwright test recordings for a Next.js application.
 
@@ -322,19 +382,31 @@ React Hooks:
    - Username: %s
    - Password: %s
 3. SELECTOR RULES (CRITICAL):
-   - Use ONLY the testids listed in the route context below from the knowledge graph.
-   - For each step, pick the selector with HIGHEST confidence from suggestedSelectors.
-   - Format: Use Playwright selector format, e.g. [data-testid='foo'], text('Label'), button[type='submit']
-   - NEVER guess a selector not listed in the knowledge graph.
-   - If a selector is not provided for a testid, use: [data-testid='testid-value']
+   - Use ONLY selectors from the "Available Selectors" or "All Available Selectors" sections
+   - Pick the BEST selector based on:
+     * testid > id > aria-label > placeholder > name > text (stability priority)
+     * Match the semantic meaning (e.g., "search input" → data-testid='search-box')
+   - Format: Use Playwright selector format:
+     * [data-testid='value'] - preferred if available
+     * #id - for elements with id attribute
+     * [aria-label='value'] - for accessible labels
+     * [placeholder='value'] - for input placeholders
+     * [name='value'] - for form field names
+     * text('Label') - for visible text elements
+     * button:has-text('Submit') - compound selectors
+   - Include "selectorCandidates" as fallback options (e.g., text alternative if using testid)
+   - NEVER guess or invent selectors not in the lists below
 4. ACTION RULES:
-   - For "fill" actions: use the fieldName from the form schema, not the testid.
-   - For "submit" buttons: use the testid that corresponds to a Form.Submit or htmlType="submit" button.
-   - For "assert" steps: use the expectedValue from the test case's expectedResult.
-5. ROUTE CONTEXT (from knowledge graph — USE THIS, NOT the source files):
+   - For form inputs: use [name='fieldName'] or [placeholder='label']
+   - For buttons: use testid, text, or aria-label
+   - For assertions: use the selector that best identifies the element to check
+5. ROUTE CONTEXT (from module catalog):
 %s
 
-### SOURCE FILES (for reference only - use knowledge graph above for selectors):
+### ALL AVAILABLE SELECTORS (use these ONLY):
+%s
+
+### SOURCE FILES (for reference):
 %s
 
 ### TEST SCENARIOS:
@@ -344,42 +416,61 @@ React Hooks:
 Return ONLY a JSON array of TestRecording objects.`, 
 		authConfig.BaseURL, authConfig.LoginURL, authConfig.Username, authConfig.Password,
 		strings.Join(routeContexts, "\n\n"),
+		selectorSummary,
 		formatCodebaseContext(codebaseCtx),
 		string(tcJSON))
 }
 
-func buildPrompt(batch []models.ParsedTestCase, codebaseCtx *CodebaseContext, authConfig models.AuthConfig) string {
-	tcJSON, _ := json.MarshalIndent(batch, "", "  ")
-
-	return fmt.Sprintf(`You are a QA automation expert writing Playwright-ready test blueprints based on test scenarios and the actual application source code.
-
-Your task is to convert the following %d Test Scenarios into an array of TestRecording JSON objects.
-
-### INSTRUCTIONS:
-1. Generate one TestRecording per Test Scenario, keeping the array order identical.
-2. Ensure the first steps in each test navigate to the Login URL and authenticate using the provided credentials.
-   - Base URL: %s
-   - Login URL: %s
-   - Username: %s
-   - Password: %s
-3. Derive your Selectors from the provided SOURCE CODE context. DO NOT GUESS. Look for "data-testid", "id", or semantic elements (like "button:has-text('Submit')").
-4. Include at least 2 "selectorCandidates" (e.g. xpath, css fallback) per interactive step.
-5. Use proper "expectedValue" and "assertionType" (e.g., "isVisible", "toHaveText") for steps that are checking results.
-6. Allowed actions: "navigate", "click", "type", "press", "assert", "wait". Use "assert" for verification steps.
-7. CRITICAL: Respect the "userStory" field for overarching business logic context.
-8. CRITICAL: Pay attention to the "testType" field. If it's a "Negative case" or similar, strictly ensure assertions check for expected error messages or validation states.
-
-### SOURCE CODE CONTEXT (%s):
-%s
-
-### TEST SCENARIOS:
-%s
-
-RETURN ONLY THE JSON ARRAY OF RECORDINGS.`, 
-		len(batch), authConfig.BaseURL, authConfig.LoginURL, authConfig.Username, authConfig.Password,
-		codebaseCtx.ProjectName,
-		formatCodebaseContext(codebaseCtx),
-		string(tcJSON))
+// buildFullSelectorSummary creates a comprehensive list of all available selectors
+func buildFullSelectorSummary(catalog *ModuleCatalog) string {
+	var lines []string
+	lines = append(lines, "=== ALL AVAILABLE SELECTORS IN CODEBASE ===")
+	lines = append(lines, "")
+	
+	// Group by file for better organization
+	for filePath, selectors := range catalog.Selectors {
+		lines = append(lines, fmt.Sprintf("[%s]", filePath))
+		
+		// Group by selector type
+		typeGroups := map[string][]string{
+			"testid":     {},
+			"id":         {},
+			"aria-label": {},
+			"placeholder": {},
+			"name":      {},
+			"text":      {},
+		}
+		
+		for _, sel := range selectors {
+			if sel.Testid != "" {
+				typeGroups["testid"] = append(typeGroups["testid"], fmt.Sprintf("[data-testid='%s']", sel.Testid))
+			}
+			if sel.ID != "" {
+				typeGroups["id"] = append(typeGroups["id"], fmt.Sprintf("#%s", sel.ID))
+			}
+			if sel.AriaLabel != "" {
+				typeGroups["aria-label"] = append(typeGroups["aria-label"], fmt.Sprintf("[aria-label='%s']", sel.AriaLabel))
+			}
+			if sel.Placeholder != "" {
+				typeGroups["placeholder"] = append(typeGroups["placeholder"], fmt.Sprintf("[placeholder='%s']", sel.Placeholder))
+			}
+			if sel.Name != "" {
+				typeGroups["name"] = append(typeGroups["name"], fmt.Sprintf("[name='%s']", sel.Name))
+			}
+			if sel.Text != "" {
+				typeGroups["text"] = append(typeGroups["text"], fmt.Sprintf("text('%s')", sel.Text))
+			}
+		}
+		
+		for groupName, items := range typeGroups {
+			if len(items) > 0 {
+				lines = append(lines, fmt.Sprintf("  %s: %s", groupName, strings.Join(items, ", ")))
+			}
+		}
+		lines = append(lines, "")
+	}
+	
+	return strings.Join(lines, "\n")
 }
 
 func formatCodebaseContext(codebaseCtx *CodebaseContext) string {

@@ -593,7 +593,7 @@ func GenerateTests(c *gin.Context) {
 		}
 
 		recordings, missingRoutes, err = services.GenerateTestsForScenario(
-			bgCtx, targetTestCases, codebaseCtx, graph, scenario.AuthConfig,
+			bgCtx, targetTestCases, codebaseCtx, catalog, scenario.AuthConfig,
 		)
 		if err != nil {
 			publishError(fmt.Sprintf("AI generation failed: %v", err))
