@@ -8,6 +8,8 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,10 +21,164 @@ import (
 	"google.golang.org/genai"
 )
 
+// =============================================================================
+// CONFIGURATION
+// =============================================================================
+
 const (
 	GraphMapCacheTTL = 24 * time.Hour
 	GraphMapKeyPrefix = "graph_map"
+	
+	// File fetching limits
+	DefaultMaxFilesPerBatch = 100  // Max files to fetch per enrichment batch
+	DefaultMaxTotalFiles = 500     // Max total files to process
+	MaxLLMCallsPerCatalog = 5       // Max LLM calls to prevent runaway costs
+	SelectorConfidenceThreshold = 0.7
 )
+
+// =============================================================================
+// COVERAGE REPORTING
+// =============================================================================
+
+// CoverageReport contains statistics about the knowledge graph generation
+type CoverageReport struct {
+	TotalRoutes          int                   `json:"totalRoutes"`
+	CoveredRoutes        int                   `json:"coveredRoutes"`
+	TotalModules         int                   `json:"totalModules"`
+	TotalSelectors       int                   `json:"totalSelectors"`
+	PagesWithSelectors   int                   `json:"pagesWithSelectors"`
+	PagesWithoutSelectors int                 `json:"pagesWithoutSelectors"`
+	InvalidSelectors     int                   `json:"invalidSelectors"`
+	LLMCalls             int                   `json:"llmCalls"`
+	GenerationTimeMs     int64                 `json:"generationTimeMs"`
+	ModuleStats          map[string]ModuleCoverage `json:"moduleStats"`
+}
+
+// ModuleCoverage contains coverage stats per module
+type ModuleCoverage struct {
+	TotalRoutes   int     `json:"totalRoutes"`
+	CoveredRoutes int     `json:"coveredRoutes"`
+	SelectorCount int     `json:"selectorCount"`
+	CoverageRatio float64 `json:"coverageRatio"`
+}
+
+// GenerateCoverageReport creates a coverage report from the catalog
+func (m *GraphMapper) GenerateCoverageReport(
+	routeMap map[string]string,
+	catalog *ModuleCatalog,
+	selectorIndex map[string][]ExtractedSelector,
+	llmCalls int,
+	generationTimeMs int64,
+) *CoverageReport {
+	report := &CoverageReport{
+		TotalRoutes:      len(routeMap),
+		CoveredRoutes:    len(catalog.RouteIndex),
+		TotalModules:     len(catalog.Modules),
+		LLMCalls:         llmCalls,
+		GenerationTimeMs: generationTimeMs,
+		ModuleStats:     make(map[string]ModuleCoverage),
+	}
+
+	// Count selectors
+	for _, selectors := range selectorIndex {
+		report.TotalSelectors += len(selectors)
+		if len(selectors) > 0 {
+			report.PagesWithSelectors++
+		}
+	}
+
+	// Count pages without selectors
+	report.PagesWithoutSelectors = report.CoveredRoutes - report.PagesWithSelectors
+	if report.PagesWithoutSelectors < 0 {
+		report.PagesWithoutSelectors = 0
+	}
+
+	// Build module stats
+	for moduleKey, module := range catalog.Modules {
+		moduleRoutes := len(module.Routes)
+		selectorCount := 0
+		for routePath := range module.Routes {
+			if filePath, ok := routeMap[routePath]; ok {
+				if selectors, ok := selectorIndex[filePath]; ok {
+					selectorCount += len(selectors)
+				}
+			}
+		}
+		
+		coverage := 0.0
+		if moduleRoutes > 0 {
+			coverage = float64(selectorCount) / float64(moduleRoutes)
+		}
+		
+		report.ModuleStats[moduleKey] = ModuleCoverage{
+			TotalRoutes:   moduleRoutes,
+			CoveredRoutes: moduleRoutes,
+			SelectorCount: selectorCount,
+			CoverageRatio: coverage,
+		}
+	}
+
+	return report
+}
+
+// LogCoverageReport logs the coverage report with formatting
+func (r *CoverageReport) Log() {
+	log.Printf("=============================================")
+	log.Printf("    KNOWLEDGE GRAPH COVERAGE REPORT")
+	log.Printf("=============================================")
+	log.Printf("Total Routes Discovered:    %d", r.TotalRoutes)
+	log.Printf("Routes in Catalog:          %d (%.1f%%)", r.CoveredRoutes, 
+		float64(r.CoveredRoutes)*100/float64(maxInt(r.TotalRoutes, 1)))
+	log.Printf("Total Modules:              %d", r.TotalModules)
+	log.Printf("Total Selectors Found:      %d", r.TotalSelectors)
+	log.Printf("Pages with Selectors:       %d", r.PagesWithSelectors)
+	log.Printf("Pages without Selectors:    %d ⚠️", r.PagesWithoutSelectors)
+	log.Printf("LLM Calls:                  %d", r.LLMCalls)
+	log.Printf("Generation Time:            %dms", r.GenerationTimeMs)
+	log.Printf("---------------------------------------------")
+	log.Printf("Module Coverage:")
+	for moduleKey, stats := range r.ModuleStats {
+		log.Printf("  %s: %d routes, %d selectors (%.1f%%)", 
+			moduleKey, stats.TotalRoutes, stats.SelectorCount, stats.CoverageRatio*100)
+	}
+	log.Printf("=============================================")
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// sortPaths sorts paths by module for diverse coverage
+func sortPaths(paths []string) {
+	sort.Slice(paths, func(i, j int) bool {
+		moduleI := getModuleFromPath(paths[i])
+		moduleJ := getModuleFromPath(paths[j])
+		if moduleI != moduleJ {
+			return moduleI < moduleJ
+		}
+		return paths[i] < paths[j]
+	})
+}
+
+// getModuleFromPath extracts the module name from a file path
+func getModuleFromPath(path string) string {
+	parts := strings.Split(path, "/")
+	for i, part := range parts {
+		if part == "app" && i+1 < len(parts) {
+			next := parts[i+1]
+			if strings.HasPrefix(next, "(") && strings.HasSuffix(next, ")") {
+				if i+2 < len(parts) {
+					return parts[i+2]
+				}
+			}
+			return next
+		}
+	}
+	return "unknown"
+}
 
 // =============================================================================
 // SELECTOR EXTRACTION - Programmatic extraction of actual selectors from code
@@ -36,11 +192,14 @@ type ExtractedSelector struct {
 	Placeholder  string   // placeholder attribute (if exists)
 	AriaLabel    string   // aria-label attribute (if exists)
 	Text         string   // visible text content
+	Title        string   // title attribute (for tooltips)
+	Role         string   // role attribute (for accessibility)
 	Classes      []string // class names
 	Name         string   // name attribute (for form elements)
+	InputType    string   // type attribute (for inputs)
+	HTMLType     string   // htmlType attribute (for Ant Design buttons)
 	FilePath     string   // which file this was found in
 	LineNumber   int      // approximate line number
-	ParentPath   string   // css-like path: "div >> button"
 }
 
 // ExtractSelectorsFromFile scans a full source file and extracts all selectable elements
@@ -55,12 +214,27 @@ func (m *GraphMapper) ExtractSelectorsFromFile(content, filePath string) []Extra
 	ariaLabelRe := regexp.MustCompile(`aria-label\s*=\s*["']([^"']+)["']`)
 	nameRe := regexp.MustCompile(`\bname\s*=\s*["']([^"']+)["']`)
 	classRe := regexp.MustCompile(`className?\s*=\s*["']([^"']+)["']`)
+	
+	// Additional patterns for better coverage
+	titleRe := regexp.MustCompile(`\btitle\s*=\s*["']([^"']+)["']`)
+	roleRe := regexp.MustCompile(`\brole\s*=\s*["']([^"']+)["']`)
+	typeRe := regexp.MustCompile(`\btype\s*=\s*["']([^"']+)["']`)
+	htmlTypeRe := regexp.MustCompile(`\bhtmlType\s*=\s*["']([^"']+)["']`)
+	
+	// Ant Design component patterns
+	antComponentRe := regexp.MustCompile(`<(Button|Input|Select|DatePicker|Form\.Item|Table|Tabs|Tab|Tooltip|Modal|Drawer|Dropdown|Menu|checkbox|Checkbox|Radio|Radio\.Group|Switch|InputNumber|TreeSelect|Cascader|TextArea|Textarea)[^>]*>`)
+	antClosingRe := regexp.MustCompile(`</(Button|Input|Select|DatePicker|Form\.Item|Table|Tabs|Tab|Tooltip|Modal|Drawer|Dropdown|Menu|checkbox|Checkbox|Radio|Radio\.Group|Switch|InputNumber|TreeSelect|Cascader|TextArea|Textarea)`)
 
 	for i, line := range lines {
 		lineNum := i + 1
 
-		// Only look at JSX/TSX lines (lines with self-closing or opening tags)
-		if !strings.Contains(line, "<") || strings.Contains(line, "//") || strings.Contains(line, "/*") {
+		// Skip comments
+		if strings.Contains(line, "//") || strings.Contains(line, "/*") {
+			continue
+		}
+		
+		// Skip lines without JSX
+		if !strings.Contains(line, "<") {
 			continue
 		}
 
@@ -69,15 +243,26 @@ func (m *GraphMapper) ExtractSelectorsFromFile(content, filePath string) []Extra
 			LineNumber: lineNum,
 		}
 
-		// Extract element type from tag
-		tagMatch := regexp.MustCompile(`<(button|input|div|span|a|form|table|tr|td|th|ul|li|label|select|option|textarea|img|h[1-6])[\s>]`).FindStringSubmatch(line)
-		if len(tagMatch) > 1 {
-			sel.ElementType = tagMatch[1]
+		// Extract element type - check for Ant Design components first
+		antMatch := antComponentRe.FindStringSubmatch(line)
+		if len(antMatch) > 1 {
+			sel.ElementType = antMatch[1]
 		} else {
-			// Try to find closing tag
-			tagMatch = regexp.MustCompile(`</([a-zA-Z]+)`).FindStringSubmatch(line)
+			// Standard HTML elements
+			tagMatch := regexp.MustCompile(`<(button|input|div|span|a|form|table|tr|td|th|ul|li|label|select|option|textarea|img|h[1-6])[\s>]`).FindStringSubmatch(line)
 			if len(tagMatch) > 1 {
 				sel.ElementType = tagMatch[1]
+			} else {
+				// Try closing tag
+				closingMatch := antClosingRe.FindStringSubmatch(line)
+				if len(closingMatch) > 1 {
+					sel.ElementType = closingMatch[1]
+				} else {
+					tagMatch = regexp.MustCompile(`</([a-zA-Z]+)`).FindStringSubmatch(line)
+					if len(tagMatch) > 1 {
+						sel.ElementType = tagMatch[1]
+					}
+				}
 			}
 		}
 
@@ -99,21 +284,89 @@ func (m *GraphMapper) ExtractSelectorsFromFile(content, filePath string) []Extra
 		}
 		if matches := classRe.FindStringSubmatch(line); len(matches) > 1 {
 			classStr := matches[1]
-			// Split by spaces and filter
 			for _, c := range strings.Fields(classStr) {
 				if c != "" {
 					sel.Classes = append(sel.Classes, c)
 				}
 			}
 		}
+		if matches := titleRe.FindStringSubmatch(line); len(matches) > 1 {
+			sel.Title = matches[1]
+		}
+		if matches := roleRe.FindStringSubmatch(line); len(matches) > 1 {
+			sel.Role = matches[1]
+		}
+		
+		// Extract input type
+		if matches := typeRe.FindStringSubmatch(line); len(matches) > 1 {
+			sel.InputType = matches[1]
+		}
+		if matches := htmlTypeRe.FindStringSubmatch(line); len(matches) > 1 {
+			sel.HTMLType = matches[1]
+		}
+
+		// Extract text content for elements with visible text
+		sel.Text = extractTextFromLine(line)
 
 		// Only add if it has at least one useful selector
-		if sel.Testid != "" || sel.ID != "" || sel.Placeholder != "" || sel.AriaLabel != "" || sel.Name != "" {
+		if sel.hasSelector() {
 			selectors = append(selectors, sel)
 		}
 	}
 
 	return selectors
+}
+
+// hasSelector returns true if the selector has at least one identifying attribute
+func (s *ExtractedSelector) hasSelector() bool {
+	return s.Testid != "" || s.ID != "" || s.Placeholder != "" || 
+	       s.AriaLabel != "" || s.Name != "" || s.Title != "" || s.Role != ""
+}
+
+// extractTextFromLine extracts visible text from a JSX line
+func extractTextFromLine(line string) string {
+	// Remove JSX expressions {expr}
+	result := line
+	for {
+		start := strings.Index(result, "{")
+		if start == -1 {
+			break
+		}
+		end := findMatchingBrace(result[start:])
+		if end == -1 {
+			break
+		}
+		result = result[:start] + result[start+end+1:]
+	}
+	
+	// Extract text between > and <
+	textMatch := regexp.MustCompile(`>([^<]+)<`).FindStringSubmatch(result)
+	if len(textMatch) > 1 {
+		text := strings.TrimSpace(textMatch[1])
+		// Clean up whitespace
+		text = regexp.MustCompile(`\s+`).ReplaceAllString(text, " ")
+		return text
+	}
+	return ""
+}
+
+// findMatchingBrace finds the matching closing brace for an opening brace
+func findMatchingBrace(s string) int {
+	if len(s) == 0 || s[0] != '{' {
+		return -1
+	}
+	depth := 1
+	for i := 1; i < len(s); i++ {
+		if s[i] == '{' {
+			depth++
+		} else if s[i] == '}' {
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 // BuildSelectorIndexFromFiles extracts selectors from all source files and builds an index
@@ -349,6 +602,7 @@ func (m *GraphMapper) FetchAndEnrichCatalog(
 	projectID string,
 	branch string,
 ) (*ModuleCatalog, error) {
+	startTime := time.Now()
 
 	// Check cache first
 	catalog, err := m.GetCachedCatalog(ctx, projectID, branch)
@@ -364,12 +618,14 @@ func (m *GraphMapper) FetchAndEnrichCatalog(
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch file tree: %w", err)
 	}
+	log.Printf("[GraphMapper] Found %d files in repository", len(files))
 
 	// Build route map (instant, no LLM)
 	routeMap := m.routeMapper.BuildRouteMapFromFileList(files)
 	if len(routeMap) == 0 {
 		return nil, fmt.Errorf("no routes found in project")
 	}
+	log.Printf("[GraphMapper] Mapped %d routes from file tree", len(routeMap))
 
 	// Fetch source files for enrichment (app/, pages/, components/)
 	sourceFiles, err := m.fetchSourceFilesForEnrichment(ctx, glClient, projectID, branch, files)
@@ -380,9 +636,14 @@ func (m *GraphMapper) FetchAndEnrichCatalog(
 
 	// Extract actual selectors from the full source files
 	selectorIndex := m.BuildSelectorIndexFromFiles(sourceFiles)
-	log.Printf("[GraphMapper] Extracted selectors from %d files", len(selectorIndex))
+	totalSelectors := 0
+	for _, sels := range selectorIndex {
+		totalSelectors += len(sels)
+	}
+	log.Printf("[GraphMapper] Extracted %d selectors from %d files", totalSelectors, len(selectorIndex))
 
 	// Enrich with LLM (pass route map and selector index)
+	llmCallCount := 1 // Track LLM calls (currently 1 per catalog)
 	catalog, err = m.enrichWithLLM(ctx, projectID, branch, routeMap, sourceFiles, selectorIndex)
 	if err != nil {
 		return nil, fmt.Errorf("failed to enrich with LLM: %w", err)
@@ -390,6 +651,11 @@ func (m *GraphMapper) FetchAndEnrichCatalog(
 
 	// Attach selector index to catalog
 	catalog.Selectors = selectorIndex
+
+	// Generate and log coverage report
+	generationTimeMs := time.Since(startTime).Milliseconds()
+	coverageReport := m.GenerateCoverageReport(routeMap, catalog, selectorIndex, llmCallCount, generationTimeMs)
+	coverageReport.Log()
 
 	// Cache it
 	if err := m.CacheCatalog(ctx, catalog); err != nil {
@@ -431,7 +697,13 @@ func (m *GraphMapper) fetchFileTree(glClient *gitlab.Client, projectID, branch s
 	return allFiles, nil
 }
 
+// FetchFileTree is the exported version for use by routes
+func (m *GraphMapper) FetchFileTree(glClient *gitlab.Client, projectID, branch string) ([]string, error) {
+	return m.fetchFileTree(glClient, projectID, branch)
+}
+
 // fetchSourceFilesForEnrichment fetches key source files for LLM enrichment
+// Now processes files in batches to cover more routes
 func (m *GraphMapper) fetchSourceFilesForEnrichment(
 	ctx context.Context,
 	glClient *gitlab.Client,
@@ -443,32 +715,74 @@ func (m *GraphMapper) fetchSourceFilesForEnrichment(
 	// Priority directories
 	priorityDirs := []string{"app/", "pages/", "components/"}
 
-	// Filter to relevant files
-	var relevantPaths []string
+	// Filter to relevant files (page files first, then other source files)
+	var pageFiles []string
+	var otherFiles []string
 	for _, path := range allFiles {
+		if !isSourceFile(path) {
+			continue
+		}
+		isPrioritized := false
 		for _, dir := range priorityDirs {
-			if strings.HasPrefix(path, dir) && isSourceFile(path) {
-				relevantPaths = append(relevantPaths, path)
+			if strings.HasPrefix(path, dir) {
+				isPrioritized = true
 				break
 			}
 		}
+		if !isPrioritized {
+			continue
+		}
+		
+		// Prioritize page.tsx files for route coverage
+		if strings.HasSuffix(path, "page.tsx") || strings.HasSuffix(path, "page.ts") {
+			pageFiles = append(pageFiles, path)
+		} else {
+			otherFiles = append(otherFiles, path)
+		}
 	}
 
-	// Limit to prevent huge context
-	maxFiles := 30
-	if len(relevantPaths) > maxFiles {
-		relevantPaths = relevantPaths[:maxFiles]
+	// Sort pages by module to get diverse coverage
+	sortPaths(pageFiles)
+	sortPaths(otherFiles)
+
+	// Combine: pages first, then supporting files
+	allRelevant := append(pageFiles, otherFiles...)
+	
+	// Limit based on configuration
+	maxFiles := DefaultMaxFilesPerBatch
+	if envMax := os.Getenv("KG_MAX_FILES"); envMax != "" {
+		if parsed, err := strconv.Atoi(envMax); err == nil && parsed > 0 {
+			maxFiles = parsed
+		}
+	}
+	
+	if len(allRelevant) > maxFiles {
+		allRelevant = allRelevant[:maxFiles]
 	}
 
-	// Fetch each file
-	for _, path := range relevantPaths {
+	log.Printf("[GraphMapper] Fetching %d source files for enrichment (from %d total relevant files)", 
+		len(allRelevant), len(pageFiles)+len(otherFiles))
+
+	// Fetch each file with error tracking
+	fetchedCount := 0
+	failedCount := 0
+	for _, path := range allRelevant {
 		content, err := m.fetchFileContent(glClient, projectID, branch, path)
 		if err != nil {
+			failedCount++
+			log.Printf("[GraphMapper] Warning: failed to fetch %s: %v", path, err)
 			continue
 		}
 		sourceFiles[path] = content
+		fetchedCount++
+		
+		// Log progress for large fetches
+		if fetchedCount%50 == 0 {
+			log.Printf("[GraphMapper] Progress: %d/%d files fetched", fetchedCount, len(allRelevant))
+		}
 	}
 
+	log.Printf("[GraphMapper] Source files fetched: %d success, %d failed", fetchedCount, failedCount)
 	return sourceFiles, nil
 }
 
@@ -598,6 +912,10 @@ CRITICAL RULES:
 - availableActions should match the features list but scoped to what's available on THIS specific page
 `, routesJSON, selectorSummary, filesSummary)
 
+	// Log prompt size for debugging
+	log.Printf("[GraphMapper] Prompt size: %d chars, %d routes, %d selectors, %d files",
+		len(prompt), len(routeMap), len(selectorIndex), len(sourceFiles))
+
 	// Call LLM
 	config := &genai.GenerateContentConfig{
 		Temperature:      genai.Ptr(float32(0.3)),
@@ -706,14 +1024,18 @@ CRITICAL RULES:
 	}
 
 	// Validate keyElements against actual selectors - filter out hallucinated values
-	catalog = m.validateAndFilterKeyElements(catalog, selectorIndex)
+	var invalidSelectorCount int
+	catalog, invalidSelectorCount = m.validateAndFilterKeyElements(catalog, selectorIndex)
+	log.Printf("[GraphMapper] Total invalid selectors filtered: %d", invalidSelectorCount)
 	
 	return catalog, nil
 }
 
 // validateAndFilterKeyElements checks that keyElements reference actual selectors from the codebase
-// Removes or flags selectors that don't exist in the extracted selector index
-func (m *GraphMapper) validateAndFilterKeyElements(catalog *ModuleCatalog, selectorIndex map[string][]ExtractedSelector) *ModuleCatalog {
+// Returns the filtered catalog and count of invalid selectors
+func (m *GraphMapper) validateAndFilterKeyElements(catalog *ModuleCatalog, selectorIndex map[string][]ExtractedSelector) (*ModuleCatalog, int) {
+	totalInvalid := 0
+	
 	// Build a set of all valid selector values for quick lookup
 	validSelectors := make(map[string]bool)
 	for _, selectors := range selectorIndex {
@@ -765,13 +1087,14 @@ func (m *GraphMapper) validateAndFilterKeyElements(catalog *ModuleCatalog, selec
 						}
 					}
 					invalidCount++
-					log.Printf("[GraphMapper] Warning: Invalid selector '%s' for key '%s' in route %s", selectorValue, semanticName, routePath)
+					log.Printf("[GraphMapper] ⚠️ Invalid selector '%s' for key '%s' in route %s", selectorValue, semanticName, routePath)
 				}
 			}
 			
 			if invalidCount > 0 {
 				log.Printf("[GraphMapper] Route %s: %d/%d keyElements were filtered out (not found in codebase)", 
 					routePath, invalidCount, len(route.KeyElements))
+				totalInvalid += invalidCount
 			}
 			
 			route.KeyElements = validKeyElements
@@ -779,7 +1102,7 @@ func (m *GraphMapper) validateAndFilterKeyElements(catalog *ModuleCatalog, selec
 		}
 	}
 
-	return catalog
+	return catalog, totalInvalid
 }
 
 // extractValueFromSelector extracts the actual value from a Playwright selector format

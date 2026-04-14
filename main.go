@@ -110,6 +110,7 @@ func main() {
 		protected.GET("/projects/:id/boards", routes.GetProjectBoards)
 		protected.GET("/projects/:id/knowledge-graphs", routes.ListKnowledgeGraphs)
 		protected.GET("/projects/:id/knowledge-graph", routes.GetKnowledgeGraph)
+		protected.GET("/projects/:id/knowledge-graph/coverage", routes.GetKnowledgeGraphCoverage)
 		protected.DELETE("/projects/:id/knowledge-graph", routes.InvalidateKnowledgeGraph)
 
 		protected.GET("/issues", routes.GetIssues)

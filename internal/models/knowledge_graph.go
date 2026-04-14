@@ -82,6 +82,28 @@ type SelectorEntry struct {
 	ElementType string `json:"elementType"`
 }
 
+// CoverageReport contains statistics about the knowledge graph generation
+type CoverageReport struct {
+	TotalRoutes          int                   `json:"totalRoutes"`
+	CoveredRoutes        int                   `json:"coveredRoutes"`
+	TotalModules         int                   `json:"totalModules"`
+	TotalSelectors       int                   `json:"totalSelectors"`
+	PagesWithSelectors   int                   `json:"pagesWithSelectors"`
+	PagesWithoutSelectors int                  `json:"pagesWithoutSelectors"`
+	InvalidSelectors     int                   `json:"invalidSelectors"`
+	LLMCalls             int                   `json:"llmCalls"`
+	GenerationTimeMs     int64                 `json:"generationTimeMs"`
+	ModuleStats          map[string]ModuleCoverage `json:"moduleStats"`
+}
+
+// ModuleCoverage contains coverage stats per module
+type ModuleCoverage struct {
+	TotalRoutes   int     `json:"totalRoutes"`
+	CoveredRoutes int     `json:"coveredRoutes"`
+	SelectorCount int     `json:"selectorCount"`
+	CoverageRatio float64 `json:"coverageRatio"`
+}
+
 // GetRouteInfo retrieves route information from the graph
 func (g *KnowledgeGraph) GetRouteInfo(route string) (*RouteInfo, bool) {
 	info, ok := g.RouteSummary[route]

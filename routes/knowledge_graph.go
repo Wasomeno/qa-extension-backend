@@ -77,6 +77,67 @@ func GetKnowledgeGraph(c *gin.Context) {
 	})
 }
 
+// GetKnowledgeGraphCoverage returns coverage statistics for a project's knowledge graph
+func GetKnowledgeGraphCoverage(c *gin.Context) {
+	token := c.MustGet("token").(*oauth2.Token)
+	sessionID := c.MustGet("session_id").(string)
+
+	projectID := c.Param("id")
+	branch := c.Query("branch")
+
+	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
+		return auth.UpdateSession(ctx, sessionID, t)
+	}
+
+	gitlabClient, err := client.GetClient(c, token, tokenSaver)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create GitLab client: " + err.Error()})
+		return
+	}
+
+	if branch == "" {
+		project, _, err := gitlabClient.Projects.GetProject(projectID, nil)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get project: " + err.Error()})
+			return
+		}
+		branch = project.DefaultBranch
+	}
+
+	ctx := c.Request.Context()
+	graphMapper := services.NewGraphMapper()
+
+	// Get cached catalog
+	catalog, err := graphMapper.GetCachedCatalog(ctx, projectID, branch)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get cached catalog: " + err.Error()})
+		return
+	}
+
+	if catalog == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "No knowledge graph found for this project/branch. Generate one first."})
+		return
+	}
+
+	// Generate coverage report from cached data
+	// We need the route map - fetch from GitLab
+	files, err := graphMapper.FetchFileTree(gitlabClient, projectID, branch)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch file tree: " + err.Error()})
+		return
+	}
+
+	routeMapper := services.NewRouteMapper()
+	routeMap := routeMapper.BuildRouteMapFromFileList(files)
+
+	// Generate coverage report
+	coverage := graphMapper.GenerateCoverageReport(routeMap, catalog, catalog.Selectors, 1, 0)
+
+	c.JSON(http.StatusOK, gin.H{
+		"coverage": coverage,
+	})
+}
+
 // ListKnowledgeGraphs returns all cached knowledge graphs for a project
 func ListKnowledgeGraphs(c *gin.Context) {
 	projectID := c.Param("id")
