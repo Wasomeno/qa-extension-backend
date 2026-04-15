@@ -6,16 +6,57 @@ import (
 	"fmt"
 	"net/http"
 	"qa-extension-backend/agent"
+	"qa-extension-backend/client"
 	"qa-extension-backend/database"
-	"qa-extension-backend/internal/models"
 	"qa-extension-backend/identity"
+	"qa-extension-backend/internal/models"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	gitlab "gitlab.com/gitlab-org/api/client-go"
+	"golang.org/x/oauth2"
 )
+
+// getProjectName fetches the project name from GitLab API
+func getProjectName(c *gin.Context, projectID string) string {
+	if projectID == "" {
+		return ""
+	}
+
+	token, exists := c.Get("token")
+	if !exists {
+		return ""
+	}
+
+	oauthToken, ok := token.(*oauth2.Token)
+	if !ok {
+		return ""
+	}
+
+	sessionID, exists := c.Get("session_id")
+	if !exists {
+		return ""
+	}
+
+	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
+		return identity.UpdateSession(ctx, sessionID.(string), t)
+	}
+
+	gitlabClient, err := client.GetClient(c, oauthToken, tokenSaver)
+	if err != nil {
+		return ""
+	}
+
+	project, _, err := gitlabClient.Projects.GetProject(projectID, &gitlab.GetProjectOptions{})
+	if err != nil {
+		return ""
+	}
+
+	return project.NameWithNamespace
+}
 
 func SaveRecording(c *gin.Context) {
 	var recording models.TestRecording
@@ -39,10 +80,15 @@ func SaveRecording(c *gin.Context) {
 		recording.CreatorID = userID
 	}
 
+	// Fetch project name if project_id is provided but project_name is not
+	if recording.ProjectID != "" && recording.ProjectName == "" {
+		recording.ProjectName = getProjectName(c, recording.ProjectID)
+	}
+
 	// Save to Redis
 	ctx := context.Background()
 	key := fmt.Sprintf("recording:%s", recording.ID)
-	
+
 	val, err := json.Marshal(recording)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to marshal recording"})
@@ -210,7 +256,7 @@ func ListRecordings(c *gin.Context) {
 
 	if start >= total {
 		c.JSON(http.StatusOK, gin.H{
-			"data":        []models.TestRecording{},
+			"data":       []models.TestRecording{},
 			"pagination": gin.H{"page": page, "limit": limit, "total": total, "totalPages": totalPages},
 		})
 		return
@@ -220,7 +266,7 @@ func ListRecordings(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"data":        recordings[start:end],
+		"data":       recordings[start:end],
 		"pagination": gin.H{"page": page, "limit": limit, "total": total, "totalPages": totalPages},
 	})
 }
@@ -277,6 +323,16 @@ func UpdateRecording(c *gin.Context) {
 	}
 	if projectID, ok := updateData["project_id"].(string); ok {
 		existing.ProjectID = projectID
+		// Fetch project name when project_id is updated
+		if projectID != "" {
+			existing.ProjectName = getProjectName(c, projectID)
+		} else {
+			existing.ProjectName = ""
+		}
+	}
+	// Allow explicit update of project_name
+	if projectName, ok := updateData["project_name"].(string); ok {
+		existing.ProjectName = projectName
 	}
 	if issueID, ok := updateData["issue_id"].(string); ok {
 		existing.IssueID = issueID
@@ -526,4 +582,3 @@ func RunRecording(c *gin.Context) {
 		"id":      id,
 	})
 }
-

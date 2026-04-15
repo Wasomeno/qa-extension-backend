@@ -26,6 +26,7 @@ type TestRecording struct {
 	Description string          `json:"description"`
 	Status      string          `json:"status"`
 	ProjectID   string          `json:"project_id,omitempty"`
+	ProjectName string          `json:"project_name,omitempty"`
 	IssueID     string          `json:"issue_id,omitempty"`
 	CreatorID   int             `json:"creator_id,omitempty"`
 	VideoURL    string          `json:"video_url,omitempty"`
@@ -42,6 +43,7 @@ type RecordingSummary struct {
 	Description string    `json:"description"`
 	Status      string    `json:"status"`
 	ProjectID   string    `json:"project_id,omitempty"`
+	ProjectName string    `json:"project_name,omitempty"`
 	IssueID     string    `json:"issue_id,omitempty"`
 	CreatorID   int       `json:"creator_id,omitempty"`
 	VideoURL    string    `json:"video_url,omitempty"`
