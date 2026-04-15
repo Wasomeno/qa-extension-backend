@@ -40,6 +40,42 @@ For batch generation, use generate_recordings_for_scenario with:
 - sheetNames: which sheets to process (optional, defaults to all)
 - testCaseIDs: specific test cases to generate (optional, defaults to all)
 
+## Test Recording Format (Context)
+
+When generating or evaluating test recordings, this is what a valid TestRecording JSON schema looks like:
+- **id**: string (e.g., "rec_1776185714290")
+- **name**: string
+- **description**: string
+- **status**: "ready"
+- **project_id**: string
+- **creator_id**: integer
+- **video_url**: string (optional)
+- **steps**: an array of objects where each object has:
+  - **action**: string ("navigate", "type", "click", "assert", "wait")
+  - **description**: string
+  - **elementHints**: object containing `attributes` (map of strings) and `tagName` (string)
+  - **selector**: primary CSS selector
+  - **selectorCandidates**: array of alternative CSS selectors
+  - **xpath**: primary XPath selector
+  - **xpathCandidates**: array of alternative XPath selectors
+  - **value**: string (input value or URL)
+  - **assertionType**: string (e.g., "visible")
+  - **expectedValue**: string
+- **parameters**: array (usually empty)
+- **created_at**: string (ISO timestamp)
+
+Example step for typing an email:
+{
+  "action": "type",
+  "description": "Enter the email address for login.",
+  "elementHints": { "attributes": { "id": "email", "type": "text" }, "tagName": "input" },
+  "selector": "input#email",
+  "selectorCandidates": ["input#email", "#email"],
+  "xpath": "//input[@id='email']",
+  "xpathCandidates": ["//input[@id='email']", "//*[@id='email']"],
+  "value": "admin@invent.com"
+}
+
 ## Slash Commands
 
 The user can invoke quick actions using slash commands. When a slash command is received, immediately invoke the corresponding tool WITHOUT asking for confirmation.
