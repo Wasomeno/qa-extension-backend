@@ -38,48 +38,156 @@ func GetTestRecordingTools() []tool.Tool {
 	tools := []tool.Tool{}
 
 	t1, _ := functiontool.New(functiontool.Config{
-		Name:        "analyze_test_case",
-		Description: "Analyze a test case to understand its requirements. Returns: target routes, action types, module name, and confidence score.",
-	}, analyzeTestCase)
+		Name:        "save_test_recording",
+		Description: "Save a generated test recording to the database. The recording should have proper selectors, elementHints, and multiple steps (one per numbered step in the test case).",
+	}, saveTestRecording)
 	tools = append(tools, t1)
 
 	t2, _ := functiontool.New(functiontool.Config{
-		Name:        "decide_files_to_fetch",
-		Description: "Decide which source files need to be fetched based on the target routes.",
-	}, decideFilesToFetch)
+		Name:        "analyze_test_case",
+		Description: "Analyze a test case to understand its requirements. Returns: target routes, action types, module name, and confidence score.",
+	}, analyzeTestCase)
 	tools = append(tools, t2)
 
 	t3, _ := functiontool.New(functiontool.Config{
-		Name:        "fetch_source_files",
-		Description: "Fetch actual source file content from GitLab.",
-	}, fetchSourceFiles)
+		Name:        "decide_files_to_fetch",
+		Description: "Decide which source files need to be fetched based on the target routes.",
+	}, decideFilesToFetch)
 	tools = append(tools, t3)
 
 	t4, _ := functiontool.New(functiontool.Config{
-		Name:        "extract_selectors_from_files",
-		Description: "Extract UI selectors from source files.",
-	}, extractSelectorsFromFiles)
+		Name:        "fetch_source_files",
+		Description: "Fetch actual source file content from GitLab.",
+	}, fetchSourceFiles)
 	tools = append(tools, t4)
 
 	t5, _ := functiontool.New(functiontool.Config{
-		Name:        "build_recording_steps",
-		Description: "Build recording steps by mapping test case actions to extracted selectors.",
-	}, buildRecordingSteps)
+		Name:        "extract_selectors_from_files",
+		Description: "Extract UI selectors from source files.",
+	}, extractSelectorsFromFiles)
 	tools = append(tools, t5)
 
 	t6, _ := functiontool.New(functiontool.Config{
-		Name:        "generate_recording_for_test_case",
-		Description: "Complete pipeline: analyze → decide files → fetch → extract → build. One-shot generation for a single test case.",
-	}, generateRecordingForTestCase)
+		Name:        "build_recording_steps",
+		Description: "Build recording steps by mapping test case actions to extracted selectors.",
+	}, buildRecordingSteps)
 	tools = append(tools, t6)
 
 	t7, _ := functiontool.New(functiontool.Config{
+		Name:        "generate_recording_for_test_case",
+		Description: "Complete pipeline: analyze → decide files → fetch → extract → build. One-shot generation for a single test case.",
+	}, generateRecordingForTestCase)
+	tools = append(tools, t7)
+
+	t8, _ := functiontool.New(functiontool.Config{
 		Name:        "generate_recordings_for_scenario",
 		Description: "Generate recordings for ALL test cases in a scenario. Handles batching.",
 	}, generateRecordingsForScenario)
-	tools = append(tools, t7)
+	tools = append(tools, t8)
 
 	return tools
+}
+
+// =============================================================================
+// TOOL: SAVE TEST RECORDING
+// =============================================================================
+
+type SaveTestRecordingInput struct {
+	ScenarioID  string                   `json:"scenarioID"`
+	ProjectID   string                   `json:"projectID"`
+	CreatorID   int                      `json:"creatorID"`
+	TestCaseID  string                   `json:"testCaseID"`
+	Name        string                   `json:"name"`
+	Description string                   `json:"description"`
+	Steps       []SaveTestRecordingStep `json:"steps"`
+}
+
+type SaveTestRecordingStep struct {
+	Action             string            `json:"action"`
+	Description        string            `json:"description"`
+	ElementHints       ElementHintsInput `json:"elementHints"`
+	Selector           string            `json:"selector"`
+	SelectorCandidates []string          `json:"selectorCandidates"`
+	XPath              string            `json:"xpath"`
+	XPathCandidates    []string          `json:"xpathCandidates"`
+	Value              string            `json:"value"`
+	AssertionType      string            `json:"assertionType,omitempty"`
+	ExpectedValue      string            `json:"expectedValue,omitempty"`
+}
+
+type ElementHintsInput struct {
+	Attributes map[string]string `json:"attributes"`
+	TagName    string            `json:"tagName"`
+}
+
+type SaveTestRecordingOutput struct {
+	RecordingID string `json:"recordingID"`
+	Status      string `json:"status"`
+	Message     string `json:"message"`
+}
+
+func saveTestRecording(ctx tool.Context, input SaveTestRecordingInput) (*SaveTestRecordingOutput, error) {
+	log.Printf("[AgentTool] saveTestRecording called: testCaseID=%s, steps=%d", input.TestCaseID, len(input.Steps))
+
+	recording := &models.TestRecording{
+		ID:          uuid.NewString(),
+		Status:      "generated",
+		ProjectID:   input.ProjectID,
+		CreatorID:   input.CreatorID,
+		Name:        input.Name,
+		Description: input.Description,
+		CreatedAt:   time.Now(),
+		Steps:       make([]models.RecordingStep, len(input.Steps)),
+	}
+
+	for i, step := range input.Steps {
+		recording.Steps[i] = models.RecordingStep{
+			Action:             step.Action,
+			Description:        step.Description,
+			Selector:           step.Selector,
+			SelectorCandidates: step.SelectorCandidates,
+			XPath:              step.XPath,
+			XPathCandidates:    step.XPathCandidates,
+			Value:              step.Value,
+			AssertionType:      step.AssertionType,
+			ExpectedValue:      step.ExpectedValue,
+			ElementHints: models.ElementHints{
+				Attributes: step.ElementHints.Attributes,
+				TagName:    step.ElementHints.TagName,
+			},
+		}
+	}
+
+	// Save to Redis
+	recKey := fmt.Sprintf("recording:%s", recording.ID)
+	recVal, err := json.Marshal(recording)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal recording: %w", err)
+	}
+
+	bgCtx := context.Background()
+	if err := database.RedisClient.Set(bgCtx, recKey, recVal, 0).Err(); err != nil {
+		return nil, fmt.Errorf("failed to save recording: %w", err)
+	}
+
+	// Add to sets
+	database.RedisClient.SAdd(bgCtx, "recordings", recording.ID)
+	if recording.CreatorID != 0 {
+		database.RedisClient.SAdd(bgCtx, fmt.Sprintf("recordings:user:%d", recording.CreatorID), recording.ID)
+	} else {
+		database.RedisClient.SAdd(bgCtx, "recordings:legacy", recording.ID)
+	}
+	if recording.ProjectID != "" {
+		database.RedisClient.SAdd(bgCtx, fmt.Sprintf("recordings:project:%s", recording.ProjectID), recording.ID)
+	}
+
+	log.Printf("[AgentTool] saveTestRecording success: recordingID=%s", recording.ID)
+
+	return &SaveTestRecordingOutput{
+		RecordingID: recording.ID,
+		Status:      "saved",
+		Message:     fmt.Sprintf("Recording saved with %d steps", len(input.Steps)),
+	}, nil
 }
 
 // =============================================================================

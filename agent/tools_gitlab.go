@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"qa-extension-backend/client"
@@ -46,6 +47,25 @@ func GetGitLabTools() []tool.Tool {
 		Description: "Update an existing issue in GitLab.",
 	}, updateGitLabIssue)
 	tools = append(tools, t4)
+
+	// New tools for code exploration
+	t6, _ := functiontool.New(functiontool.Config{
+		Name: "listGitLabRepositoryTree",
+		Description: "List the file and directory structure of a GitLab project repository. Use path='app' to see page routes, path='components' to see components.",
+	}, listGitLabRepositoryTree)
+	tools = append(tools, t6)
+
+	t7, _ := functiontool.New(functiontool.Config{
+		Name: "getGitLabFileContent",
+		Description: "Read the content of a file from GitLab. Use this to read React/Next.js components and pages to find selectors like data-testid, id, aria-label, class names.",
+	}, getGitLabFileContent)
+	tools = append(tools, t7)
+
+	t8, _ := functiontool.New(functiontool.Config{
+		Name: "searchGitLabCode",
+		Description: "Search for code/patterns in GitLab repository files. Use this to find specific components, buttons, or selectors.",
+	}, searchGitLabCode)
+	tools = append(tools, t8)
 
 	return tools
 }
@@ -367,4 +387,197 @@ func getGitLabClient(ctx context.Context) (*gitlab.Client, error) {
 	}
 
 	return client.GetClient(ctx, token, nil)
+}
+
+// =============================================================================
+// NEW TOOLS FOR CODE EXPLORATION
+// =============================================================================
+
+type ListRepoTreeArgs struct {
+	ProjectID string `json:"projectId"`
+	Path      string `json:"path"`
+	Recursive bool   `json:"recursive"`
+}
+
+type RepoTreeNode struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"` // "tree" for directory, "blob" for file
+	Path string `json:"path"`
+}
+
+type ListRepoTreeResponse struct {
+	Nodes []RepoTreeNode `json:"nodes"`
+	Count int            `json:"count"`
+}
+
+func listGitLabRepositoryTree(ctx tool.Context, args ListRepoTreeArgs) (*ListRepoTreeResponse, error) {
+	log.Printf("[AgentTool] listGitLabRepositoryTree called: project=%s, path=%s, recursive=%v", args.ProjectID, args.Path, args.Recursive)
+
+	glClient, err := getGitLabClient(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get GitLab client: %w", err)
+	}
+
+	// Get project branch
+	project, _, err := glClient.Projects.GetProject(args.ProjectID, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get project: %w", err)
+	}
+	branch := project.DefaultBranch
+	if branch == "" {
+		branch = "main"
+	}
+
+	path := args.Path
+	if path == "" {
+		path = "app"
+	}
+
+	opt := &gitlab.ListTreeOptions{
+		Path:      &path,
+		Recursive: &args.Recursive,
+	}
+
+	nodes, _, err := glClient.Repositories.ListTree(args.ProjectID, opt)
+	if err != nil {
+		log.Printf("[AgentTool] listGitLabRepositoryTree failed: %v", err)
+		return nil, fmt.Errorf("failed to list repository tree: %w", err)
+	}
+
+	var result []RepoTreeNode
+	for _, n := range nodes {
+		result = append(result, RepoTreeNode{
+			ID:   fmt.Sprintf("%d", n.ID),
+			Name: n.Name,
+			Type: n.Type,
+			Path: n.Path,
+		})
+	}
+
+	log.Printf("[AgentTool] listGitLabRepositoryTree found %d items", len(result))
+
+	return &ListRepoTreeResponse{
+		Nodes: result,
+		Count: len(result),
+	}, nil
+}
+
+type GetFileContentArgs struct {
+	ProjectID string `json:"projectId"`
+	FilePath  string `json:"filePath"`
+	Ref       string `json:"ref,omitempty"` // branch or commit SHA
+}
+
+type FileContentResponse struct {
+	FilePath  string `json:"filePath"`
+	Content   string `json:"content"`
+	Size      int    `json:"size"`
+	Encoding  string `json:"encoding"`
+}
+
+func getGitLabFileContent(ctx tool.Context, args GetFileContentArgs) (*FileContentResponse, error) {
+	log.Printf("[AgentTool] getGitLabFileContent called: project=%s, file=%s", args.ProjectID, args.FilePath)
+
+	glClient, err := getGitLabClient(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get GitLab client: %w", err)
+	}
+
+	// Get project branch if not specified
+	ref := args.Ref
+	if ref == "" {
+		project, _, err := glClient.Projects.GetProject(args.ProjectID, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get project: %w", err)
+		}
+		ref = project.DefaultBranch
+		if ref == "" {
+			ref = "main"
+		}
+	}
+
+	fileOpt := &gitlab.GetFileOptions{Ref: &ref}
+	file, _, err := glClient.RepositoryFiles.GetFile(args.ProjectID, args.FilePath, fileOpt)
+	if err != nil {
+		log.Printf("[AgentTool] getGitLabFileContent failed: %v", err)
+		return nil, fmt.Errorf("failed to get file content: %w", err)
+	}
+
+	// Decode base64 content
+	contentBytes, err := base64.StdEncoding.DecodeString(file.Content)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode file content: %w", err)
+	}
+
+	log.Printf("[AgentTool] getGitLabFileContent success: %s (%d bytes)", args.FilePath, len(contentBytes))
+
+	return &FileContentResponse{
+		FilePath: args.FilePath,
+		Content:  string(contentBytes),
+		Size:     int(file.Size),
+		Encoding: file.Encoding,
+	}, nil
+}
+
+type SearchCodeArgs struct {
+	ProjectID string `json:"projectId"`
+	Query     string `json:"query"`
+	Path      string `json:"path,omitempty"`
+}
+
+type SearchResult struct {
+	FilePath string `json:"filePath"`
+	Ref      string `json:"ref"`
+	Content  string `json:"content"`
+}
+
+type SearchCodeResponse struct {
+	Results []SearchResult `json:"results"`
+	Count   int            `json:"count"`
+}
+
+func searchGitLabCode(ctx tool.Context, args SearchCodeArgs) (*SearchCodeResponse, error) {
+	log.Printf("[AgentTool] searchGitLabCode called: project=%s, query=%s", args.ProjectID, args.Query)
+
+	glClient, err := getGitLabClient(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get GitLab client: %w", err)
+	}
+
+	searchOpts := &gitlab.SearchOptions{}
+
+	results, _, err := glClient.Search.BlobsByProject(args.ProjectID, args.Query, searchOpts)
+	if err != nil {
+		log.Printf("[AgentTool] searchGitLabCode failed: %v", err)
+		return nil, fmt.Errorf("search failed: %w", err)
+	}
+
+	var searchResults []SearchResult
+	for _, r := range results {
+		// Get file content for each result
+		project, _, _ := glClient.Projects.GetProject(args.ProjectID, nil)
+		ref := "main"
+		if project != nil {
+			ref = project.DefaultBranch
+		}
+
+		fileOpt := &gitlab.GetFileOptions{Ref: &ref}
+		file, _, err := glClient.RepositoryFiles.GetFile(args.ProjectID, r.Filename, fileOpt)
+		if err == nil {
+			contentBytes, _ := base64.StdEncoding.DecodeString(file.Content)
+			searchResults = append(searchResults, SearchResult{
+				FilePath: r.Filename,
+				Ref:      ref,
+				Content:  string(contentBytes),
+			})
+		}
+	}
+
+	log.Printf("[AgentTool] searchGitLabCode found %d results", len(searchResults))
+
+	return &SearchCodeResponse{
+		Results: searchResults,
+		Count:   len(searchResults),
+	}, nil
 }
