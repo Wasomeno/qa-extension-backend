@@ -224,6 +224,8 @@ For EACH test case in the scenario below:
 4. Extract selectors from the source code
 5. Use save_test_recording to save each generated recording
 
+NOTE: When generating tests, the system will execute them in parallel (up to 10 at a time). Since each test runs in a completely isolated browser context, you MUST ensure that EVERY SINGLE recording includes the full setup steps (e.g. navigation and login) if required by the test case's precondition.
+
 ## Recording Format
 Each recording must have:
 {

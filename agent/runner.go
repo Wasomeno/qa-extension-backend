@@ -285,8 +285,19 @@ func RunTestsParallel(ctx context.Context, recordings []models.TestRecording) []
 
 	results := make([]*models.TestResult, len(recordings))
 
-	// Use a worker pool with a concurrency limit of 3
-	semaphore := make(chan struct{}, 3)
+	// Determine dynamic concurrency: 
+	// Run as many as requested, BUT cap it at a maximum of 10 to prevent server crashes.
+	concurrency := len(recordings)
+	if concurrency > 10 {
+		concurrency = 10
+	}
+	// Handle edge case if recordings is empty
+	if concurrency == 0 {
+		return results
+	}
+
+	// Use a worker pool with a dynamic concurrency limit
+	semaphore := make(chan struct{}, concurrency)
 
 	for i := range recordings {
 		semaphore <- struct{}{}
@@ -314,7 +325,7 @@ func RunTestsParallel(ctx context.Context, recordings []models.TestRecording) []
 	}
 
 	// Wait for all workers to finish by filling the semaphore
-	for i := 0; i < 3; i++ {
+	for i := 0; i < concurrency; i++ {
 		semaphore <- struct{}{}
 	}
 
