@@ -658,6 +658,12 @@ func buildRecordingSteps(ctx tool.Context, input BuildRecordingInput) (*BuildRec
 		selector := findSelectorForAction(selectorMap, action, step.Action, step.InputData)
 		if selector != "" {
 			recordingStep.Selector = selector
+			// Also populate elementHints, xpath, xpathCandidates from selector
+			if sel := getBestSelectorFromMap(selectorMap, action, step.Action, step.InputData); sel != nil {
+				recordingStep.ElementHints = sel.ToElementHints()
+				recordingStep.XPath = sel.ToXPath()
+				recordingStep.XPathCandidates = sel.ToXPathCandidates()
+			}
 		} else {
 			output.Warnings = append(output.Warnings, fmt.Sprintf("Step %d: No selector for '%s'", i+1, step.Action))
 		}
@@ -676,6 +682,85 @@ func buildRecordingSteps(ctx tool.Context, input BuildRecordingInput) (*BuildRec
 
 	log.Printf("[TestRecordingAgent] Built recording with %d steps", len(output.Recording.Steps))
 	return output, nil
+}
+
+func getBestSelectorFromMap(m map[string][]SelectorInfo, action, description, value string) *SelectorInfo {
+	descLower := strings.ToLower(description)
+	valueLower := strings.ToLower(value)
+
+	var best *SelectorInfo
+
+	if action == "type" {
+		for _, kw := range []string{"input", "field", "text"} {
+			if selectors, ok := m[kw]; ok {
+				for i := range selectors {
+					if selectors[i].Type == "testid" || selectors[i].Type == "name" || selectors[i].Type == "placeholder" {
+						if best == nil || selectors[i].Confidence > best.Confidence {
+							best = &selectors[i]
+						}
+					}
+				}
+			}
+		}
+		if best == nil && valueLower != "" {
+			parts := strings.FieldsFunc(valueLower, func(r rune) bool { return r == ' ' || r == '@' || r == '.' })
+			if len(parts) > 0 {
+				if sel := findBestSelectorByKeyword(m, parts[0]); sel != nil {
+					best = sel
+				}
+			}
+		}
+	}
+
+	if action == "click" {
+		clickKeywords := []string{"button", "submit", "save", "cancel", "delete", "edit", "create", "add", "select", "click"}
+		for _, kw := range clickKeywords {
+			if selectors, ok := m[kw]; ok {
+				for i := range selectors {
+					if selectors[i].Type == "testid" {
+						if best == nil || selectors[i].Confidence > best.Confidence {
+							best = &selectors[i]
+						}
+					}
+					if selectors[i].Type == "text" && strings.ToLower(selectors[i].Value) == descLower {
+						if best == nil || selectors[i].Confidence > best.Confidence {
+							best = &selectors[i]
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Fallback to any high-confidence selector
+	if best == nil {
+		for _, selectors := range m {
+			for i := range selectors {
+				sel := &selectors[i]
+				if sel.Confidence >= 0.7 {
+					if best == nil || sel.Confidence > best.Confidence {
+						best = sel
+					}
+				}
+			}
+		}
+	}
+
+	return best
+}
+
+func findBestSelectorByKeyword(m map[string][]SelectorInfo, keyword string) *SelectorInfo {
+	kwLower := strings.ToLower(keyword)
+	if selectors, ok := m[kwLower]; ok {
+		var best *SelectorInfo
+		for i := range selectors {
+			if best == nil || selectors[i].Confidence > best.Confidence {
+				best = &selectors[i]
+			}
+		}
+		return best
+	}
+	return nil
 }
 
 func buildSelectorMap(selectors []SelectorInfo) map[string][]SelectorInfo {
@@ -774,6 +859,10 @@ func findSelectorForAction(m map[string][]SelectorInfo, action, description, val
 }
 
 func (s *SelectorInfo) ToPlaywrightSelector() string {
+	return s.ToCSSSelector()
+}
+
+func (s *SelectorInfo) ToCSSSelector() string {
 	switch s.Type {
 	case "testid":
 		return fmt.Sprintf("[data-testid='%s']", s.Value)
@@ -794,6 +883,150 @@ func (s *SelectorInfo) ToPlaywrightSelector() string {
 	default:
 		return fmt.Sprintf("[%s='%s']", s.Type, s.Value)
 	}
+}
+
+// ToElementHints converts SelectorInfo to ElementHints for a RecordingStep
+func (s *SelectorInfo) ToElementHints() models.ElementHints {
+	attrs := make(map[string]string)
+	switch s.Type {
+	case "testid":
+		attrs["data-testid"] = s.Value
+	case "id":
+		attrs["id"] = s.Value
+	case "name":
+		attrs["name"] = s.Value
+	case "placeholder":
+		attrs["placeholder"] = s.Value
+	case "aria-label":
+		attrs["aria-label"] = s.Value
+	case "role":
+		attrs["role"] = s.Value
+	}
+	return models.ElementHints{
+		Attributes: attrs,
+		TagName:    s.ElementType,
+	}
+}
+
+// ToSelectorCandidates generates alternative CSS selectors for the same element
+func (s *SelectorInfo) ToSelectorCandidates() []string {
+	var candidates []string
+
+	// Always include the primary selector
+	candidates = append(candidates, s.ToCSSSelector())
+
+	// Generate alternatives based on available info
+	switch s.Type {
+	case "testid":
+		candidates = append(candidates, fmt.Sprintf("[data-testid='%s']", s.Value))
+		if s.ElementType != "" {
+			candidates = append(candidates, fmt.Sprintf("%s[data-testid='%s']", s.ElementType, s.Value))
+		}
+	case "id":
+		candidates = append(candidates, fmt.Sprintf("#%s", s.Value))
+		candidates = append(candidates, fmt.Sprintf("*[id='%s']", s.Value))
+	case "name":
+		candidates = append(candidates, fmt.Sprintf("[name='%s']", s.Value))
+		candidates = append(candidates, fmt.Sprintf("input[name='%s']", s.Value))
+		candidates = append(candidates, fmt.Sprintf("%s[name='%s']", s.ElementType, s.Value))
+	case "placeholder":
+		candidates = append(candidates, fmt.Sprintf("[placeholder='%s']", s.Value))
+		candidates = append(candidates, fmt.Sprintf("input[placeholder='%s']", s.Value))
+		candidates = append(candidates, fmt.Sprintf("textarea[placeholder='%s']", s.Value))
+	case "aria-label":
+		candidates = append(candidates, fmt.Sprintf("[aria-label='%s']", s.Value))
+		candidates = append(candidates, fmt.Sprintf("%s[aria-label='%s']", s.ElementType, s.Value))
+	case "role":
+		candidates = append(candidates, fmt.Sprintf("[role='%s']", s.Value))
+		candidates = append(candidates, fmt.Sprintf("%s[role='%s']", s.ElementType, s.Value))
+	case "text":
+		candidates = append(candidates, fmt.Sprintf("text('%s')", s.Value))
+		candidates = append(candidates, fmt.Sprintf("*:text('%s')", s.Value))
+		candidates = append(candidates, fmt.Sprintf("%s:has-text('%s')", s.ElementType, s.Value))
+	}
+
+	// Deduplicate
+	seen := make(map[string]bool)
+	var unique []string
+	for _, c := range candidates {
+		if !seen[c] {
+			seen[c] = true
+			unique = append(unique, c)
+		}
+	}
+
+	return unique
+}
+
+// ToXPath generates a primary XPath selector
+func (s *SelectorInfo) ToXPath() string {
+	switch s.Type {
+	case "testid":
+		return fmt.Sprintf("//*[@data-testid='%s']", s.Value)
+	case "id":
+		return fmt.Sprintf("//*[@id='%s']", s.Value)
+	case "name":
+		return fmt.Sprintf("//*[@name='%s']", s.Value)
+	case "placeholder":
+		return fmt.Sprintf("//*[@placeholder='%s']", s.Value)
+	case "aria-label":
+		return fmt.Sprintf("//*[@aria-label='%s']", s.Value)
+	case "role":
+		return fmt.Sprintf("//*[@role='%s']", s.Value)
+	case "text":
+		return fmt.Sprintf("//*[normalize-space(.)='%s']", s.Value)
+	default:
+		return fmt.Sprintf("//*[@%s='%s']", s.Type, s.Value)
+	}
+}
+
+// ToXPathCandidates generates alternative XPath selectors
+func (s *SelectorInfo) ToXPathCandidates() []string {
+	var candidates []string
+
+	// Primary XPath
+	candidates = append(candidates, s.ToXPath())
+
+	// Generate alternatives
+	switch s.Type {
+	case "testid":
+		candidates = append(candidates, fmt.Sprintf("//*[@data-testid='%s']", s.Value))
+		if s.ElementType != "" {
+			candidates = append(candidates, fmt.Sprintf("//%s[@data-testid='%s']", s.ElementType, s.Value))
+		}
+	case "id":
+		candidates = append(candidates, fmt.Sprintf("//*[@id='%s']", s.Value))
+		candidates = append(candidates, fmt.Sprintf("//input[@id='%s']", s.Value))
+		candidates = append(candidates, fmt.Sprintf("//button[@id='%s']", s.Value))
+	case "name":
+		candidates = append(candidates, fmt.Sprintf("//*[@name='%s']", s.Value))
+		candidates = append(candidates, fmt.Sprintf("//input[@name='%s']", s.Value))
+		candidates = append(candidates, fmt.Sprintf("//textarea[@name='%s']", s.Value))
+	case "aria-label":
+		candidates = append(candidates, fmt.Sprintf("//*[@aria-label='%s']", s.Value))
+		candidates = append(candidates, fmt.Sprintf("//*[@role and @aria-label='%s']", s.Value))
+	case "role":
+		candidates = append(candidates, fmt.Sprintf("//*[@role='%s']", s.Value))
+		candidates = append(candidates, fmt.Sprintf("//button[@role='%s']", s.Value))
+		candidates = append(candidates, fmt.Sprintf("//a[@role='%s']", s.Value))
+	case "text":
+		candidates = append(candidates, fmt.Sprintf("//*[normalize-space(.)='%s']", s.Value))
+		candidates = append(candidates, fmt.Sprintf("//button[normalize-space(.)='%s']", s.Value))
+		candidates = append(candidates, fmt.Sprintf("//a[normalize-space(.)='%s']", s.Value))
+		candidates = append(candidates, fmt.Sprintf("//span[normalize-space(.)='%s']", s.Value))
+	}
+
+	// Deduplicate
+	seen := make(map[string]bool)
+	var unique []string
+	for _, c := range candidates {
+		if !seen[c] {
+			seen[c] = true
+			unique = append(unique, c)
+		}
+	}
+
+	return unique
 }
 
 // =============================================================================
@@ -1113,6 +1346,12 @@ func agentGenerateSingleRecording(ctx context.Context, glClient *gitlab.Client, 
 		selector := findSelectorForAction(selectorMap, action, step.Action, step.InputData)
 		if selector != "" {
 			recordingStep.Selector = selector
+			// Also populate elementHints, xpath, xpathCandidates from selector
+			if sel := getBestSelectorFromMap(selectorMap, action, step.Action, step.InputData); sel != nil {
+				recordingStep.ElementHints = sel.ToElementHints()
+				recordingStep.XPath = sel.ToXPath()
+				recordingStep.XPathCandidates = sel.ToXPathCandidates()
+			}
 		} else {
 			warnings = append(warnings, fmt.Sprintf("Step %d: No selector for '%s'", i+1, step.Action))
 		}
