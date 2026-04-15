@@ -401,29 +401,11 @@ func GenerateTests(c *gin.Context) {
 	// We return immediately and do the heavy lifting in a goroutine
 	c.JSON(http.StatusAccepted, gin.H{"message": "generation started", "id": id})
 
-	// Helper to publish contextual events to the unified stream
-	publish := func(stage, msg string) {
-		database.PublishStreamEvent(context.Background(), database.StreamEvent{
-			Type:         "generation",
-			ResourceType: "scenario",
-			ResourceID:   id,
-			Stage:        stage,
-			Message:      msg,
-		})
-	}
-
-	publishError := func(errMsg string) {
-		database.PublishStreamEvent(context.Background(), database.StreamEvent{
-			Type:         "generation",
-			ResourceType: "scenario",
-			ResourceID:   id,
-			Stage:        "error",
-			Message:      errMsg,
-		})
-	}
-
 	go func(scenario models.TestScenario, sheetNames []string, gitlabClient interface{}) {
 		bgCtx := context.Background()
+
+		// Create event emitter for consistent event publishing
+		events := agent.NewGenerationEmitter(bgCtx, id)
 
 		// Build a descriptive context for messages
 		projectName := scenario.ProjectName
@@ -455,39 +437,34 @@ func GenerateTests(c *gin.Context) {
 		}
 
 		if len(targetTestCases) == 0 {
-			publishError("No test cases found in selected sheets")
+			events.Error("No test cases found in selected sheets")
 			scenario.Status = "failed"
 			scenario.Error = "no test cases found in selected sheets"
 			updateScenarioStatus(id, scenario)
 			return
 		}
 
-		// Stage: start — contextual message based on actual data
+		// Set total steps for progress tracking
+		events.SetTotalSteps(len(targetTestCases))
+
+		// Stage: start
 		totalSheets := len(sheetNames)
 		totalCases := len(targetTestCases)
-		publish("start", fmt.Sprintf(
-			"Starting generation of %d test recording%s for '%s' (%d sheet%s: %s)...",
+		events.Start("Generating %d test recording%s for '%s' (%d sheet%s: %s)...",
 			totalCases, pluralize(totalCases),
 			projectName,
 			totalSheets, pluralize(totalSheets),
-			strings.Join(sheetNames, ", "),
-		))
+			strings.Join(sheetNames, ", "))
 
-		// Stage: sending to agent
+		// Stage: progress - sending to agent
 		if totalCases > 1 {
-			publish("sending_to_agent", fmt.Sprintf(
-				"Generating %d test recordings using QA Agent...",
-				totalCases,
-			))
+			events.Progressf("Generating %d test recordings using QA Agent...", totalCases)
 		} else {
 			tcName := ""
 			if len(testCaseNames) > 0 {
 				tcName = testCaseNames[0]
 			}
-			publish("sending_to_agent", fmt.Sprintf(
-				"Generating Playwright test for '%s' using QA Agent...",
-				tcName,
-			))
+			events.Progressf("Generating Playwright test for '%s' using QA Agent...", tcName)
 		}
 
 		// Use agent - it will use GitLab tools to navigate repo and find files
@@ -497,7 +474,7 @@ func GenerateTests(c *gin.Context) {
 			SheetNames: sheetNames,
 		}, token)
 		if err != nil {
-			publishError(fmt.Sprintf("Agent generation failed: %v", err))
+			events.Error("Agent generation failed: %v", err)
 			scenario.Status = "failed"
 			scenario.Error = fmt.Sprintf("failed to generate tests: %v", err)
 			updateScenarioStatus(id, scenario)
@@ -512,16 +489,10 @@ func GenerateTests(c *gin.Context) {
 		}
 
 		// Stage: processing AI response
-		publish("processing", fmt.Sprintf(
-			"Processing %d generated test recording%s from AI...",
-			len(recordings), pluralize(len(recordings)),
-		))
+		events.Progressf("Processing %d generated test recording%s from AI...", len(recordings), pluralize(len(recordings)))
 
 		// Stage: saving recordings
-		publish("saving", fmt.Sprintf(
-			"Saving %d generated test recording%s to database...",
-			len(recordings), pluralize(len(recordings)),
-		))
+		events.Progressf("Saving %d generated test recording%s to database...", len(recordings), pluralize(len(recordings)))
 
 		// Save generated recordings to Redis
 		for _, rec := range recordings {
@@ -551,11 +522,9 @@ func GenerateTests(c *gin.Context) {
 		}
 
 		// Stage: done
-		publish("done", fmt.Sprintf(
-			"Successfully generated %d test recording%s for '%s'",
+		events.Done("Successfully generated %d test recording%s for '%s'",
 			len(recordings), pluralize(len(recordings)),
-			projectName,
-		))
+			projectName)
 
 		// Update scenario as ready
 		scenario.Status = "ready"

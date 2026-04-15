@@ -65,24 +65,14 @@ func StopPlaywright() {
 func RunTest(ctx context.Context, recording *models.TestRecording) (*models.TestResult, error) {
 	log.Printf("[Runner] Running test: %s", recording.Name)
 
-	// Helper to publish execution events to the unified stream
-	publish := func(stage, msg string, stepInfo *database.StreamStepInfo) {
-		database.PublishStreamEvent(ctx, database.StreamEvent{
-			Type:         "execution",
-			ResourceType: "recording",
-			ResourceID:   recording.ID,
-			Stage:        stage,
-			Message:      msg,
-			StepInfo:     stepInfo,
-		})
-	}
-
-	publish("start", fmt.Sprintf("Starting test '%s' (%d steps)...", recording.Name, len(recording.Steps)), nil)
+	// Create event emitter for consistent event publishing
+	events := NewExecutionEmitter(ctx, recording.ID).SetTotalSteps(len(recording.Steps))
+	events.Start("Starting test '%s' (%d steps)...", recording.Name, len(recording.Steps))
 
 	if globalBrowser == nil {
-		publish("step", "Initializing Playwright browser...", &database.StreamStepInfo{CurrentStep: 0, TotalSteps: len(recording.Steps), StepName: "Initializing browser", Action: ""})
+		events.Progress("Initializing Playwright browser...")
 		if err := InitPlaywright(); err != nil {
-			publish("error", fmt.Sprintf("Failed to initialize Playwright: %v", err), nil)
+			events.Error(fmt.Sprintf("Failed to initialize Playwright: %v", err))
 			return nil, err
 		}
 	}
@@ -134,19 +124,13 @@ func RunTest(ctx context.Context, recording *models.TestRecording) (*models.Test
 			stepCancel()
 			result.Status = "timeout"
 			result.Log = "Test execution timed out during step execution"
-			publish("error", "Test timed out during step execution", nil)
+			events.Error("Test timed out during step execution")
 			return result, nil
 		default:
 		}
 
 		currentStep := i + 1
-		stepInfo := &database.StreamStepInfo{
-			CurrentStep: currentStep,
-			TotalSteps:  totalSteps,
-			StepName:    step.Description,
-			Action:      step.Action,
-		}
-		publish("step", fmt.Sprintf("Running '%s' — Step %d/%d: %s...", recording.Name, currentStep, totalSteps, step.Description), stepInfo)
+		events.StepWithAction(currentStep, step.Description, step.Action)
 		log.Printf("[Runner] Step %d: %s (%s)", currentStep, step.Description, step.Action)
 
 		stepResult := models.TestStepResult{
@@ -191,7 +175,7 @@ func RunTest(ctx context.Context, recording *models.TestRecording) (*models.Test
 
 			// If it's a timeout or serious error, stop immediately
 			if result.Status == "timeout" || result.Status == "failed" {
-				publish("error", fmt.Sprintf("Test failed at Step %d/%d: %s", currentStep, totalSteps, step.Description), stepInfo)
+				events.Error(fmt.Sprintf("Test failed at Step %d/%d: %s", currentStep, totalSteps, step.Description))
 				return result, nil
 			}
 			break
@@ -213,7 +197,7 @@ func RunTest(ctx context.Context, recording *models.TestRecording) (*models.Test
 	case <-ctx.Done():
 		result.Status = "timeout"
 		result.Log = "Test execution timed out after final step"
-		publish("error", "Test timed out after final step", nil)
+		events.Error("Test timed out after final step")
 		return result, nil
 	case <-time.After(200 * time.Millisecond):
 	}
@@ -230,13 +214,13 @@ func RunTest(ctx context.Context, recording *models.TestRecording) (*models.Test
 	case <-ctx.Done():
 		result.Status = "timeout"
 		result.Log = "Test execution timed out during video finalization"
-		publish("error", "Test timed out during video finalization", nil)
+		events.Error("Test timed out during video finalization")
 		return result, nil
 	case <-time.After(300 * time.Millisecond):
 	}
 
 	// Upload video to R2 if available
-	publish("step", fmt.Sprintf("Test '%s' completed, uploading video...", recording.Name), &database.StreamStepInfo{CurrentStep: totalSteps, TotalSteps: totalSteps, StepName: "Uploading video", Action: ""})
+	events.Step(totalSteps, "Uploading video")
 	if video != nil {
 		path, err := video.Path()
 		if err == nil {
@@ -261,27 +245,18 @@ func RunTest(ctx context.Context, recording *models.TestRecording) (*models.Test
 		}
 	}
 
-	publish("done", fmt.Sprintf("Test '%s' completed: %s", recording.Name, result.Status), &database.StreamStepInfo{CurrentStep: totalSteps, TotalSteps: totalSteps, StepName: "Completed", Action: ""})
+	events.Done("Test '%s' completed: %s", recording.Name, result.Status)
 	return result, nil
 }
 
 func RunTestsParallel(ctx context.Context, recordings []models.TestRecording) []*models.TestResult {
 	log.Printf("[Runner] Running %d tests in parallel", len(recordings))
 
-	// Helper to publish execution events to the unified stream
-	publish := func(stage, msg string, stepInfo *database.StreamStepInfo) {
-		database.PublishStreamEvent(ctx, database.StreamEvent{
-			Type:         "execution",
-			ResourceType: "recording",
-			ResourceID:   "", // Multiple recordings, no single resource ID
-			Stage:        stage,
-			Message:      msg,
-			StepInfo:     stepInfo,
-		})
-	}
+	// Create event emitter for parallel execution
+	events := NewAgentToolEmitter(ctx).SetTotalSteps(len(recordings))
+	events.Start("Starting parallel execution of %d tests...", len(recordings))
 
 	total := len(recordings)
-	publish("start", fmt.Sprintf("Starting parallel execution of %d tests...", total), &database.StreamStepInfo{TotalSteps: total, StepName: "Starting parallel execution"})
 
 	results := make([]*models.TestResult, len(recordings))
 
@@ -307,7 +282,7 @@ func RunTestsParallel(ctx context.Context, recordings []models.TestRecording) []
 			}()
 
 			rec := recordings[idx]
-			publish("step", fmt.Sprintf("Starting test '%s' (%d/%d)...", rec.Name, idx+1, total), &database.StreamStepInfo{CurrentStep: idx + 1, TotalSteps: total, StepName: rec.Name, Action: ""})
+			events.Step(idx+1, fmt.Sprintf("Running test '%s'...", rec.Name))
 			result, err := RunTest(ctx, &rec)
 			if err != nil {
 				results[idx] = &models.TestResult{
@@ -315,11 +290,11 @@ func RunTestsParallel(ctx context.Context, recordings []models.TestRecording) []
 					Status: "failed",
 					Log:    err.Error(),
 				}
-				publish("step", fmt.Sprintf("Test '%s' failed: %v", rec.Name, err), &database.StreamStepInfo{CurrentStep: idx + 1, TotalSteps: total, StepName: rec.Name, Action: ""})
+				events.Progressf("Test '%s' failed: %v", rec.Name, err)
 			} else {
 				results[idx] = result
 				statusMsg := result.Status
-				publish("step", fmt.Sprintf("Test '%s' completed: %s", rec.Name, statusMsg), &database.StreamStepInfo{CurrentStep: idx + 1, TotalSteps: total, StepName: rec.Name, Action: ""})
+				events.Progressf("Test '%s' completed: %s", rec.Name, statusMsg)
 			}
 		}(i)
 	}
@@ -340,7 +315,7 @@ func RunTestsParallel(ctx context.Context, recordings []models.TestRecording) []
 		}
 	}
 
-	publish("done", fmt.Sprintf("Parallel execution complete: %d passed, %d failed out of %d total", passed, failed, total), &database.StreamStepInfo{TotalSteps: total, StepName: "Parallel execution complete"})
+	events.Done("Parallel execution complete: %d passed, %d failed out of %d total", passed, failed, total)
 
 	return results
 }
@@ -358,18 +333,9 @@ func RunTestsChained(ctx context.Context, recordings []models.TestRecording) []*
 		return results
 	}
 
-	publish := func(stage, msg string, stepInfo *database.StreamStepInfo) {
-		database.PublishStreamEvent(ctx, database.StreamEvent{
-			Type:         "execution",
-			ResourceType: "recording",
-			ResourceID:   "chained_session",
-			Stage:        stage,
-			Message:      msg,
-			StepInfo:     stepInfo,
-		})
-	}
-
-	publish("start", fmt.Sprintf("Starting chained execution of %d tests...", total), &database.StreamStepInfo{TotalSteps: total, StepName: "Starting chained execution"})
+	// Create event emitter for chained execution
+	events := NewExecutionEmitter(ctx, "chained_session").SetTotalSteps(total)
+	events.Start("Starting chained execution of %d tests...", total)
 
 	videoDir, err := os.MkdirTemp("", "test-video-chained-*")
 	if err != nil {
@@ -405,7 +371,7 @@ func RunTestsChained(ctx context.Context, recordings []models.TestRecording) []*
 
 	// We run sequentially on the EXACT SAME page
 	for i, rec := range recordings {
-		publish("step", fmt.Sprintf("Starting chained test '%s' (%d/%d)...", rec.Name, i+1, total), &database.StreamStepInfo{CurrentStep: i + 1, TotalSteps: total, StepName: rec.Name, Action: ""})
+		events.Step(i+1, fmt.Sprintf("Running test '%s'...", rec.Name))
 
 		result := &models.TestResult{
 			TestID:    rec.ID,
@@ -416,12 +382,7 @@ func RunTestsChained(ctx context.Context, recordings []models.TestRecording) []*
 
 		// Execute steps of THIS recording
 		for stepIdx, step := range rec.Steps {
-			publish("step", fmt.Sprintf("Executing step %d of test '%s': %s", stepIdx+1, rec.Name, step.Action), &database.StreamStepInfo{
-				CurrentStep: stepIdx + 1,
-				TotalSteps:  len(rec.Steps),
-				StepName:    step.Action,
-				Action:      step.Action,
-			})
+			events.Progressf("Step %d: %s", stepIdx+1, step.Action)
 
 			if err := executeStep(page, step); err != nil {
 				// Mark as failed, take screenshot, but DO NOT abort the whole chain yet (unless you want to)
@@ -448,14 +409,14 @@ func RunTestsChained(ctx context.Context, recordings []models.TestRecording) []*
 
 		if !testFailed {
 			result.Status = "passed"
-			publish("step", fmt.Sprintf("Test '%s' completed: passed", rec.Name), &database.StreamStepInfo{CurrentStep: i + 1, TotalSteps: total, StepName: rec.Name, Action: ""})
+			events.Progressf("Test '%s' passed", rec.Name)
 		} else {
-			publish("step", fmt.Sprintf("Test '%s' failed", rec.Name), &database.StreamStepInfo{CurrentStep: i + 1, TotalSteps: total, StepName: rec.Name, Action: ""})
+			events.Progressf("Test '%s' failed", rec.Name)
 			
 			// Optional: If a test in the chain fails, do you want to break the entire chain?
 			// Usually yes, because if Login fails, tests 2 and 3 are guaranteed to fail.
 			results[i] = result
-			publish("done", fmt.Sprintf("Chained execution aborted due to failure at test '%s'", rec.Name), &database.StreamStepInfo{CurrentStep: i + 1, TotalSteps: total, StepName: "Chained execution aborted"})
+			events.Done("Chained execution aborted due to failure at test '%s'", rec.Name)
 			
 			// Fill remaining tests as failed/skipped
 			for j := i + 1; j < len(recordings); j++ {
@@ -502,7 +463,8 @@ func RunTestsChained(ctx context.Context, recordings []models.TestRecording) []*
 			failed++
 		}
 	}
-	publish("done", fmt.Sprintf("Chained execution complete: %d passed, %d failed out of %d total", passed, failed, total), &database.StreamStepInfo{TotalSteps: total, StepName: "Chained execution complete"})
+
+	events.Done("Chained execution complete: %d passed, %d failed out of %d total", passed, failed, total)
 
 	return results
 }

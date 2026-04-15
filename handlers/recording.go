@@ -545,35 +545,18 @@ func RunRecording(c *gin.Context) {
 		return
 	}
 
-	// Publish start event
-	database.PublishStreamEvent(ctx, database.StreamEvent{
-		Type:         "execution",
-		ResourceType: "recording",
-		ResourceID:   id,
-		Stage:        "start",
-		Message:      fmt.Sprintf("Starting recording '%s' (%d steps)...", recording.Name, len(recording.Steps)),
-	})
+	// Publish start event and execute in goroutine
+	events := agent.NewExecutionEmitter(ctx, id)
+	events.Start("Starting recording '%s' (%d steps)...", recording.Name, len(recording.Steps))
 
 	// Execute in goroutine to not block HTTP
 	go func() {
 		bgCtx := context.Background()
 		result, err := agent.RunTest(bgCtx, &recording)
 		if err != nil {
-			database.PublishStreamEvent(bgCtx, database.StreamEvent{
-				Type:         "execution",
-				ResourceType: "recording",
-				ResourceID:   id,
-				Stage:        "error",
-				Message:      fmt.Sprintf("Recording '%s' failed: %v", recording.Name, err),
-			})
+			events.Error("Recording '%s' failed: %v", recording.Name, err)
 		} else {
-			database.PublishStreamEvent(bgCtx, database.StreamEvent{
-				Type:         "execution",
-				ResourceType: "recording",
-				ResourceID:   id,
-				Stage:        "done",
-				Message:      fmt.Sprintf("Recording '%s' completed: %s", recording.Name, result.Status),
-			})
+			events.Done("Recording '%s' completed: %s", recording.Name, result.Status)
 		}
 	}()
 

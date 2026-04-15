@@ -180,20 +180,29 @@ func InvalidateBoardCache(ctx context.Context, projectID string) {
 // Follows AG-UI-inspired event patterns for agent-to-frontend real-time communication.
 type StreamEvent struct {
 	Type         string          `json:"type"`                    // "generation" | "execution" | "agent"
-	ResourceType string          `json:"resourceType,omitempty"`  // "scenario" | "recording" | ""
+	ResourceType string          `json:"resourceType,omitempty"`  // "scenario" | "recording" | "session"
 	ResourceID   string          `json:"resourceId,omitempty"`    // ID of the resource being operated on
-	Stage        string          `json:"stage"`                    // e.g. "start", "step", "done", "error"
+	Stage        string          `json:"stage"`                   // "start", "progress", "done", "error"
 	Message      string          `json:"message"`                 // Human-readable contextual message
-	StepInfo     *StreamStepInfo `json:"stepInfo,omitempty"`       // For execution step progress
-	Timestamp    string          `json:"timestamp"`                // RFC3339 timestamp
+	StepInfo     *StreamStepInfo `json:"stepInfo,omitempty"`      // For execution step progress
+	ErrorInfo    *StreamErrorInfo `json:"errorInfo,omitempty"`    // Structured error details
+	CorrelationID string         `json:"correlationId,omitempty"` // Links all events in a single operation
+	Timestamp    string          `json:"timestamp"`               // RFC3339 timestamp
 }
 
 // StreamStepInfo describes progress within a multi-step operation (e.g. test execution)
 type StreamStepInfo struct {
-	CurrentStep int    `json:"currentStep"` // 1-indexed
-	TotalSteps  int    `json:"totalSteps"`  // Total steps in the operation
-	StepName    string `json:"stepName"`    // Short description of current step
-	Action      string `json:"action,omitempty"` // e.g. "navigate", "click", "type"
+	CurrentStep int    `json:"currentStep"`            // 1-indexed
+	TotalSteps  int    `json:"totalSteps"`             // Total steps in the operation
+	StepName    string `json:"stepName"`               // Short description of current step
+	Action      string `json:"action,omitempty"`       // e.g. "navigate", "click", "type"
+	Progress    int    `json:"progress,omitempty"`     // 0-100 percentage
+}
+
+// StreamErrorInfo provides structured error details
+type StreamErrorInfo struct {
+	Code    string `json:"code,omitempty"`    // Machine-readable error code
+	Details string `json:"details,omitempty"` // Additional error context
 }
 
 // Unified Redis channel for all stream events

@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"qa-extension-backend/agent"
-	"qa-extension-backend/database"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/oauth2"
@@ -222,13 +221,7 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 						"session_id": req.SessionID,
 					})
 					// Publish final event to Redis for unified stream consumers
-					database.PublishStreamEvent(agentCtx, database.StreamEvent{
-						Type:         "agent",
-						ResourceType: "session",
-						ResourceID:   req.SessionID,
-						Stage:        "done",
-						Message:      "Agent completed",
-					})
+					agent.NewAgentEmitter(agentCtx, req.SessionID).Done("Agent completed")
 				} else {
 					// Extract text from partial response for progress update
 					var progressText string
@@ -246,14 +239,8 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 						"status":  "processing",
 						"message": progressText,
 					})
-					// Publish thinking event to Redis with extracted progress info
-					database.PublishStreamEvent(agentCtx, database.StreamEvent{
-						Type:         "agent",
-						ResourceType: "session",
-						ResourceID:   req.SessionID,
-						Stage:        "thinking",
-						Message:      progressText,
-					})
+					// Publish progress event to Redis
+					agent.NewAgentEmitter(agentCtx, req.SessionID).Progress(progressText)
 				}
 				if flusher, ok := w.(http.Flusher); ok {
 					flusher.Flush()

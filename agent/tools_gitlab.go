@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"qa-extension-backend/client"
-	"qa-extension-backend/database"
 	"strconv"
 
 	"google.golang.org/adk/tool"
@@ -91,15 +90,13 @@ type ListProjectsResponse struct {
 func listGitLabProjects(ctx tool.Context, args ListProjectsArgs) (*ListProjectsResponse, error) {
 	log.Printf("[AgentTool] listGitLabProjects called with args: %+v", args)
 
-	database.PublishStreamEvent(ctx, database.StreamEvent{
-		Type:    "agent",
-		Stage:   "start",
-		Message: "Fetching GitLab projects...",
-	})
+	events := NewAgentToolEmitter(ctx)
+	events.Start("Fetching GitLab projects...")
 
 	gitlabClient, err := getGitLabClient(ctx)
 	if err != nil {
 		log.Printf("[AgentTool] listGitLabProjects failed to get client: %v", err)
+		events.Error("Failed to get GitLab client: " + err.Error())
 		return nil, err
 	}
 
@@ -124,6 +121,7 @@ func listGitLabProjects(ctx tool.Context, args ListProjectsArgs) (*ListProjectsR
 	projects, _, err := gitlabClient.Projects.ListProjects(opts)
 	if err != nil {
 		log.Printf("[AgentTool] listGitLabProjects API error: %v", err)
+		events.Error("Failed to list projects: " + err.Error())
 		return nil, err
 	}
 
@@ -139,12 +137,7 @@ func listGitLabProjects(ctx tool.Context, args ListProjectsArgs) (*ListProjectsR
 	}
 
 	log.Printf("[AgentTool] listGitLabProjects success, found %d projects", len(result))
-
-	database.PublishStreamEvent(ctx, database.StreamEvent{
-		Type:    "agent",
-		Stage:   "done",
-		Message: fmt.Sprintf("Loaded %d GitLab projects", len(result)),
-	})
+	events.Done("Loaded %d GitLab projects", len(result))
 
 	return &ListProjectsResponse{Projects: result}, nil
 }
@@ -159,15 +152,13 @@ type CreateIssueArgs struct {
 func createGitLabIssue(ctx tool.Context, args CreateIssueArgs) (*gitlab.Issue, error) {
 	log.Printf("[AgentTool] createGitLabIssue called with args: %+v", args)
 
-	database.PublishStreamEvent(ctx, database.StreamEvent{
-		Type:    "agent",
-		Stage:   "start",
-		Message: "Creating GitLab issue...",
-	})
+	events := NewAgentToolEmitter(ctx)
+	events.Start("Creating GitLab issue...")
 
 	gitlabClient, err := getGitLabClient(ctx)
 	if err != nil {
 		log.Printf("[AgentTool] createGitLabIssue failed to get client: %v", err)
+		events.Error("Failed to get GitLab client: " + err.Error())
 		return nil, err
 	}
 
@@ -183,20 +174,14 @@ func createGitLabIssue(ctx tool.Context, args CreateIssueArgs) (*gitlab.Issue, e
 	issue, _, err := gitlabClient.Issues.CreateIssue(strconv.Itoa(args.ProjectID), opt)
 	if err != nil {
 		log.Printf("[AgentTool] createGitLabIssue API error: %v", err)
-		database.PublishStreamEvent(ctx, database.StreamEvent{
-			Type:    "agent",
-			Stage:   "error",
-			Message: "Failed to create GitLab issue",
-		})
-	} else {
-		log.Printf("[AgentTool] createGitLabIssue success, created issue IID: %d", issue.IID)
-		database.PublishStreamEvent(ctx, database.StreamEvent{
-			Type:        "agent",
-			Stage:       "done",
-			Message:     fmt.Sprintf("Created GitLab issue: %s", issue.Title),
-		})
+		events.Error("Failed to create issue: " + err.Error())
+		return nil, err
 	}
-	return issue, err
+
+	log.Printf("[AgentTool] createGitLabIssue success: issue %d created", issue.IID)
+	events.Done("Created issue: %s", issue.Title)
+
+	return issue, nil
 }
 
 type ListIssuesArgs struct {
@@ -222,15 +207,13 @@ type ListIssuesResponse struct {
 func listGitLabIssues(ctx tool.Context, args ListIssuesArgs) (*ListIssuesResponse, error) {
 	log.Printf("[AgentTool] listGitLabIssues called with args: %+v", args)
 
-	database.PublishStreamEvent(ctx, database.StreamEvent{
-		Type:    "agent",
-		Stage:   "start",
-		Message: "Fetching project GitLab issues...",
-	})
+	events := NewAgentToolEmitter(ctx)
+	events.Start("Fetching project GitLab issues...")
 
 	gitlabClient, err := getGitLabClient(ctx)
 	if err != nil {
 		log.Printf("[AgentTool] listGitLabIssues failed to get client: %v", err)
+		events.Error("Failed to get GitLab client: " + err.Error())
 		return nil, err
 	}
 
@@ -244,6 +227,7 @@ func listGitLabIssues(ctx tool.Context, args ListIssuesArgs) (*ListIssuesRespons
 	issues, _, err := gitlabClient.Issues.ListProjectIssues(strconv.Itoa(args.ProjectID), opt)
 	if err != nil {
 		log.Printf("[AgentTool] listGitLabIssues API error: %v", err)
+		events.Error("Failed to list issues: " + err.Error())
 		return nil, err
 	}
 
@@ -262,12 +246,7 @@ func listGitLabIssues(ctx tool.Context, args ListIssuesArgs) (*ListIssuesRespons
 	}
 
 	log.Printf("[AgentTool] listGitLabIssues success, found %d issues", len(result))
-
-	database.PublishStreamEvent(ctx, database.StreamEvent{
-		Type:    "agent",
-		Stage:   "done",
-		Message: fmt.Sprintf("Loaded %d project issues", len(result)),
-	})
+	events.Done("Loaded %d project issues", len(result))
 
 	return &ListIssuesResponse{Issues: result}, nil
 }
@@ -279,15 +258,13 @@ type ListAllIssuesArgs struct {
 func listAllGitLabIssues(ctx tool.Context, args ListAllIssuesArgs) (*ListIssuesResponse, error) {
 	log.Printf("[AgentTool] listAllGitLabIssues called with args: %+v", args)
 
-	database.PublishStreamEvent(ctx, database.StreamEvent{
-		Type:    "agent",
-		Stage:   "start",
-		Message: "Fetching all GitLab issues...",
-	})
+	events := NewAgentToolEmitter(ctx)
+	events.Start("Fetching all GitLab issues...")
 
 	gitlabClient, err := getGitLabClient(ctx)
 	if err != nil {
 		log.Printf("[AgentTool] listAllGitLabIssues failed to get client: %v", err)
+		events.Error("Failed to get GitLab client: " + err.Error())
 		return nil, err
 	}
 
@@ -301,6 +278,7 @@ func listAllGitLabIssues(ctx tool.Context, args ListAllIssuesArgs) (*ListIssuesR
 	issues, err := client.ListIssuesRelatedToMe(gitlabClient, opt)
 	if err != nil {
 		log.Printf("[AgentTool] listAllGitLabIssues API error: %v", err)
+		events.Error("Failed to list issues: " + err.Error())
 		return nil, err
 	}
 
@@ -319,12 +297,7 @@ func listAllGitLabIssues(ctx tool.Context, args ListAllIssuesArgs) (*ListIssuesR
 	}
 
 	log.Printf("[AgentTool] listAllGitLabIssues success, found %d issues", len(result))
-
-	database.PublishStreamEvent(ctx, database.StreamEvent{
-		Type:    "agent",
-		Stage:   "done",
-		Message: fmt.Sprintf("Loaded %d GitLab issues", len(result)),
-	})
+	events.Done("Loaded %d GitLab issues", len(result))
 
 	return &ListIssuesResponse{Issues: result}, nil
 }
@@ -338,15 +311,13 @@ type UpdateIssueArgs struct {
 func updateGitLabIssue(ctx tool.Context, args UpdateIssueArgs) (*gitlab.Issue, error) {
 	log.Printf("[AgentTool] updateGitLabIssue called with args: %+v", args)
 
-	database.PublishStreamEvent(ctx, database.StreamEvent{
-		Type:    "agent",
-		Stage:   "start",
-		Message: "Updating GitLab issue...",
-	})
+	events := NewAgentToolEmitter(ctx)
+	events.Start("Updating GitLab issue...")
 
 	gitlabClient, err := getGitLabClient(ctx)
 	if err != nil {
 		log.Printf("[AgentTool] updateGitLabIssue failed to get client: %v", err)
+		events.Error("Failed to get GitLab client: " + err.Error())
 		return nil, err
 	}
 
@@ -364,20 +335,14 @@ func updateGitLabIssue(ctx tool.Context, args UpdateIssueArgs) (*gitlab.Issue, e
 	issue, _, err := gitlabClient.Issues.UpdateIssue(strconv.Itoa(args.ProjectID), int64(args.IssueIID), opt)
 	if err != nil {
 		log.Printf("[AgentTool] updateGitLabIssue API error: %v", err)
-		database.PublishStreamEvent(ctx, database.StreamEvent{
-			Type:    "agent",
-			Stage:   "error",
-			Message: "Failed to update GitLab issue",
-		})
-	} else {
-		log.Printf("[AgentTool] updateGitLabIssue success, updated issue IID: %d", issue.IID)
-		database.PublishStreamEvent(ctx, database.StreamEvent{
-			Type:    "agent",
-			Stage:   "done",
-			Message: "Updated GitLab issue",
-		})
+		events.Error("Failed to update GitLab issue: " + err.Error())
+		return nil, err
 	}
-	return issue, err
+
+	log.Printf("[AgentTool] updateGitLabIssue success, updated issue IID: %d", issue.IID)
+	events.Done("Updated GitLab issue: %s", issue.Title)
+
+	return issue, nil
 }
 
 func getGitLabClient(ctx context.Context) (*gitlab.Client, error) {
