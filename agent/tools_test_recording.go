@@ -1182,7 +1182,7 @@ type TestRecordingAgentInput struct {
 
 // RunAgentForTestGeneration runs the QA agent to generate recordings
 // The agent will use GitLab tools to navigate repo and find files
-func RunAgentForTestGeneration(ctx context.Context, input TestRecordingAgentInput) (*GenerateRecordingsOutput, error) {
+func RunAgentForTestGeneration(ctx context.Context, input TestRecordingAgentInput, token *oauth2.Token) (*GenerateRecordingsOutput, error) {
 	log.Printf("[TestRecordingAgent] RunAgentForTestGeneration: %s", input.ScenarioID)
 
 	// Get scenario from Redis
@@ -1228,22 +1228,25 @@ func RunAgentForTestGeneration(ctx context.Context, input TestRecordingAgentInpu
 	output.TotalCount = len(targetCases)
 	log.Printf("[TestRecordingAgent] Processing %d test cases", output.TotalCount)
 
-	// Get GitLab client from scenario's project
-	glClient, err := getGitLabClientFromScenarioProject(ctx, scenario)
-	if err != nil {
-		log.Printf("[TestRecordingAgent] Failed to get GitLab client: %v", err)
-		// Continue anyway - recordings will have no selectors
-	}
-
+	// Get GitLab client using the provided token
+	var glClient *gitlab.Client
 	var branch string
-	if glClient != nil && scenario.ProjectID != "" {
-		if project, _, err := glClient.Projects.GetProject(scenario.ProjectID, nil); err == nil {
-			branch = project.DefaultBranch
+	if token != nil {
+		var err error
+		glClient, err = client.GetClient(ctx, token, nil)
+		if err != nil {
+			log.Printf("[TestRecordingAgent] Failed to get GitLab client: %v", err)
+		} else if scenario.ProjectID != "" {
+			if project, _, err := glClient.Projects.GetProject(scenario.ProjectID, nil); err == nil {
+				branch = project.DefaultBranch
+			}
 		}
 	}
 	if branch == "" {
 		branch = "main"
 	}
+
+	log.Printf("[TestRecordingAgent] GitLab client: glClient=%v, projectID=%s, branch=%s", glClient != nil, scenario.ProjectID, branch)
 
 	// For each test case, let the agent figure out what to fetch
 	// Agent will look at test case name → infer what files are needed
