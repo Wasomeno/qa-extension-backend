@@ -345,6 +345,168 @@ func RunTestsParallel(ctx context.Context, recordings []models.TestRecording) []
 	return results
 }
 
+// RunTestsChained executes a list of test recordings in a single, continuous browser session.
+// Test 2 will start on the exact page where Test 1 left off.
+// This is critical for sequential flows (e.g., Test 1 logs in, Test 2 navigates to list, Test 3 deletes an item).
+func RunTestsChained(ctx context.Context, recordings []models.TestRecording) []*models.TestResult {
+	log.Printf("[Runner] Running %d chained tests in a single browser session", len(recordings))
+
+	results := make([]*models.TestResult, len(recordings))
+	total := len(recordings)
+
+	if total == 0 {
+		return results
+	}
+
+	publish := func(stage, msg string, stepInfo *database.StreamStepInfo) {
+		database.PublishStreamEvent(ctx, database.StreamEvent{
+			Type:         "execution",
+			ResourceType: "recording",
+			ResourceID:   "chained_session",
+			Stage:        stage,
+			Message:      msg,
+			StepInfo:     stepInfo,
+		})
+	}
+
+	publish("start", fmt.Sprintf("Starting chained execution of %d tests...", total), &database.StreamStepInfo{TotalSteps: total, StepName: "Starting chained execution"})
+
+	videoDir, err := os.MkdirTemp("", "test-video-chained-*")
+	if err != nil {
+		log.Printf("[FATAL ERROR] could not create chained temp dir: %v", err)
+		return results
+	}
+	defer os.RemoveAll(videoDir)
+
+	pwCtx, err := globalBrowser.NewContext(playwright.BrowserNewContextOptions{
+		RecordVideo: &playwright.RecordVideo{
+			Dir: videoDir,
+			Size: &playwright.Size{
+				Width:  1920,
+				Height: 1080,
+			},
+		},
+		Viewport: &playwright.Size{
+			Width:  1920,
+			Height: 1080,
+		},
+	})
+	if err != nil {
+		log.Printf("[FATAL ERROR] could not create chained context: %v", err)
+		return results
+	}
+	defer pwCtx.Close()
+
+	page, err := pwCtx.NewPage()
+	if err != nil {
+		log.Printf("[FATAL ERROR] could not create chained page: %v", err)
+		return results
+	}
+
+	// We run sequentially on the EXACT SAME page
+	for i, rec := range recordings {
+		publish("step", fmt.Sprintf("Starting chained test '%s' (%d/%d)...", rec.Name, i+1, total), &database.StreamStepInfo{CurrentStep: i + 1, TotalSteps: total, StepName: rec.Name, Action: ""})
+
+		result := &models.TestResult{
+			TestID:    rec.ID,
+			StartTime: time.Now(),
+		}
+
+		testFailed := false
+
+		// Execute steps of THIS recording
+		for stepIdx, step := range rec.Steps {
+			publish("step", fmt.Sprintf("Executing step %d of test '%s': %s", stepIdx+1, rec.Name, step.Action), &database.StreamStepInfo{
+				CurrentStep: stepIdx + 1,
+				TotalSteps:  len(rec.Steps),
+				StepName:    step.Action,
+				Action:      step.Action,
+			})
+
+			if err := executeStep(page, step); err != nil {
+				// Mark as failed, take screenshot, but DO NOT abort the whole chain yet (unless you want to)
+				result.Status = "failed"
+				result.Log = fmt.Sprintf("Step %d failed: %v", stepIdx+1, err)
+				testFailed = true
+
+				screenshotPath := filepath.Join(os.TempDir(), fmt.Sprintf("error-chained-%s.png", rec.ID.Hex()))
+				if _, sErr := page.Screenshot(playwright.PageScreenshotOptions{
+					Path: playwright.String(screenshotPath),
+				}); sErr == nil {
+					key := fmt.Sprintf("screenshots/%s.png", rec.ID.Hex())
+					if imgURL, uploadErr := r2.UploadFile(ctx, screenshotPath, key, "image/png"); uploadErr == nil {
+						result.ScreenshotURL = imgURL
+					}
+					os.Remove(screenshotPath)
+				}
+				break // Stop executing steps for THIS specific test
+			}
+		}
+
+		result.EndTime = time.Now()
+		result.DurationMs = result.EndTime.Sub(result.StartTime).Milliseconds()
+
+		if !testFailed {
+			result.Status = "passed"
+			publish("step", fmt.Sprintf("Test '%s' completed: passed", rec.Name), &database.StreamStepInfo{CurrentStep: i + 1, TotalSteps: total, StepName: rec.Name, Action: ""})
+		} else {
+			publish("step", fmt.Sprintf("Test '%s' failed", rec.Name), &database.StreamStepInfo{CurrentStep: i + 1, TotalSteps: total, StepName: rec.Name, Action: ""})
+			
+			// Optional: If a test in the chain fails, do you want to break the entire chain?
+			// Usually yes, because if Login fails, tests 2 and 3 are guaranteed to fail.
+			results[i] = result
+			publish("done", fmt.Sprintf("Chained execution aborted due to failure at test '%s'", rec.Name), &database.StreamStepInfo{CurrentStep: i + 1, TotalSteps: total, StepName: "Chained execution aborted"})
+			
+			// Fill remaining tests as failed/skipped
+			for j := i + 1; j < len(recordings); j++ {
+				results[j] = &models.TestResult{
+					TestID: recordings[j].ID,
+					Status: "failed", // or skipped
+					Log:    fmt.Sprintf("Skipped because previous test in chain '%s' failed", rec.Name),
+				}
+			}
+			break
+		}
+
+		results[i] = result
+	}
+
+	// Wait for the final video file to be saved
+	page.Close()
+	pwCtx.Close()
+
+	// Upload video for the entire chained session to the FIRST recording (or handle it however you prefer)
+	// Currently saving the full session video to the first recording result
+	if results[0] != nil && results[0].Status != "" {
+		videoFiles, err := os.ReadDir(videoDir)
+		if err == nil && len(videoFiles) > 0 {
+			videoPath := filepath.Join(videoDir, videoFiles[0].Name())
+			key := fmt.Sprintf("videos/chained-%s.webm", recordings[0].ID.Hex())
+			if videoURL, uploadErr := r2.UploadFile(ctx, videoPath, key, "video/webm"); uploadErr == nil {
+				// Attach the video to all tests in the chain, since it's one continuous video
+				for _, r := range results {
+					if r != nil {
+						r.VideoURL = videoURL
+					}
+				}
+				log.Printf("[Runner] Chained video uploaded to: %s", videoURL)
+			}
+		}
+	}
+
+	passed, failed := 0, 0
+	for _, r := range results {
+		if r != nil && r.Status == "passed" {
+			passed++
+		} else {
+			failed++
+		}
+	}
+	publish("done", fmt.Sprintf("Chained execution complete: %d passed, %d failed out of %d total", passed, failed, total), &database.StreamStepInfo{TotalSteps: total, StepName: "Chained execution complete"})
+
+	return results
+}
+
 func executeStep(page playwright.Page, step models.RecordingStep) error {
 	log.Printf("[Runner] Executing action: %s on selector: %s with value: %s", step.Action, step.Selector, step.Value)
 

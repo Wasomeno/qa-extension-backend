@@ -40,7 +40,7 @@ func GetTestTools() []tool.Tool {
 
 	tt4, _ := functiontool.New(functiontool.Config{
 		Name:        "runTestScenario",
-		Description: "Run all generated tests for a specific test scenario. You can optionally filter by sheet names.",
+		Description: "Run all generated tests for a specific test scenario. You can optionally filter by sheet names and choose between parallel or chained (sequential) execution.",
 	}, runTestScenario)
 	tools = append(tools, tt4)
 
@@ -104,6 +104,7 @@ func listTestScenarios(ctx tool.Context, _ struct{}) (*ListTestScenariosResponse
 type RunTestScenarioArgs struct {
 	ScenarioID string   `json:"scenarioID"`
 	SheetNames []string `json:"sheetNames,omitempty"` // Optional filter
+	Chained    bool     `json:"chained,omitempty"`    // If true, runs sequentially in a single session
 }
 
 type RunTestScenarioResponse struct {
@@ -155,7 +156,12 @@ func runTestScenario(ctx tool.Context, args RunTestScenarioArgs) (*RunTestScenar
 	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
-	results := RunTestsParallel(timeoutCtx, recordings)
+	var results []*models.TestResult
+	if args.Chained {
+		results = RunTestsChained(timeoutCtx, recordings)
+	} else {
+		results = RunTestsParallel(timeoutCtx, recordings)
+	}
 
 	passed := 0
 	failed := 0
