@@ -491,7 +491,8 @@ func GenerateTests(c *gin.Context) {
 		}
 
 		// Use agent - it will use GitLab tools to navigate repo and find files
-		result, err := agent.RunAgentForTestGeneration(bgCtx, agent.TestRecordingAgentInput{
+		// Use the LLM-based agent for intelligent code exploration
+		result, err := agent.RunAgentForTestGenerationWithLLM(bgCtx, agent.TestRecordingAgentInput{
 			ScenarioID: id,
 			SheetNames: sheetNames,
 		}, token)

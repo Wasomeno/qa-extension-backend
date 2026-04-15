@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	gitlab "gitlab.com/gitlab-org/api/client-go"
 	"golang.org/x/oauth2"
 	"google.golang.org/adk/tool"
@@ -130,7 +129,7 @@ func saveTestRecording(ctx tool.Context, input SaveTestRecordingInput) (*SaveTes
 	log.Printf("[AgentTool] saveTestRecording called: testCaseID=%s, steps=%d", input.TestCaseID, len(input.Steps))
 
 	recording := &models.TestRecording{
-		ID:          uuid.NewString(),
+		ID:          fmt.Sprintf("rec_%d", time.Now().UnixMilli()),
 		Status:      "generated",
 		ProjectID:   input.ProjectID,
 		CreatorID:   input.CreatorID,
@@ -138,6 +137,7 @@ func saveTestRecording(ctx tool.Context, input SaveTestRecordingInput) (*SaveTes
 		Description: input.Description,
 		CreatedAt:   time.Now(),
 		Steps:       make([]models.RecordingStep, len(input.Steps)),
+		Parameters:  make([]any, 0),
 	}
 
 	for i, step := range input.Steps {
@@ -155,6 +155,15 @@ func saveTestRecording(ctx tool.Context, input SaveTestRecordingInput) (*SaveTes
 				Attributes: step.ElementHints.Attributes,
 				TagName:    step.ElementHints.TagName,
 			},
+		}
+		if recording.Steps[i].SelectorCandidates == nil {
+			recording.Steps[i].SelectorCandidates = make([]string, 0)
+		}
+		if recording.Steps[i].XPathCandidates == nil {
+			recording.Steps[i].XPathCandidates = make([]string, 0)
+		}
+		if recording.Steps[i].ElementHints.Attributes == nil {
+			recording.Steps[i].ElementHints.Attributes = make(map[string]string)
 		}
 	}
 
@@ -179,6 +188,10 @@ func saveTestRecording(ctx tool.Context, input SaveTestRecordingInput) (*SaveTes
 	}
 	if recording.ProjectID != "" {
 		database.RedisClient.SAdd(bgCtx, fmt.Sprintf("recordings:project:%s", recording.ProjectID), recording.ID)
+	}
+	// Track by scenario for collection
+	if input.ScenarioID != "" {
+		database.RedisClient.SAdd(bgCtx, fmt.Sprintf("recordings:scenario:%s", input.ScenarioID), recording.ID)
 	}
 
 	log.Printf("[AgentTool] saveTestRecording success: recordingID=%s", recording.ID)
@@ -258,7 +271,7 @@ func analyzeTestCase(ctx tool.Context, input AnalyzeTestCaseInput) (*AnalyzeTest
 	}
 
 	actionSet := make(map[string]bool)
-	for i, step := range testCase.Steps {
+	for i, step := range normalizeSteps(testCase.Steps) {
 		output.Steps[i] = TestStepSummary{
 			Index:    i,
 			Action:   step.Action,
@@ -700,9 +713,10 @@ func buildRecordingSteps(ctx tool.Context, input BuildRecordingInput) (*BuildRec
 
 	output := &BuildRecordingOutput{
 		Recording: &models.TestRecording{
-			ID:     uuid.NewString(),
-			Status: "generated",
-			Steps:  []models.RecordingStep{},
+			ID:         fmt.Sprintf("rec_%d", time.Now().UnixMilli()),
+			Status:     "generated",
+			Steps:      []models.RecordingStep{},
+			Parameters: make([]any, 0),
 		},
 		Warnings: []string{},
 		Issues:   []string{},
@@ -758,9 +772,14 @@ func buildRecordingSteps(ctx tool.Context, input BuildRecordingInput) (*BuildRec
 		}
 
 		recordingStep := models.RecordingStep{
-			Action:      action,
-			Description: step.Action,
-			Value:       step.InputData,
+			Action:             action,
+			Description:        step.Action,
+			Value:              step.InputData,
+			SelectorCandidates: make([]string, 0),
+			XPathCandidates:    make([]string, 0),
+			ElementHints: models.ElementHints{
+				Attributes: make(map[string]string),
+			},
 		}
 
 		selector := findSelectorForAction(selectorMap, action, step.Action, step.InputData)
@@ -1398,12 +1417,13 @@ func agentGenerateSingleRecording(ctx context.Context, glClient *gitlab.Client, 
 
 	warnings := []string{}
 	recording := &models.TestRecording{
-		ID:     uuid.NewString(),
-		Status: "generated",
-		Steps:  []models.RecordingStep{},
-		Name:   fmt.Sprintf("[%s] %s", tc.ID, tc.Name),
+		ID:          fmt.Sprintf("rec_%d", time.Now().UnixMilli()),
+		Status:      "generated",
+		Steps:       []models.RecordingStep{},
+		Parameters:  make([]any, 0),
+		Name:        fmt.Sprintf("[%s] %s", tc.ID, tc.Name),
 		Description: tc.PreCondition,
-		ProjectID: projectID,
+		ProjectID:   projectID,
 	}
 
 	// Build context from ALL step content - let the agent figure out what files are needed
@@ -1442,16 +1462,21 @@ func agentGenerateSingleRecording(ctx context.Context, glClient *gitlab.Client, 
 	}
 
 	// Build steps from test case
-	for i, step := range tc.Steps {
+	for i, step := range normalizeSteps(tc.Steps) {
 		action := extractActionType(step.Action)
 		if action == "" {
 			action = "click"
 		}
 
 		recordingStep := models.RecordingStep{
-			Action:      action,
-			Description: step.Action,
-			Value:       step.InputData,
+			Action:             action,
+			Description:        step.Action,
+			Value:              step.InputData,
+			SelectorCandidates: make([]string, 0),
+			XPathCandidates:    make([]string, 0),
+			ElementHints: models.ElementHints{
+				Attributes: make(map[string]string),
+			},
 		}
 
 		selector := findSelectorForAction(selectorMap, action, step.Action, step.InputData)
@@ -2251,4 +2276,51 @@ func SaveRecording(recording *models.TestRecording) error {
 	}
 
 	return nil
+}
+// normalizeSteps splits multi-line steps into multiple steps
+func normalizeSteps(steps []models.ParsedStep) []models.ParsedStep {
+	var normalized []models.ParsedStep
+	for _, step := range steps {
+		lines := strings.Split(step.Action, "\n")
+		if len(lines) <= 1 {
+			normalized = append(normalized, step)
+			continue
+		}
+		
+		looksLikeList := false
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed != "" && (strings.HasPrefix(trimmed, "1.") || strings.HasPrefix(trimmed, "-")) {
+				looksLikeList = true
+				break
+			}
+		}
+		
+		if !looksLikeList {
+			normalized = append(normalized, step)
+			continue
+		}
+		
+		for i, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" {
+				continue
+			}
+			for j := 1; j <= 20; j++ {
+				prefix := fmt.Sprintf("%d.", j)
+				if strings.HasPrefix(trimmed, prefix) {
+					trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
+					break
+				}
+			}
+			if strings.HasPrefix(trimmed, "-") {
+				trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "-"))
+			}
+			newStep := models.ParsedStep{Action: trimmed}
+			if i == 0 { newStep.InputData = step.InputData }
+			if i == len(lines)-1 { newStep.ExpectedResult = step.ExpectedResult }
+			normalized = append(normalized, newStep)
+		}
+	}
+	return normalized
 }
