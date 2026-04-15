@@ -53,7 +53,7 @@ When generating or evaluating test recordings, this is what a valid TestRecordin
 - **steps**: an array of objects where each object has:
   - **action**: string ("navigate", "type", "click", "assert", "wait")
   - **description**: string
-  - **elementHints**: object containing `attributes` (map of strings) and `tagName` (string)
+  - elementHints: object containing attributes (map of strings) and tagName (string)
   - **selector**: primary CSS selector
   - **selectorCandidates**: array of alternative CSS selectors
   - **xpath**: primary XPath selector
