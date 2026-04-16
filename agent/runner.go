@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"qa-extension-backend/client"
-	"qa-extension-backend/database"
 	"qa-extension-backend/internal/models"
 	"time"
 
@@ -374,8 +373,9 @@ func RunTestsChained(ctx context.Context, recordings []models.TestRecording) []*
 		events.Step(i+1, fmt.Sprintf("Running test '%s'...", rec.Name))
 
 		result := &models.TestResult{
-			TestID:    rec.ID,
-			StartTime: time.Now(),
+			TestID:      rec.ID,
+			Status:      "passed",
+			StepResults: make([]models.TestStepResult, 0),
 		}
 
 		testFailed := false
@@ -390,22 +390,22 @@ func RunTestsChained(ctx context.Context, recordings []models.TestRecording) []*
 				result.Log = fmt.Sprintf("Step %d failed: %v", stepIdx+1, err)
 				testFailed = true
 
-				screenshotPath := filepath.Join(os.TempDir(), fmt.Sprintf("error-chained-%s.png", rec.ID.Hex()))
-				if _, sErr := page.Screenshot(playwright.PageScreenshotOptions{
-					Path: playwright.String(screenshotPath),
-				}); sErr == nil {
-					key := fmt.Sprintf("screenshots/%s.png", rec.ID.Hex())
-					if imgURL, uploadErr := r2.UploadFile(ctx, screenshotPath, key, "image/png"); uploadErr == nil {
-						result.ScreenshotURL = imgURL
+				// Take screenshot on failure and store in step results
+				screenshot, _ := page.Screenshot()
+				if screenshot != nil {
+					stepResult := models.TestStepResult{
+						StepIndex:  stepIdx,
+						Status:     "failure",
+						Error:      err.Error(),
+						Screenshot: base64.StdEncoding.EncodeToString(screenshot),
 					}
-					os.Remove(screenshotPath)
+					result.StepResults = append(result.StepResults, stepResult)
 				}
 				break // Stop executing steps for THIS specific test
 			}
 		}
 
-		result.EndTime = time.Now()
-		result.DurationMs = result.EndTime.Sub(result.StartTime).Milliseconds()
+		// Execution completed for this test
 
 		if !testFailed {
 			result.Status = "passed"
@@ -442,15 +442,24 @@ func RunTestsChained(ctx context.Context, recordings []models.TestRecording) []*
 		videoFiles, err := os.ReadDir(videoDir)
 		if err == nil && len(videoFiles) > 0 {
 			videoPath := filepath.Join(videoDir, videoFiles[0].Name())
-			key := fmt.Sprintf("videos/chained-%s.webm", recordings[0].ID.Hex())
-			if videoURL, uploadErr := r2.UploadFile(ctx, videoPath, key, "video/webm"); uploadErr == nil {
-				// Attach the video to all tests in the chain, since it's one continuous video
-				for _, r := range results {
-					if r != nil {
-						r.VideoURL = videoURL
+			r2, r2Err := client.NewR2Client()
+			if r2Err == nil {
+				fileName := filepath.Base(videoPath)
+				key := fmt.Sprintf("videos/chained-%s", fileName)
+				videoURL, uploadErr := r2.UploadFile(ctx, videoPath, key, "video/webm")
+				if uploadErr == nil {
+					// Attach the video to all tests in the chain, since it's one continuous video
+					for _, r := range results {
+						if r != nil {
+							r.VideoURL = videoURL
+						}
 					}
+					log.Printf("[Runner] Chained video uploaded to: %s", videoURL)
+				} else {
+					log.Printf("[Runner] Failed to upload chained video: %v", uploadErr)
 				}
-				log.Printf("[Runner] Chained video uploaded to: %s", videoURL)
+			} else {
+				log.Printf("[Runner] R2 client not configured, skipping video upload: %v", r2Err)
 			}
 		}
 	}

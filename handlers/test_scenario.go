@@ -474,7 +474,7 @@ func GenerateTests(c *gin.Context) {
 			SheetNames: sheetNames,
 		}, token)
 		if err != nil {
-			events.Error("Agent generation failed: %v", err)
+			events.Error(fmt.Sprintf("Agent generation failed: %v", err))
 			scenario.Status = "failed"
 			scenario.Error = fmt.Sprintf("failed to generate tests: %v", err)
 			updateScenarioStatus(id, scenario)

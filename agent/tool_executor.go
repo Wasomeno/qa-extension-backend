@@ -328,7 +328,7 @@ func execRunRecordedTest(ctx context.Context, args map[string]any) (any, error) 
 
 	result, err := runRecordedTestDirect(ctx, args)
 	if err != nil {
-		events.Error("Test '%s' failed: %v", testID, err)
+		events.Error(fmt.Sprintf("Test '%s' failed: %v", testID, err))
 		return nil, err
 	}
 
@@ -363,7 +363,7 @@ func execRunTestScenario(ctx context.Context, args map[string]any) (any, error) 
 
 	result, err := runTestScenarioDirect(ctx, args)
 	if err != nil {
-		events.Error("Scenario '%s' failed: %v", scenarioID, err)
+		events.Error(fmt.Sprintf("Scenario '%s' failed: %v", scenarioID, err))
 		return nil, err
 	}
 
@@ -384,7 +384,7 @@ func execRunScenarioTestCase(ctx context.Context, args map[string]any) (any, err
 
 	result, err := runScenarioTestCaseDirect(ctx, args)
 	if err != nil {
-		events.Error("Test case '%s' failed: %v", testCaseID, err)
+		events.Error(fmt.Sprintf("Test case '%s' failed: %v", testCaseID, err))
 		return nil, err
 	}
 

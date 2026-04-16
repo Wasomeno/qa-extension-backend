@@ -433,7 +433,7 @@ func runRecordedTest(ctx tool.Context, args RunRecordedTestArgs) (*models.TestRe
 	if result.Status == "passed" {
 		events.Done("Test passed: %s", recording.Name)
 	} else if result.Status == "failed" || result.Status == "timeout" {
-		events.Error("Test %s: %s", result.Status, result.Log)
+		events.Error(fmt.Sprintf("Test %s: %s", result.Status, result.Log))
 	} else {
 		events.Done("Test completed: %s", recording.Name)
 	}

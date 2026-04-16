@@ -36,16 +36,7 @@ func getProjectName(c *gin.Context, projectID string) string {
 		return ""
 	}
 
-	sessionID, exists := c.Get("session_id")
-	if !exists {
-		return ""
-	}
-
-	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-		return identity.UpdateSession(ctx, sessionID.(string), t)
-	}
-
-	gitlabClient, err := client.GetClient(c, oauthToken, tokenSaver)
+	gitlabClient, err := client.GetClient(c, oauthToken, nil)
 	if err != nil {
 		return ""
 	}
@@ -554,7 +545,7 @@ func RunRecording(c *gin.Context) {
 		bgCtx := context.Background()
 		result, err := agent.RunTest(bgCtx, &recording)
 		if err != nil {
-			events.Error("Recording '%s' failed: %v", recording.Name, err)
+			events.Error(fmt.Sprintf("Recording '%s' failed: %v", recording.Name, err))
 		} else {
 			events.Done("Recording '%s' completed: %s", recording.Name, result.Status)
 		}
