@@ -2,6 +2,7 @@ package routes
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,8 +23,13 @@ import (
 
 func ChatWithAgent(c *gin.Context) {
 	var req struct {
-		SessionID string `json:"session_id"`
-		Input     string `json:"input"`
+		SessionID   string `json:"session_id"`
+		Input       string `json:"input"`
+		Attachments []struct {
+			Name     string `json:"name"`
+			MimeType string `json:"mimeType"`
+			Data     string `json:"data"`
+		} `json:"attachments"`
 	}
 	if err := c.BindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -138,9 +144,25 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 		}
 	}
 
+	// Build content parts: text first, then any image attachments
+	parts := []*genai.Part{genai.NewPartFromText(input)}
+	for _, att := range req.Attachments {
+		decoded, err := base64.StdEncoding.DecodeString(att.Data)
+		if err != nil {
+			log.Printf("[ChatWithAgent] Failed to decode attachment %s: %v", att.Name, err)
+			continue
+		}
+		mimeType := att.MimeType
+		if mimeType == "" {
+			mimeType = "image/png" // default fallback
+		}
+		log.Printf("[ChatWithAgent] Adding attachment: %s (%s, %d bytes)", att.Name, mimeType, len(decoded))
+		parts = append(parts, genai.NewPartFromBytes(decoded, mimeType))
+	}
+
 	content := &genai.Content{
-		Role: genai.RoleUser,
-		Parts: []*genai.Part{{Text: input}},
+		Role:  genai.RoleUser,
+		Parts: parts,
 	}
 
 	c.Header("Content-Type", "text/event-stream")
