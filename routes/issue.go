@@ -1009,6 +1009,9 @@ func UpdateIssue(ginContext *gin.Context) {
 		return
 	}
 
+	// Invalidate board cache since issue labels may have changed
+	database.InvalidateBoardCache(ginContext.Request.Context(), projectID)
+
 	ginContext.JSON(http.StatusOK, updatedIssue)
 }
 
