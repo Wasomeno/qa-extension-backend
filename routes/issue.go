@@ -971,6 +971,22 @@ func sendGraphQLRaw(ctx context.Context, endpoint, token, query string, variable
 	return ioutil.ReadAll(resp.Body)
 }
 
+// UpdateIssueRequest represents the expected JSON body for updating an issue
+type UpdateIssueRequest struct {
+	Title            string   `json:"title,omitempty"`
+	Description      string   `json:"description,omitempty"`
+	StateEvent       string   `json:"state_event,omitempty"`
+	Labels           []string `json:"labels,omitempty"`
+	AddLabels        []string `json:"add_labels,omitempty"`
+	RemoveLabels     []string `json:"remove_labels,omitempty"`
+	AssigneeIDs      []int64  `json:"assignee_ids,omitempty"`
+	MilestoneID      *int64   `json:"milestone_id,omitempty"`
+	DueDate          *string  `json:"due_date,omitempty"`
+	DiscussionLocked *bool    `json:"discussion_locked,omitempty"`
+	Weight           *int64   `json:"weight,omitempty"`
+	EpicID           *int64   `json:"epic_id,omitempty"`
+}
+
 func UpdateIssue(ginContext *gin.Context) {
 	token := ginContext.MustGet("token").(*oauth2.Token)
 	sessionID := ginContext.MustGet("session_id").(string)
@@ -995,14 +1011,62 @@ func UpdateIssue(ginContext *gin.Context) {
 		return
 	}
 
-	var issue gitlab.UpdateIssueOptions
-	if err := ginContext.BindJSON(&issue); err != nil {
+	var req UpdateIssueRequest
+	if err := ginContext.BindJSON(&req); err != nil {
 		ginContext.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		ginContext.Abort()
 		return
 	}
 
-	updatedIssue, _, err := gitlabClient.Issues.UpdateIssue(projectID, issueID, &issue)
+	// Convert to gitlab.UpdateIssueOptions
+	opt := &gitlab.UpdateIssueOptions{}
+	if req.Title != "" {
+		opt.Title = gitlab.Ptr(req.Title)
+	}
+	if req.Description != "" {
+		opt.Description = gitlab.Ptr(req.Description)
+	}
+	if req.StateEvent != "" {
+		opt.StateEvent = gitlab.Ptr(req.StateEvent)
+	}
+	if len(req.Labels) > 0 {
+		labels := gitlab.LabelOptions(req.Labels)
+		opt.Labels = &labels
+	}
+	if len(req.AddLabels) > 0 {
+		addLabels := gitlab.LabelOptions(req.AddLabels)
+		opt.AddLabels = &addLabels
+	}
+	if len(req.RemoveLabels) > 0 {
+		removeLabels := gitlab.LabelOptions(req.RemoveLabels)
+		opt.RemoveLabels = &removeLabels
+	}
+	if len(req.AssigneeIDs) > 0 {
+		assigneeIDs := make([]int64, len(req.AssigneeIDs))
+		copy(assigneeIDs, req.AssigneeIDs)
+		opt.AssigneeIDs = &assigneeIDs
+	}
+	if req.MilestoneID != nil {
+		opt.MilestoneID = req.MilestoneID
+	}
+	if req.DueDate != nil {
+		t, err := time.Parse("2006-01-02", *req.DueDate)
+		if err == nil {
+			isoDate := gitlab.ISOTime(t)
+			opt.DueDate = &isoDate
+		}
+	}
+	if req.DiscussionLocked != nil {
+		opt.DiscussionLocked = req.DiscussionLocked
+	}
+	if req.Weight != nil {
+		opt.Weight = req.Weight
+	}
+	if req.EpicID != nil {
+		opt.EpicID = req.EpicID
+	}
+
+	updatedIssue, _, err := gitlabClient.Issues.UpdateIssue(projectID, issueID, opt)
 	if err != nil {
 		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		ginContext.Abort()
