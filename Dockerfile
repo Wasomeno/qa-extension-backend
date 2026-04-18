@@ -26,6 +26,9 @@ RUN apt-get update && apt-get install -y curl && \
 # Install Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
 
+# Create a non-root user for Claude Code (it refuses --dangerously-skip-permissions as root)
+RUN groupadd -r appuser && useradd -r -g appuser -d /home/appuser -m -s /bin/bash appuser
+
 # Copy the compiled Go binary
 COPY --from=builder /app/main .
 
@@ -33,7 +36,10 @@ COPY --from=builder /app/main .
 COPY --from=builder /app/static ./static
 
 # Copy the driver JS files that were extracted during build
-COPY --from=builder /root/.cache/ms-playwright-go /root/.cache/ms-playwright-go
+COPY --from=builder /root/.cache/ms-playwright-go /home/appuser/.cache/ms-playwright-go
+
+# Ensure appuser owns the app directory and cache
+RUN chown -R appuser:appuser /app /home/appuser/.cache
 
 # Crucial step: The official image stores browsers in /ms-playwright, not /root/.cache
 # We must tell playwright-go to look there for the browsers.
@@ -42,6 +48,9 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 # Set Anthropic API key (pass at runtime via docker-compose or -e flag)
 # ENV ANTHROPIC_API_KEY=your-api-key-here
 # ENV ANTHROPIC_BASE_URL=https://api.opencode.ai/v1
+
+# Switch to non-root user
+USER appuser
 
 EXPOSE 3000
 CMD ["./main"]
