@@ -116,3 +116,36 @@ func GetIssue(ctx context.Context, projectID interface{}, issueIID int64) (*gitl
 
 	return issue, nil
 }
+
+// GitUser represents the current GitLab user for git commits
+type GitUser struct {
+	Name  string
+	Email string
+}
+
+// GetCurrentUser fetches the authenticated user's profile from GitLab
+func GetCurrentUser(ctx context.Context) (*GitUser, error) {
+	log.Printf("[GitLabWrite] Getting current user info")
+
+	token, ok := ctx.Value("token").(*oauth2.Token)
+	if !ok {
+		return nil, fmt.Errorf("no GitLab token in context")
+	}
+
+	gitlabClient, err := client.GetClient(ctx, token, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get GitLab client: %w", err)
+	}
+
+	user, _, err := gitlabClient.Users.CurrentUser()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get current user: %w", err)
+	}
+
+	log.Printf("[GitLabWrite] Current user: %s (%s)", user.Name, user.Email)
+
+	return &GitUser{
+		Name:  user.Name,
+		Email: user.Email,
+	}, nil
+}

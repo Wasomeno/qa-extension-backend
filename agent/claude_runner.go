@@ -159,10 +159,14 @@ func RunFixAgent(ctx context.Context, issueProjectID int, issueIID int, repoProj
 
 	log.Printf("[FixAgent] Repository cloned to %s", workDir)
 
-	// Step 3: Configure git user and create fix branch
+	// Step 3: Get current user info and configure git user
 	publishEvent("creating_branch", fmt.Sprintf("Creating branch %s...", fixBranchPrefix+fmt.Sprintf("%d", issueIID)))
 
-	if err := configureGitUser(workDir); err != nil {
+	currentUser, err := GetCurrentUser(tokenCtx)
+	if err != nil {
+		log.Printf("[FixAgent] Warning: failed to get current user, using default: %v", err)
+	}
+	if err := configureGitUser(workDir, currentUser); err != nil {
 		publishError("creating_branch", fmt.Errorf("failed to configure git user: %w", err))
 		return
 	}
@@ -370,11 +374,25 @@ func cloneRepo(ctx context.Context, url, dir string) error {
 	return nil
 }
 
-// configureGitUser sets up git user name and email for commits
-func configureGitUser(dir string) error {
+// configureGitUser sets up git user name and email for commits.
+// Uses the actual user's name and email from GitLab so commits
+// appear as authored by the real user, not a bot.
+func configureGitUser(dir string, user *GitUser) error {
+	name := "QA Fix Agent"
+	email := "qa-agent@fix.local"
+
+	if user != nil {
+		if user.Name != "" {
+			name = user.Name
+		}
+		if user.Email != "" {
+			email = user.Email
+		}
+	}
+
 	commands := [][]string{
-		{"git", "config", "user.email", "qa-agent@fix.local"},
-		{"git", "config", "user.name", "QA Fix Agent"},
+		{"git", "config", "user.email", email},
+		{"git", "config", "user.name", name},
 	}
 
 	for _, args := range commands {
