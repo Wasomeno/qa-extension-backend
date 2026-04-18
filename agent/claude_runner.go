@@ -19,7 +19,7 @@ import (
 
 const (
 	// Agent timeout for the entire fix operation
-	defaultAgentTimeout = 10 * time.Minute
+	defaultAgentTimeout = 5 * time.Minute
 
 	// Git branch prefix for fix branches
 	fixBranchPrefix = "fix/issue-"
@@ -214,7 +214,7 @@ func RunFixAgent(ctx context.Context, issueProjectID int, issueIID int, repoProj
 		"--verbose",
 		"--dangerously-skip-permissions",
 		"--no-session-persistence",
-		"--max-turns", "50",
+		"--max-turns", "20",
 		"--model", "minimax-m2.7",
 		"--system-prompt-file", systemPromptFile,
 		"--add-dir", workDir,
