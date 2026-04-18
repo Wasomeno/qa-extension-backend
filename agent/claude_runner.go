@@ -194,15 +194,28 @@ func RunFixAgent(ctx context.Context, issueProjectID int, issueIID int, repoProj
 	// Build the prompt
 	fixPrompt := buildFixPrompt(issueTitle, issueDescription, additionalContext)
 
+	// Write system prompt to a temp file (avoids shell escaping issues with multi-line arg)
+	systemPromptFile := filepath.Join(workDir, ".fix-system-prompt.txt")
+	if err := os.WriteFile(systemPromptFile, []byte(FixSystemPrompt), 0644); err != nil {
+		publishError("agent_running", fmt.Errorf("failed to write system prompt file: %w", err))
+		return
+	}
+
+	// Write user prompt to a temp file
+	userPromptFile := filepath.Join(workDir, ".fix-user-prompt.txt")
+	if err := os.WriteFile(userPromptFile, []byte(fixPrompt), 0644); err != nil {
+		publishError("agent_running", fmt.Errorf("failed to write user prompt file: %w", err))
+		return
+	}
+
 	claudeArgs := []string{
 		"--print",
 		"--output-format", "stream-json",
 		"--dangerously-skip-permissions",
 		"--no-session-persistence",
 		"--max-turns", "50",
-		"--system-prompt", FixSystemPrompt,
+		"--system-prompt-file", systemPromptFile,
 		"--add-dir", workDir,
-		fixPrompt,
 	}
 
 	log.Printf("[FixAgent] Spawning Claude Code: %s %v", claudePath, claudeArgs)
@@ -211,6 +224,10 @@ func RunFixAgent(ctx context.Context, issueProjectID int, issueIID int, repoProj
 
 	claudeCmd := exec.CommandContext(timeoutCtx, claudePath, claudeArgs...)
 	claudeCmd.Dir = workDir
+
+	// Pipe the user prompt via stdin (--print mode accepts input from stdin)
+	promptReader := strings.NewReader(fixPrompt)
+	claudeCmd.Stdin = promptReader
 	
 	// Build environment for Claude Code
 	claudeEnv := append(os.Environ(),
