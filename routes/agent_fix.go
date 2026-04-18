@@ -156,7 +156,65 @@ func GetFixStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, session)
 }
 
-// saveFixSession persists a FixSession to Redis
+// ListFixSessions handles GET /agent/fix-sessions
+// Returns a list of all fix sessions, optionally filtered by status.
+func ListFixSessions(c *gin.Context) {
+	statusFilter := c.Query("status") // ?status=running, ?status=done, ?status=error
+
+	ctx := context.Background()
+	var sessions []FixSession
+
+	// Scan all fix_session:* keys
+	iter := database.RedisClient.Scan(ctx, 0, "fix_session:*", 100).Iterator()
+	for iter.Next(ctx) {
+		key := iter.Val()
+		val, err := database.RedisClient.Get(ctx, key).Result()
+		if err != nil {
+			continue
+		}
+		var session FixSession
+		if err := json.Unmarshal([]byte(val), &session); err != nil {
+			continue
+		}
+		if statusFilter != "" && session.Status != statusFilter {
+			continue
+		}
+		sessions = append(sessions, session)
+	}
+	if err := iter.Err(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	if sessions == nil {
+		sessions = []FixSession{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"sessions": sessions})
+}
+
+// DeleteFixSession handles DELETE /agent/fix-sessions/:session_id
+// Removes a fix session from Redis.
+func DeleteFixSession(c *gin.Context) {
+	sessionID := c.Param("session_id")
+	if sessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "session_id is required"})
+		return
+	}
+
+	key := fmt.Sprintf("fix_session:%s", sessionID)
+	result, err := database.RedisClient.Del(context.Background(), key).Result()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if result == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "session deleted"})
+}
 func saveFixSession(session FixSession) {
 	ctx := context.Background()
 	key := fmt.Sprintf("fix_session:%s", session.SessionID)
