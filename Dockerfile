@@ -29,6 +29,14 @@ RUN npm install -g @anthropic-ai/claude-code
 # Create a non-root user for Claude Code (it refuses --dangerously-skip-permissions as root)
 RUN groupadd -r appuser && useradd -r -g appuser -d /home/appuser -m -s /bin/bash appuser
 
+# Create .ssh directory for appuser with proper permissions
+# Add Server B host key so SSH doesn't prompt for verification
+ARG SSH_REMOTE_HOST=136.115.249.188
+RUN mkdir -p /home/appuser/.ssh && \
+    chmod 700 /home/appuser/.ssh && \
+    ssh-keyscan -H "$SSH_REMOTE_HOST" > /home/appuser/.ssh/known_hosts && \
+    chown -R appuser:appuser /home/appuser/.ssh
+
 # Copy the compiled Go binary
 COPY --from=builder /app/main .
 
