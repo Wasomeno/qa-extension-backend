@@ -287,7 +287,16 @@ func RunFixAgent(ctx context.Context, issueProjectID int, issueIID int, repoProj
 	}
 
 	if !hasChanges {
-		publishError("pushing_changes", fmt.Errorf("Claude Code did not make any changes to fix the issue"))
+		publishError("pushing_changes", fmt.Errorf("Claude Code did not make any changes to fix the issue. The issue description may be unclear or Claude couldn't find the relevant files."))
+		return
+	}
+
+	// Verify there are actual source code changes (not just config files)
+	hasSourceChanges, err := hasSourceCodeChanges(workDir)
+	if err != nil {
+		log.Printf("[FixAgent] Warning: could not verify source changes: %v", err)
+	} else if !hasSourceChanges {
+		publishError("pushing_changes", fmt.Errorf("Claude Code only made config/metadata changes, no source code fixes. Please provide more specific issue details."))
 		return
 	}
 
@@ -372,10 +381,73 @@ func hasUncommittedChanges(dir string) (bool, error) {
 	return len(strings.TrimSpace(string(output))) > 0, nil
 }
 
+// hasSourceCodeChanges checks if there are actual source code changes (not just config files)
+func hasSourceCodeChanges(dir string) (bool, error) {
+	cmd := exec.Command("git", "status", "--porcelain")
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("git status failed: %w", err)
+	}
+
+	lines := strings.Split(string(output), "\n")
+	sourceExtensions := map[string]bool{
+		".js": true, ".jsx": true, ".ts": true, ".tsx": true, // JavaScript/TypeScript
+		".py": true, // Python
+		".go": true, // Go
+		".java": true, // Java
+		".rb": true, // Ruby
+		".php": true, // PHP
+		".cs": true, // C#
+		".cpp": true, ".c": true, ".h": true, // C/C++
+		".rs": true, // Rust
+		".vue": true, ".svelte": true, // Frontend frameworks
+		".css": true, ".scss": true, ".sass": true, // Styles
+		".html": true, // HTML
+		".sql": true, // SQL
+		".sh": true, ".bash": true, // Shell scripts
+		".json": true, ".yaml": true, ".yml": true, // Config (sometimes source)
+		".toml": true, ".xml": true,
+	}
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Extract filename from git status output
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			continue
+		}
+
+		filename := parts[len(parts)-1]
+		ext := strings.ToLower(filepath.Ext(filename))
+
+		// Skip .claude directory entirely
+		if strings.Contains(filename, ".claude/") || strings.HasPrefix(filename, ".claude/") {
+			continue
+		}
+
+		if sourceExtensions[ext] {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
 // commitAndPush stages all changes, commits them, and pushes to the remote
 func commitAndPush(dir, branchName, commitMsg string) error {
-	// Stage all changes
-	cmd := exec.Command("git", "add", "-A")
+	// Ignore .claude directory (hooks config should never be committed)
+	ignorePath := filepath.Join(dir, ".claude")
+	if err := os.RemoveAll(ignorePath); err != nil {
+		log.Printf("[FixAgent] Warning: failed to remove .claude dir: %v", err)
+	}
+
+	// Stage all changes except .claude
+	cmd := exec.Command("git", "add", "-A", ":(exclude).claude")
 	cmd.Dir = dir
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git add failed: %w, output: %s", err, string(output))
