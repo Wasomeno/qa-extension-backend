@@ -215,6 +215,7 @@ func RunFixAgent(ctx context.Context, issueProjectID int, issueIID int, repoProj
 		"--dangerously-skip-permissions",
 		"--no-session-persistence",
 		"--max-turns", "50",
+		"--model", "minimax-m2.7",
 		"--system-prompt-file", systemPromptFile,
 		"--add-dir", workDir,
 	}
