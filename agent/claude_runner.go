@@ -270,7 +270,7 @@ func runFixRemote(ctx context.Context, eventCh chan<- FixEvent, publishEvent fun
 	// Commit and push on remote
 	publishEvent("pushing_changes", "Committing and pushing changes...")
 	commitMsg := fmt.Sprintf("fix: resolve issue #%d - %s", issueIID, issueTitle)
-	remoteCmd = fmt.Sprintf("cd %s && git add -A && git commit -m '%s' && git push -u origin %s", workDir, commitMsg, branchName)
+	remoteCmd = fmt.Sprintf("cd %s && git add -A && git commit -m '%s' && git push -u origin %s --force", workDir, commitMsg, branchName)
 	if output, err = exec.CommandContext(ctx, "ssh", sshHost, remoteCmd).CombinedOutput(); err != nil {
 		publishError("pushing_changes", fmt.Errorf("git push failed: %w, %s", err, string(output)))
 		return
@@ -406,7 +406,7 @@ func runFixLocal(ctx context.Context, eventCh chan<- FixEvent, publishEvent func
 	for _, args := range [][]string{
 		{"git", "add", "-A"},
 		{"git", "commit", "-m", commitMsg},
-		{"git", "push", "-u", "origin", branchName},
+		{"git", "push", "-u", "origin", branchName, "--force"},
 	} {
 		cmd := exec.Command(args[0], args[1:]...)
 		cmd.Dir = workDir
