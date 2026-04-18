@@ -24,13 +24,6 @@ services:
       - "3000"
     depends_on:
       - redis
-    deploy:
-      resources:
-        limits:
-          memory: 2G
-          cpus: '2.0'
-        reservations:
-          memory: 512M
     networks:
       - dokploy-network
 
