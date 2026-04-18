@@ -2,40 +2,56 @@ package routes
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"qa-extension-backend/agent"
+	"qa-extension-backend/database"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 )
 
+// FixSession represents the state of a fix-agent run, stored in Redis.
+type FixSession struct {
+	SessionID    string `json:"session_id"`
+	ProjectID    int    `json:"project_id"`
+	IssueIID     int    `json:"issue_iid"`
+	RepoProjectID int   `json:"repo_project_id"`
+	TargetBranch string `json:"target_branch"`
+	Status       string `json:"status"`    // "running", "done", "error"
+	Message      string `json:"message"`    // Current status message
+	MRURL        string `json:"mr_url"`     // Merge request URL (when done)
+	Error        string `json:"error"`      // Error message (when failed)
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
+}
+
 // FixIssueWithAgent handles POST /agent/fix-issue
 // Starts a background fix agent and returns immediately with a session ID.
-// Frontend tracks progress via the existing SSE stream at GET /api/stream.
+// Frontend tracks progress via SSE stream at GET /api/stream and can poll status at GET /agent/fix-status/:session_id.
 func FixIssueWithAgent(c *gin.Context) {
 	var req struct {
-		ProjectID         int    `json:"project_id" binding:"required"` // Project where the issue exists
-		IssueIID          int    `json:"issue_iid" binding:"required"`  // Issue IID in the issue project
-		RepoProjectID     *int   `json:"repo_project_id"`              // Optional: Project containing the code to fix
-		TargetBranch      string `json:"target_branch"`                // Optional: Target branch for MR
-		AdditionalContext  string `json:"additional_context"`           // Optional: Extra instructions for the agent
+		ProjectID         int    `json:"project_id" binding:"required"`
+		IssueIID          int    `json:"issue_iid" binding:"required"`
+		RepoProjectID     *int   `json:"repo_project_id"`
+		TargetBranch      string `json:"target_branch"`
+		AdditionalContext  string `json:"additional_context"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Default repo_project_id to project_id if not specified
 	repoProjectID := req.ProjectID
 	if req.RepoProjectID != nil {
 		repoProjectID = *req.RepoProjectID
 	}
 
-	// Default target branch to "main" if not specified
 	targetBranch := req.TargetBranch
 	if targetBranch == "" {
 		targetBranch = "main"
@@ -52,27 +68,54 @@ func FixIssueWithAgent(c *gin.Context) {
 		return
 	}
 
-	// Generate a unique fix session ID
+	// Generate unique session ID
 	sessionID := fmt.Sprintf("fix_%d_%d_%s", req.ProjectID, req.IssueIID, uuid.New().String()[:8])
 
-	// Return immediately with the session ID — frontend tracks progress via SSE
+	// Save initial session state to Redis
+	session := FixSession{
+		SessionID:     sessionID,
+		ProjectID:     req.ProjectID,
+		IssueIID:      req.IssueIID,
+		RepoProjectID: repoProjectID,
+		TargetBranch:  targetBranch,
+		Status:        "running",
+		Message:       "Starting fix agent...",
+		CreatedAt:     time.Now().Format(time.RFC3339),
+		UpdatedAt:     time.Now().Format(time.RFC3339),
+	}
+	saveFixSession(session)
+
+	// Return immediately with session ID
 	c.JSON(http.StatusAccepted, gin.H{
 		"message":    "fix agent started",
 		"session_id": sessionID,
 	})
 
-	// Run the fix agent in the background
+	// Run fix agent in background
 	go func() {
-		// Use a background context — not tied to the HTTP request
 		bgCtx := context.WithValue(context.Background(), "token", oauthToken)
-
-		// Create an event emitter that publishes to Redis (same pattern as test generation)
 		events := agent.NewAgentEmitter(bgCtx, sessionID)
 
-		// Map fix stages to emitter methods
 		eventCh := make(chan agent.FixEvent, 64)
 		go func() {
 			for fixEvent := range eventCh {
+				// Update session state in Redis
+				session.Status = fixEvent.Stage
+				session.Message = fixEvent.Message
+				session.UpdatedAt = time.Now().Format(time.RFC3339)
+
+				if fixEvent.Stage == "done" {
+					session.Status = "done"
+					session.MRURL = fixEvent.MRURL
+				}
+				if fixEvent.Stage == "error" {
+					session.Status = "error"
+					session.Error = fixEvent.Error
+				}
+
+				saveFixSession(session)
+
+				// Publish to Redis pub/sub for SSE
 				switch fixEvent.Stage {
 				case "done":
 					events.Done("%s | MR: %s", fixEvent.Message, fixEvent.MRURL)
@@ -84,7 +127,6 @@ func FixIssueWithAgent(c *gin.Context) {
 			}
 		}()
 
-		// Run the fix agent
 		log.Printf("[FixRoute] Starting fix agent: session=%s issue project=%d, issue_iid=%d, repo project=%d, target_branch=%s",
 			sessionID, req.ProjectID, req.IssueIID, repoProjectID, targetBranch)
 
@@ -94,4 +136,50 @@ func FixIssueWithAgent(c *gin.Context) {
 
 		log.Printf("[FixRoute] Fix agent completed: session=%s", sessionID)
 	}()
+}
+
+// GetFixStatus handles GET /agent/fix-status/:session_id
+// Returns the current state of a fix session.
+func GetFixStatus(c *gin.Context) {
+	sessionID := c.Param("session_id")
+	if sessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "session_id is required"})
+		return
+	}
+
+	session, err := getFixSession(sessionID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, session)
+}
+
+// saveFixSession persists a FixSession to Redis
+func saveFixSession(session FixSession) {
+	ctx := context.Background()
+	key := fmt.Sprintf("fix_session:%s", session.SessionID)
+	val, err := json.Marshal(session)
+	if err != nil {
+		log.Printf("[FixRoute] Failed to marshal fix session: %v", err)
+		return
+	}
+	// Store with 24 hour TTL
+	database.RedisClient.Set(ctx, key, val, 24*time.Hour)
+}
+
+// getFixSession retrieves a FixSession from Redis
+func getFixSession(sessionID string) (*FixSession, error) {
+	ctx := context.Background()
+	key := fmt.Sprintf("fix_session:%s", sessionID)
+	val, err := database.RedisClient.Get(ctx, key).Result()
+	if err != nil {
+		return nil, err
+	}
+	var session FixSession
+	if err := json.Unmarshal([]byte(val), &session); err != nil {
+		return nil, err
+	}
+	return &session, nil
 }
