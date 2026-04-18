@@ -13,6 +13,13 @@ services:
       - APP_ENV=${APP_ENV}
       - COOKIE_DOMAIN=${COOKIE_DOMAIN}
       - GITLAB_REDIRECT_URI=${GITLAB_REDIRECT_URI}
+      # Claude Code API configuration
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-}
+      # GitLab OAuth configuration
+      - GITLAB_BASE_URL=${GITLAB_BASE_URL:-https://gitlab.com}
+      - GITLAB_APPLICATION_ID=${GITLAB_APPLICATION_ID}
+      - GITLAB_SECRET=${GITLAB_SECRET}
     expose:
       - "3000"
     depends_on:
