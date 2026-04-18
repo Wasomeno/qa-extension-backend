@@ -200,22 +200,10 @@ func RunFixAgent(ctx context.Context, issueProjectID int, issueIID int, repoProj
 	)
 
 	claudeCmd.Dir = workDir
-	
-	// Build environment for Claude Code
-	claudeEnv := append(os.Environ(),
+	claudeCmd.Env = append(os.Environ(),
 		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+		"ANTHROPIC_API_KEY="+os.Getenv("ANTHROPIC_API_KEY"),
 	)
-	
-	// Add Anthropic/OpenCode API configuration
-	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
-		claudeEnv = append(claudeEnv, "ANTHROPIC_API_KEY="+apiKey)
-	}
-	if baseURL := os.Getenv("ANTHROPIC_BASE_URL"); baseURL != "" {
-		// Custom API endpoint (e.g., OpenCode)
-		claudeEnv = append(claudeEnv, "ANTHROPIC_BASE_URL="+baseURL)
-	}
-	
-	claudeCmd.Env = claudeEnv
 
 	stdout, err := claudeCmd.StdoutPipe()
 	if err != nil {
