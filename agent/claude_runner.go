@@ -184,7 +184,14 @@ func RunFixAgent(ctx context.Context, issueProjectID int, issueIID int, repoProj
 	// Step 5: Spawn Claude Code
 	publishEvent("agent_running", "Claude Code is analyzing and fixing the issue...")
 
-	claudeCmd := exec.CommandContext(timeoutCtx, "claude",
+	// Use full path to claude if available, otherwise rely on PATH
+	claudePath := "/usr/local/bin/claude"
+	if _, err := os.Stat(claudePath); err != nil {
+		// Fallback to PATH lookup
+		claudePath = "claude"
+	}
+
+	claudeCmd := exec.CommandContext(timeoutCtx, claudePath,
 		"--print",
 		"--session-id", sessionID,
 		"--output-format", "stream-json",
