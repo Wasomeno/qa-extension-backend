@@ -191,21 +191,25 @@ func RunFixAgent(ctx context.Context, issueProjectID int, issueIID int, repoProj
 		claudePath = "claude"
 	}
 
-	claudeCmd := exec.CommandContext(timeoutCtx, claudePath,
+	// Build the prompt
+	fixPrompt := buildFixPrompt(issueTitle, issueDescription, additionalContext)
+
+	claudeArgs := []string{
 		"--print",
-		"--session-id", sessionID,
 		"--output-format", "stream-json",
-		"--include-hook-events",
-		"--permission-mode", "bypassPermissions",
+		"--dangerously-skip-permissions",
 		"--no-session-persistence",
-		"--allowedTools", "Bash,Read,Edit,Write,NotebookRead,MultiEdit,TodoWrite,Glob,Grep",
-		"--disallowedTools", "WebFetch,WebSearch,Bash(git push*),Bash(git commit*)",
 		"--max-turns", "50",
 		"--system-prompt", FixSystemPrompt,
 		"--add-dir", workDir,
-		buildFixPrompt(issueTitle, issueDescription, additionalContext),
-	)
+		fixPrompt,
+	}
 
+	log.Printf("[FixAgent] Spawning Claude Code: %s %v", claudePath, claudeArgs)
+	log.Printf("[FixAgent] Working directory: %s", workDir)
+	log.Printf("[FixAgent] Prompt length: %d chars", len(fixPrompt))
+
+	claudeCmd := exec.CommandContext(timeoutCtx, claudePath, claudeArgs...)
 	claudeCmd.Dir = workDir
 	
 	// Build environment for Claude Code
@@ -242,6 +246,7 @@ func RunFixAgent(ctx context.Context, issueProjectID int, issueIID int, repoProj
 	}
 
 	log.Printf("[FixAgent] Claude Code started (PID: %d)", claudeCmd.Process.Pid)
+	publishEvent("agent_running", fmt.Sprintf("Claude Code started (PID: %d). Analyzing issue...", claudeCmd.Process.Pid))
 
 	// Stream stdout (Claude's JSON output) and stderr
 	go streamClaudeOutput(stdout, eventCh)
@@ -278,6 +283,9 @@ func RunFixAgent(ctx context.Context, issueProjectID int, issueIID int, repoProj
 		}
 		log.Printf("[FixAgent] Claude Code had errors but there are changes to push, proceeding...")
 	}
+
+	// Log what files were changed
+	logChangedFiles(workDir)
 
 	// Check if there are any changes to commit
 	hasChanges, err := hasUncommittedChanges(workDir)
@@ -436,6 +444,25 @@ func hasSourceCodeChanges(dir string) (bool, error) {
 	}
 
 	return false, nil
+}
+
+// logChangedFiles logs the list of changed files for debugging
+func logChangedFiles(dir string) {
+	cmd := exec.Command("git", "status", "--porcelain")
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("[FixAgent] Failed to list changed files: %v", err)
+		return
+	}
+
+	lines := strings.Split(string(output), "\n")
+	log.Printf("[FixAgent] Changed files (%d):", len(lines))
+	for _, line := range lines {
+		if line != "" {
+			log.Printf("[FixAgent]   %s", line)
+		}
+	}
 }
 
 // commitAndPush stages all changes, commits them, and pushes to the remote
