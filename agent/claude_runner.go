@@ -59,7 +59,7 @@ type FixEventChannel <-chan FixEvent
 // 6. Git commit and push
 // 7. Create merge request (in repoProjectID, targeting targetBranch)
 // 8. Cleanup
-func RunFixAgent(ctx context.Context, issueProjectID int, issueIID int, repoProjectID int, targetBranch string, eventCh chan<- FixEvent) {
+func RunFixAgent(ctx context.Context, issueProjectID int, issueIID int, repoProjectID int, targetBranch string, additionalContext string, eventCh chan<- FixEvent) {
 	defer close(eventCh)
 
 	publishEvent := func(stage, message string, extra ...map[string]string) {
@@ -203,7 +203,7 @@ func RunFixAgent(ctx context.Context, issueProjectID int, issueIID int, repoProj
 		"--max-turns", "50",
 		"--system-prompt", FixSystemPrompt,
 		"--add-dir", workDir,
-		fmt.Sprintf("Fix issue: %s\n\nIssue description:\n%s", issueTitle, issueDescription),
+		buildFixPrompt(issueTitle, issueDescription, additionalContext),
 	)
 
 	claudeCmd.Dir = workDir
@@ -462,4 +462,16 @@ func GetGitLabBaseURL() string {
 		return "https://gitlab.com"
 	}
 	return val
+}
+
+// buildFixPrompt constructs the full prompt for Claude Code
+func buildFixPrompt(issueTitle, issueDescription, additionalContext string) string {
+	prompt := fmt.Sprintf("Fix issue: %s\n\nIssue description:\n%s", issueTitle, issueDescription)
+	
+	if additionalContext != "" {
+		prompt += fmt.Sprintf("\n\nAdditional context/instructions:\n%s", additionalContext)
+	}
+	
+	prompt += "\n\nPlease fix this issue now. Remember to explore the codebase first before making changes."
+	return prompt
 }

@@ -17,10 +17,11 @@ import (
 // Starts a fix agent session that clones the repo, runs Claude Code, and creates an MR
 func FixIssueWithAgent(c *gin.Context) {
 	var req struct {
-		ProjectID      int  `json:"project_id" binding:"required"`       // Project where the issue exists
-		IssueIID       int  `json:"issue_iid" binding:"required"`        // Issue IID in the issue project
-		RepoProjectID  *int `json:"repo_project_id"`                     // Optional: Project containing the code to fix (defaults to project_id)
-		TargetBranch   string `json:"target_branch"`                      // Optional: Target branch for MR (defaults to "main")
+		ProjectID      int    `json:"project_id" binding:"required"`       // Project where the issue exists
+		IssueIID       int    `json:"issue_iid" binding:"required"`        // Issue IID in the issue project
+		RepoProjectID  *int   `json:"repo_project_id"`                     // Optional: Project containing the code to fix (defaults to project_id)
+		TargetBranch   string `json:"target_branch"`                       // Optional: Target branch for MR (defaults to "main")
+		AdditionalContext string `json:"additional_context"`               // Optional: Additional context or instructions for the agent
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -65,7 +66,7 @@ func FixIssueWithAgent(c *gin.Context) {
 	go func() {
 		log.Printf("[FixRoute] Starting fix agent: issue project=%d, issue_iid=%d, repo project=%d, target_branch=%s", 
 			req.ProjectID, req.IssueIID, repoProjectID, targetBranch)
-		agent.RunFixAgent(ctx, req.ProjectID, req.IssueIID, repoProjectID, targetBranch, eventCh)
+		agent.RunFixAgent(ctx, req.ProjectID, req.IssueIID, repoProjectID, targetBranch, req.AdditionalContext, eventCh)
 	}()
 
 	// Get the response writer's flusher
