@@ -17,6 +17,15 @@ FROM mcr.microsoft.com/playwright:v1.57.0-jammy
 
 WORKDIR /app
 
+# Install Node.js (required for Claude Code CLI)
+RUN apt-get update && apt-get install -y curl && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Install Claude Code CLI
+RUN npm install -g @anthropic-ai/claude-code
+
 # Copy the compiled Go binary
 COPY --from=builder /app/main .
 
@@ -29,6 +38,10 @@ COPY --from=builder /root/.cache/ms-playwright-go /root/.cache/ms-playwright-go
 # Crucial step: The official image stores browsers in /ms-playwright, not /root/.cache
 # We must tell playwright-go to look there for the browsers.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+# Set Anthropic API key (pass at runtime via docker-compose or -e flag)
+# ENV ANTHROPIC_API_KEY=your-api-key-here
+# ENV ANTHROPIC_BASE_URL=https://api.opencode.ai/v1
 
 EXPOSE 3000
 CMD ["./main"]
