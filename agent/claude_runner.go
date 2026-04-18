@@ -211,6 +211,7 @@ func RunFixAgent(ctx context.Context, issueProjectID int, issueIID int, repoProj
 	claudeArgs := []string{
 		"--print",
 		"--output-format", "stream-json",
+		"--verbose",
 		"--dangerously-skip-permissions",
 		"--no-session-persistence",
 		"--max-turns", "50",
@@ -484,14 +485,16 @@ func logChangedFiles(dir string) {
 
 // commitAndPush stages all changes, commits them, and pushes to the remote
 func commitAndPush(dir, branchName, commitMsg string) error {
-	// Ignore .claude directory (hooks config should never be committed)
-	ignorePath := filepath.Join(dir, ".claude")
-	if err := os.RemoveAll(ignorePath); err != nil {
-		log.Printf("[FixAgent] Warning: failed to remove .claude dir: %v", err)
+	// Remove files/dirs that should never be committed
+	for _, path := range []string{".claude", ".fix-system-prompt.txt", ".fix-user-prompt.txt"} {
+		fullPath := filepath.Join(dir, path)
+		if err := os.RemoveAll(fullPath); err != nil {
+			log.Printf("[FixAgent] Warning: failed to remove %s: %v", path, err)
+		}
 	}
 
-	// Stage all changes except .claude
-	cmd := exec.Command("git", "add", "-A", ":(exclude).claude")
+	// Stage all changes
+	cmd := exec.Command("git", "add", "-A")
 	cmd.Dir = dir
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git add failed: %w, output: %s", err, string(output))
