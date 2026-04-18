@@ -2,7 +2,6 @@ package routes
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -10,18 +9,20 @@ import (
 	"qa-extension-backend/agent"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 )
 
 // FixIssueWithAgent handles POST /agent/fix-issue
-// Starts a fix agent session that clones the repo, runs Claude Code, and creates an MR
+// Starts a background fix agent and returns immediately with a session ID.
+// Frontend tracks progress via the existing SSE stream at GET /api/stream.
 func FixIssueWithAgent(c *gin.Context) {
 	var req struct {
 		ProjectID         int    `json:"project_id" binding:"required"` // Project where the issue exists
 		IssueIID          int    `json:"issue_iid" binding:"required"`  // Issue IID in the issue project
-		RepoProjectID     *int   `json:"repo_project_id"`              // Optional: Project containing the code to fix (defaults to project_id)
-		TargetBranch      string `json:"target_branch"`                // Optional: Target branch for MR (defaults to "main")
-		AdditionalContext string `json:"additional_context"`           // Optional: Additional context or instructions for the agent
+		RepoProjectID     *int   `json:"repo_project_id"`              // Optional: Project containing the code to fix
+		TargetBranch      string `json:"target_branch"`                // Optional: Target branch for MR
+		AdditionalContext  string `json:"additional_context"`           // Optional: Extra instructions for the agent
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -51,51 +52,46 @@ func FixIssueWithAgent(c *gin.Context) {
 		return
 	}
 
-	// Use a background context for the agent so it keeps running even if the client disconnects.
-	// The agent has its own 10-minute timeout internally.
-	agentCtx := context.WithValue(context.Background(), "token", oauthToken)
+	// Generate a unique fix session ID
+	sessionID := fmt.Sprintf("fix_%d_%d_%s", req.ProjectID, req.IssueIID, uuid.New().String()[:8])
 
-	// Set SSE headers
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no") // Disable nginx buffering
+	// Return immediately with the session ID — frontend tracks progress via SSE
+	c.JSON(http.StatusAccepted, gin.H{
+		"message":    "fix agent started",
+		"session_id": sessionID,
+	})
 
-	// Create event channel
-	eventCh := make(chan agent.FixEvent, 64)
-
-	// Start the fix agent in a goroutine
+	// Run the fix agent in the background
 	go func() {
-		log.Printf("[FixRoute] Starting fix agent: issue project=%d, issue_iid=%d, repo project=%d, target_branch=%s",
-			req.ProjectID, req.IssueIID, repoProjectID, targetBranch)
-		agent.RunFixAgent(agentCtx, req.ProjectID, req.IssueIID, repoProjectID, targetBranch, req.AdditionalContext, eventCh)
+		// Use a background context — not tied to the HTTP request
+		bgCtx := context.WithValue(context.Background(), "token", oauthToken)
+
+		// Create an event emitter that publishes to Redis (same pattern as test generation)
+		events := agent.NewAgentEmitter(bgCtx, sessionID)
+
+		// Map fix stages to emitter methods
+		eventCh := make(chan agent.FixEvent, 64)
+		go func() {
+			for fixEvent := range eventCh {
+				switch fixEvent.Stage {
+				case "done":
+					events.Done("%s | MR: %s", fixEvent.Message, fixEvent.MRURL)
+				case "error":
+					events.Error(fixEvent.Error)
+				default:
+					events.Progress(fixEvent.Message)
+				}
+			}
+		}()
+
+		// Run the fix agent
+		log.Printf("[FixRoute] Starting fix agent: session=%s issue project=%d, issue_iid=%d, repo project=%d, target_branch=%s",
+			sessionID, req.ProjectID, req.IssueIID, repoProjectID, targetBranch)
+
+		events.Start("Starting fix for issue #%d in project %d...", req.IssueIID, req.ProjectID)
+
+		agent.RunFixAgent(bgCtx, req.ProjectID, req.IssueIID, repoProjectID, targetBranch, req.AdditionalContext, eventCh)
+
+		log.Printf("[FixRoute] Fix agent completed: session=%s", sessionID)
 	}()
-
-	// Get the response writer's flusher
-	flusher, ok := c.Writer.(http.Flusher)
-	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "streaming not supported"})
-		return
-	}
-
-	// Stream events to SSE
-	for event := range eventCh {
-		data, err := json.Marshal(event)
-		if err != nil {
-			log.Printf("[FixRoute] Failed to marshal event: %v", err)
-			continue
-		}
-
-		// Write SSE event
-		fmt.Fprintf(c.Writer, "event: fix_event\ndata: %s\n\n", data)
-		flusher.Flush()
-
-		// If this is a terminal event (done or error), we can stop after a brief delay
-		if event.Stage == "done" || event.Stage == "error" {
-			// Give a moment for the client to receive the final event
-			break
-		}
-	}
-
-	log.Printf("[FixRoute] SSE stream completed for project %d, issue %d", req.ProjectID, req.IssueIID)
 }
