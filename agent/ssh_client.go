@@ -2,10 +2,12 @@ package agent
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 )
 
 // SSHClient wraps an SSH client connection
@@ -59,17 +61,34 @@ func NewSSHClient() (*SSHClient, error) {
 
 // getSSHAuthMethod returns the SSH authentication method
 func getSSHAuthMethod() (ssh.AuthMethod, error) {
-	// Try private key first
+	// Try SSH agent first (same as command-line ssh)
+	if auth, err := sshAgentAuth(); err == nil {
+		return auth, nil
+	}
+
+	// Try private key from env or default paths
 	keyPath := os.Getenv("FIX_SSH_KEY_PATH")
 	if keyPath == "" {
-		// Default to ~/.ssh/id_rsa
+		// Try default key paths (same as ssh command)
 		home, err := os.UserHomeDir()
 		if err == nil {
-			keyPath = home + "/.ssh/id_rsa"
+			// Try common key files in order
+			defaultKeys := []string{
+				home + "/.ssh/id_ed25519",
+				home + "/.ssh/id_rsa",
+				home + "/.ssh/id_ecdsa",
+				home + "/.ssh/id_dsa",
+			}
+			for _, path := range defaultKeys {
+				if _, err := os.Stat(path); err == nil {
+					keyPath = path
+					break
+				}
+			}
 		}
 	}
 
-	if _, err := os.Stat(keyPath); err == nil {
+	if keyPath != "" {
 		key, err := os.ReadFile(keyPath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read SSH key: %w", err)
@@ -83,16 +102,30 @@ func getSSHAuthMethod() (ssh.AuthMethod, error) {
 		return ssh.PublicKeys(signer), nil
 	}
 
-	// Try password
-	password := os.Getenv("FIX_SSH_PASSWORD")
-	if password != "" {
+	// Try password from env
+	if password := os.Getenv("FIX_SSH_PASSWORD"); password != "" {
 		return ssh.Password(password), nil
 	}
 
-	// Try SSH agent
-	return ssh.PublicKeysCallback(func() ([]ssh.Signer, error) {
-		return nil, fmt.Errorf("no SSH authentication method available (set FIX_SSH_KEY_PATH or FIX_SSH_PASSWORD)")
-	}), nil
+	return nil, fmt.Errorf("no SSH authentication method available (tried SSH agent, default keys, and password)")
+}
+
+// sshAgentAuth tries to use the running SSH agent
+func sshAgentAuth() (ssh.AuthMethod, error) {
+	// Get SSH agent socket from environment
+	socket := os.Getenv("SSH_AUTH_SOCK")
+	if socket == "" {
+		return nil, fmt.Errorf("SSH_AUTH_SOCK not set")
+	}
+
+	// Connect to SSH agent
+	conn, err := net.Dial("unix", socket)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to SSH agent: %w", err)
+	}
+
+	agentClient := agent.NewClient(conn)
+	return ssh.PublicKeysCallback(agentClient.Signers), nil
 }
 
 // NewSession creates a new SSH session
