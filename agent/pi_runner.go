@@ -395,8 +395,13 @@ func runPiRPC(ctx context.Context, workDir, issueTitle, issueDesc, additionalCon
 
 	log.Printf("[PiRunner] Prompt response: %+v", response)
 
-	// Step 3: Wait for completion (the prompt command blocks until done)
-	// The client handles streaming events internally
+	// Step 3: Wait for agent to complete
+	log.Printf("[PiRunner] Waiting for agent to complete...")
+	agentEndErr := client.waitForAgentEnd(ctx, 10*time.Minute)
+	if agentEndErr != nil {
+		log.Printf("[PiRunner] Wait for agent_end failed: %v", agentEndErr)
+	}
+	log.Printf("[PiRunner] Agent completed processing")
 
 	// Step 4: Get last assistant text for logging
 	lastText, _ := client.getLastAssistantText(ctx)
@@ -414,6 +419,9 @@ type piRPCClient struct {
 	// Track pending requests
 	pendingRequests map[string]chan *PiRPCResponse
 	responseCh      chan *PiRPCResponse
+	
+	// Optional custom event handler
+	handleEventFunc func(*PiRPCResponse)
 }
 
 func newPiRPCClient(stdin io.Writer, stdout io.Reader, events chan<- FixEvent) *piRPCClient {
@@ -508,6 +516,11 @@ func (c *piRPCClient) readResponses() {
 
 // handleEvent processes events from Pi
 func (c *piRPCClient) handleEvent(response *PiRPCResponse) {
+	// Call custom handler if set (for waiting for agent_end)
+	if c.handleEventFunc != nil {
+		c.handleEventFunc(response)
+	}
+
 	// Extract event data and publish to FixEvent channel
 	var eventData map[string]interface{}
 	if len(response.Data) > 0 {
@@ -557,6 +570,40 @@ func (c *piRPCClient) getLastAssistantText(ctx context.Context) (string, error) 
 		}
 	}
 	return result.Text, nil
+}
+
+// waitForAgentEnd blocks until the agent finishes processing (agent_end event)
+func (c *piRPCClient) waitForAgentEnd(ctx context.Context, timeout time.Duration) error {
+	// Create a channel to receive agent_end event
+	agentEndCh := make(chan struct{}, 1)
+	
+	// Store the original handler
+	originalHandler := c.handleEvent
+	
+	// Replace handler with one that detects agent_end
+	c.handleEventFunc = func(response *PiRPCResponse) {
+		if response.Type == "agent_end" {
+			select {
+			case agentEndCh <- struct{}{}:
+			default:
+			}
+		}
+		// Also call original handler
+		if originalHandler != nil {
+			originalHandler(response)
+		}
+	}
+	
+	// Wait for agent_end or timeout
+	select {
+	case <-agentEndCh:
+		log.Printf("[PiRPC] Received agent_end event")
+		return nil
+	case <-time.After(timeout):
+		return fmt.Errorf("timeout waiting for agent_end after %v", timeout)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // buildPiFixPrompt constructs the prompt for Pi
@@ -719,12 +766,20 @@ func runPiRPCOverSSH(ctx context.Context, sshClient *SSHClient, workDir, issueTi
 		"message": fixPrompt,
 	}
 	
-	response, err := client.sendCommand(ctx, promptCmd)
+	_, err = client.sendCommand(ctx, promptCmd)
 	if err != nil {
 		return "", fmt.Errorf("failed to send prompt: %w", err)
 	}
 
-	log.Printf("[PiRunner] Prompt response: %+v", response)
+	log.Printf("[PiRunner] Prompt sent, waiting for agent to complete...")
+
+	// Wait for agent_end event (signals the agent has finished processing)
+	agentEndErr := client.waitForAgentEnd(ctx, 10*time.Minute)
+	if agentEndErr != nil {
+		log.Printf("[PiRunner] Wait for agent_end failed: %v", agentEndErr)
+	}
+
+	log.Printf("[PiRunner] Agent completed processing")
 
 	// Get last assistant text for logging
 	lastText, _ := client.getLastAssistantText(ctx)
