@@ -18,17 +18,47 @@ import (
 
 // FixSession represents the state of a fix-agent run, stored in Redis.
 type FixSession struct {
-	SessionID    string `json:"session_id"`
-	ProjectID    int    `json:"project_id"`
-	IssueIID     int    `json:"issue_iid"`
-	RepoProjectID int   `json:"repo_project_id"`
-	TargetBranch string `json:"target_branch"`
-	Status       string `json:"status"`    // "running", "done", "error"
-	Message      string `json:"message"`    // Current status message
-	MRURL        string `json:"mr_url"`     // Merge request URL (when done)
-	Error        string `json:"error"`      // Error message (when failed)
-	CreatedAt    string `json:"created_at"`
-	UpdatedAt    string `json:"updated_at"`
+	// Core identifiers
+	SessionID string `json:"sessionId"` // Unique session identifier
+
+	// Session description
+	Runner string `json:"runner"` // "claude" or "pi"
+
+	// Project information
+	ProjectID   int    `json:"projectId"`
+	ProjectName string `json:"projectName,omitempty"`
+
+	// Repository information (can be different from issue project)
+	RepoProjectID   int    `json:"repoProjectId"`
+	RepoProjectName string `json:"repoProjectName,omitempty"`
+
+	// Issue information
+	IssueIID    int    `json:"issueIid"`
+	IssueTitle  string `json:"issueTitle,omitempty"`
+	IssueURL    string `json:"issueUrl,omitempty"`
+	IssueDesc   string `json:"issueDescription,omitempty"`
+
+	// Target branch
+	TargetBranch string `json:"targetBranch"`
+
+	// Additional context provided
+	AdditionalContext string `json:"additionalContext,omitempty"`
+
+	// Current status
+	Status  string `json:"status"`  // "initialized", "running", "done", "error"
+	Message string `json:"message"` // Current status message
+
+	// Steps tracking
+	Steps       []agent.FixStep `json:"steps"`
+	CurrentStep int             `json:"currentStep"` // Index of current step (0-indexed), -1 if not started
+
+	// Result
+	MRURL string `json:"mrUrl,omitempty"` // Merge request URL (when done)
+	Error string `json:"error,omitempty"` // Error message (when failed)
+
+	// Timestamps
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
 }
 
 // FixIssueWithAgent handles POST /agent/fix-issue
@@ -83,25 +113,41 @@ func FixIssueWithAgent(c *gin.Context) {
 	// Generate unique session ID
 	sessionID := fmt.Sprintf("fix_%d_%d_%s", req.ProjectID, req.IssueIID, uuid.New().String()[:8])
 
+	// Initialize steps with pending status
+	initialSteps := make([]agent.FixStep, len(agent.DefaultFixSteps))
+	for i, step := range agent.DefaultFixSteps {
+		initialSteps[i] = agent.FixStep{
+			ID:          step.ID,
+			Title:       step.Title,
+			Description: step.Description,
+			Status:      agent.FixStepStatusPending,
+		}
+	}
+
 	// Save initial session state to Redis
 	session := FixSession{
-		SessionID:      sessionID,
-		ProjectID:      req.ProjectID,
-		IssueIID:       req.IssueIID,
-		RepoProjectID:  repoProjectID,
-		TargetBranch:   targetBranch,
-		Status:         "running",
-		Message:        fmt.Sprintf("Starting %s fix agent...", runner),
-		CreatedAt:      time.Now().Format(time.RFC3339),
-		UpdatedAt:      time.Now().Format(time.RFC3339),
+		SessionID:         sessionID,
+		Runner:            runner,
+		ProjectID:         req.ProjectID,
+		RepoProjectID:     repoProjectID,
+		IssueIID:          req.IssueIID,
+		TargetBranch:      targetBranch,
+		AdditionalContext: req.AdditionalContext,
+		Status:            "initialized",
+		Message:           fmt.Sprintf("Starting %s fix agent...", runner),
+		Steps:             initialSteps,
+		CurrentStep:       -1,
+		CreatedAt:         time.Now().Format(time.RFC3339),
+		UpdatedAt:         time.Now().Format(time.RFC3339),
 	}
 	saveFixSession(session)
 
 	// Return immediately with session ID
 	c.JSON(http.StatusAccepted, gin.H{
-		"message":    fmt.Sprintf("%s fix agent started", runner),
-		"session_id": sessionID,
-		"runner":     runner,
+		"message":   fmt.Sprintf("%s fix agent started", runner),
+		"sessionId": sessionID,
+		"runner":    runner,
+		"session":   session,
 	})
 
 	// Run fix agent in background
@@ -116,6 +162,21 @@ func FixIssueWithAgent(c *gin.Context) {
 				session.Status = fixEvent.Stage
 				session.Message = fixEvent.Message
 				session.UpdatedAt = time.Now().Format(time.RFC3339)
+
+				// Update steps if provided
+				if len(fixEvent.Steps) > 0 {
+					session.Steps = fixEvent.Steps
+				}
+				if fixEvent.CurrentStep >= 0 {
+					session.CurrentStep = fixEvent.CurrentStep
+				}
+
+				// Update session info if provided
+				if fixEvent.SessionInfo != nil {
+					session.ProjectName = fixEvent.SessionInfo.ProjectName
+					session.IssueTitle = fixEvent.SessionInfo.IssueTitle
+					session.IssueURL = fixEvent.SessionInfo.IssueURL
+				}
 
 				if fixEvent.Stage == "done" {
 					session.Status = "done"

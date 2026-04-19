@@ -31,13 +31,129 @@ type FixResult struct {
 	Error     string `json:"error,omitempty"`
 }
 
+// FixStepStatus represents the status of a fix step
+type FixStepStatus string
+
+const (
+	FixStepStatusPending    FixStepStatus = "pending"
+	FixStepStatusInProgress FixStepStatus = "in_progress"
+	FixStepStatusDone       FixStepStatus = "done"
+	FixStepStatusError      FixStepStatus = "error"
+	FixStepStatusSkipped    FixStepStatus = "skipped"
+)
+
+// FixStep represents a single step in the fix process
+type FixStep struct {
+	ID          string        `json:"id"`                    // Unique step identifier
+	Title       string        `json:"title"`                 // Short title for the step
+	Description string        `json:"description"`           // Detailed description of what this step does
+	Status      FixStepStatus `json:"status"`                // Current status of the step
+	StartedAt   string        `json:"startedAt,omitempty"`   // When the step started
+	CompletedAt string        `json:"completedAt,omitempty"` // When the step completed
+	Message     string        `json:"message,omitempty"`     // Additional message/details about the step
+}
+
+// FixSessionInfo contains metadata about the fix session
+type FixSessionInfo struct {
+	SessionID       string `json:"sessionId"`               // Unique session identifier
+	Runner          string `json:"runner"`                  // "claude" or "pi"
+	ProjectID       int    `json:"projectId"`               // GitLab project ID
+	ProjectName     string `json:"projectName,omitempty"`   // Human-readable project name
+	RepoProjectID   int    `json:"repoProjectId"`           // Repository project ID (if different)
+	IssueIID        int    `json:"issueIid"`                // Issue IID
+	IssueTitle      string `json:"issueTitle,omitempty"`    // Issue title
+	IssueURL        string `json:"issueUrl,omitempty"`      // Link to the issue
+	TargetBranch    string `json:"targetBranch"`            // Target branch for MR
+	AdditionalCtx   string `json:"additionalCtx,omitempty"` // Any additional context provided
+}
+
+// FixEvent represents an event emitted during the fix process
 type FixEvent struct {
+	// Core event fields
 	Stage     string `json:"stage"`
 	Message   string `json:"message"`
-	MRURL     string `json:"mr_url,omitempty"`
-	Error     string `json:"error,omitempty"`
-	LogLine   string `json:"log_line,omitempty"`
 	Timestamp string `json:"timestamp"`
+
+	// Result fields
+	MRURL string `json:"mr_url,omitempty"`
+	Error string `json:"error,omitempty"`
+
+	// Legacy field for backwards compatibility
+	LogLine string `json:"log_line,omitempty"`
+
+	// Session metadata
+	SessionInfo *FixSessionInfo `json:"sessionInfo,omitempty"`
+
+	// Steps tracking
+	Steps       []FixStep `json:"steps,omitempty"`
+	CurrentStep int       `json:"currentStep,omitempty"` // Index of current step (0-indexed)
+
+	// Step update (when updating a single step)
+	StepUpdate *FixStep `json:"stepUpdate,omitempty"`
+}
+
+// Default fix steps template
+var DefaultFixSteps = []FixStep{
+	{
+		ID:          "fetch_issue",
+		Title:       "Fetch Issue",
+		Description: "Retrieving the issue details from GitLab, including title, description, and metadata",
+		Status:      FixStepStatusPending,
+	},
+	{
+		ID:          "get_project",
+		Title:       "Get Project Info",
+		Description: "Fetching project details including repository URL and default branch configuration",
+		Status:      FixStepStatusPending,
+	},
+	{
+		ID:          "clone_repo",
+		Title:       "Clone Repository",
+		Description: "Cloning the repository to a temporary working directory for making changes",
+		Status:      FixStepStatusPending,
+	},
+	{
+		ID:          "create_branch",
+		Title:       "Create Branch",
+		Description: "Creating a new feature branch for the fix changes",
+		Status:      FixStepStatusPending,
+	},
+	{
+		ID:          "analyze_issue",
+		Title:       "Analyze Issue",
+		Description: "Understanding the issue and exploring the codebase to identify the root cause",
+		Status:      FixStepStatusPending,
+	},
+	{
+		ID:          "implement_fix",
+		Title:       "Implement Fix",
+		Description: "Making targeted code changes to resolve the issue",
+		Status:      FixStepStatusPending,
+	},
+	{
+		ID:          "verify_fix",
+		Title:       "Verify Fix",
+		Description: "Running tests and build checks to ensure the fix works correctly",
+		Status:      FixStepStatusPending,
+	},
+	{
+		ID:          "commit_changes",
+		Title:       "Commit Changes",
+		Description: "Committing the fix changes with a descriptive commit message",
+		Status:      FixStepStatusPending,
+	},
+	{
+		ID:          "push_branch",
+		Title:       "Push Branch",
+		Description: "Pushing the branch to the remote repository",
+		Status:      FixStepStatusPending,
+	},
+	{
+		ID:          "create_mr",
+		Title:       "Create Merge Request",
+		Description: "Creating a merge request with the fix changes for review",
+		Status:      FixStepStatusPending,
+	},
 }
 
 // GitUser represents the current GitLab user for git commits

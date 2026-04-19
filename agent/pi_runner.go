@@ -137,42 +137,166 @@ const PiFixSystemPrompt = `You are a software engineer fixing a GitLab issue. Fo
 - When done, simply stop. The system will create the MR automatically.`
 
 // RunFixWithPi orchestrates the fix using Pi coding agent in RPC mode.
+// stepManager manages the steps for a fix session
+type stepManager struct {
+	steps       []FixStep
+	currentStep int
+	eventCh     chan<- FixEvent
+	sessionInfo *FixSessionInfo
+}
+
+// newStepManager creates a new step manager with default steps
+func newStepManager(eventCh chan<- FixEvent, sessionInfo *FixSessionInfo) *stepManager {
+	// Make a copy of default steps with fresh timestamps
+	steps := make([]FixStep, len(DefaultFixSteps))
+	for i, step := range DefaultFixSteps {
+		steps[i] = FixStep{
+			ID:          step.ID,
+			Title:       step.Title,
+			Description: step.Description,
+			Status:      FixStepStatusPending,
+		}
+	}
+	return &stepManager{
+		steps:       steps,
+		currentStep: -1,
+		eventCh:     eventCh,
+		sessionInfo: sessionInfo,
+	}
+}
+
+// emitEvent emits a FixEvent to the event channel
+func (sm *stepManager) emitEvent(event FixEvent) {
+	event.Timestamp = time.Now().Format(time.RFC3339)
+	event.SessionInfo = sm.sessionInfo
+	event.Steps = sm.steps
+	select {
+	case sm.eventCh <- event:
+	case <-time.After(5 * time.Second):
+		log.Printf("[StepManager] WARNING: event channel blocked, skipping event")
+	}
+}
+
+// emitInitialEvent emits the initial session event with all steps in pending state
+func (sm *stepManager) emitInitialEvent() {
+	sm.emitEvent(FixEvent{
+		Stage:       "initialized",
+		Message:     "Fix session initialized",
+		Steps:       sm.steps,
+		CurrentStep: -1,
+	})
+}
+
+// startStep marks a step as in progress and emits an event
+func (sm *stepManager) startStep(stepID string, message string) {
+	for i := range sm.steps {
+		if sm.steps[i].ID == stepID {
+			sm.steps[i].Status = FixStepStatusInProgress
+			sm.steps[i].StartedAt = time.Now().Format(time.RFC3339)
+			sm.steps[i].Message = message
+			sm.currentStep = i
+			sm.emitEvent(FixEvent{
+				Stage:       stepID,
+				Message:     message,
+				Steps:       sm.steps,
+				CurrentStep: i,
+				StepUpdate:  &sm.steps[i],
+			})
+			return
+		}
+	}
+	log.Printf("[StepManager] WARNING: step %s not found", stepID)
+}
+
+// completeStep marks a step as done and emits an event
+func (sm *stepManager) completeStep(stepID string, message string) {
+	for i := range sm.steps {
+		if sm.steps[i].ID == stepID {
+			sm.steps[i].Status = FixStepStatusDone
+			sm.steps[i].CompletedAt = time.Now().Format(time.RFC3339)
+			if message != "" {
+				sm.steps[i].Message = message
+			}
+			sm.emitEvent(FixEvent{
+				Stage:       stepID,
+				Message:     message,
+				Steps:       sm.steps,
+				CurrentStep: i,
+				StepUpdate:  &sm.steps[i],
+			})
+			return
+		}
+	}
+}
+
+// failStep marks a step as failed and emits an error event
+func (sm *stepManager) failStep(stepID string, errMsg string) {
+	for i := range sm.steps {
+		if sm.steps[i].ID == stepID {
+			sm.steps[i].Status = FixStepStatusError
+			sm.steps[i].CompletedAt = time.Now().Format(time.RFC3339)
+			sm.steps[i].Message = errMsg
+			sm.emitEvent(FixEvent{
+				Stage:       "error",
+				Message:     errMsg,
+				Error:       errMsg,
+				Steps:       sm.steps,
+				CurrentStep: i,
+				StepUpdate:  &sm.steps[i],
+			})
+			return
+		}
+	}
+}
+
+// emitDone emits the final done event with MR URL
+func (sm *stepManager) emitDone(mrURL string) {
+	sm.emitEvent(FixEvent{
+		Stage:       "done",
+		Message:     "Fix complete! Merge request created.",
+		MRURL:       mrURL,
+		Steps:       sm.steps,
+		CurrentStep: len(sm.steps) - 1,
+	})
+}
+
+// emitError emits an error event
+func (sm *stepManager) emitError(stage string, errMsg string) {
+	sm.emitEvent(FixEvent{
+		Stage:   "error",
+		Message: errMsg,
+		Error:   errMsg,
+		Steps:   sm.steps,
+	})
+}
+
 // This function mirrors the structure of RunFixAgent but uses Pi instead of Claude Code CLI.
 func RunFixWithPi(ctx context.Context, issueProjectID int, issueIID int, repoProjectID int, targetBranch string, additionalContext string, eventCh chan<- FixEvent) {
 	defer close(eventCh)
 
-	// Setup event publishing helpers
-	publishEvent := func(stage, message string, extra ...map[string]string) {
-		event := FixEvent{Stage: stage, Message: message, Timestamp: time.Now().Format(time.RFC3339)}
-		if len(extra) > 0 {
-			if url, ok := extra[0]["mr_url"]; ok {
-				event.MRURL = url
-			}
-			if err, ok := extra[0]["error"]; ok {
-				event.Error = err
-			}
-		}
-		select {
-		case eventCh <- event:
-		case <-ctx.Done():
-		}
+	// Create session info
+	sessionID := uuid.New().String()
+	sessionInfo := &FixSessionInfo{
+		SessionID:     sessionID,
+		Runner:        "pi",
+		ProjectID:     issueProjectID,
+		RepoProjectID: repoProjectID,
+		IssueIID:      issueIID,
+		TargetBranch:  targetBranch,
+		AdditionalCtx: additionalContext,
 	}
 
-	publishError := func(stage string, err error) {
-		log.Printf("[PiRunner] ERROR at stage %s: %v", stage, err)
-		publishEvent(stage, err.Error(), map[string]string{"error": err.Error()})
-	}
+	// Create step manager
+	sm := newStepManager(eventCh, sessionInfo)
 
 	// Get auth token
 	token, ok := ctx.Value("token").(*oauth2.Token)
 	if !ok {
-		publishError("auth", fmt.Errorf("no GitLab token in context"))
+		sm.emitError("auth", "no GitLab token in context")
 		return
 	}
 	tokenCtx := context.WithValue(ctx, "token", token)
 
-	// Create session
-	sessionID := uuid.New().String()
 	workDir := filepath.Join(os.TempDir(), "qa-fix-pi-"+sessionID)
 
 	// Check for remote mode
@@ -184,11 +308,14 @@ func RunFixWithPi(ctx context.Context, issueProjectID int, issueIID int, repoPro
 	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// Emit initial event with all steps
+	sm.emitInitialEvent()
+
 	// Step 1: Fetch issue
-	publishEvent("fetching_issue", fmt.Sprintf("Fetching issue #%d from project %d...", issueIID, issueProjectID))
+	sm.startStep("fetch_issue", fmt.Sprintf("Fetching issue #%d from project %d...", issueIID, issueProjectID))
 	issue, err := GetIssue(tokenCtx, issueProjectID, int64(issueIID))
 	if err != nil {
-		publishError("fetching_issue", fmt.Errorf("failed to fetch issue: %w", err))
+		sm.failStep("fetch_issue", fmt.Sprintf("Failed to fetch issue: %v", err))
 		return
 	}
 	issueTitle := issue.Title
@@ -196,14 +323,20 @@ func RunFixWithPi(ctx context.Context, issueProjectID int, issueIID int, repoPro
 	if issueDesc == "" {
 		issueDesc = "No description provided."
 	}
+	// Update session info with issue details
+	sessionInfo.IssueTitle = issueTitle
+	sm.completeStep("fetch_issue", fmt.Sprintf("Fetched issue: %s", issueTitle))
 
 	// Step 2: Get project info
-	publishEvent("cloning_repo", fmt.Sprintf("Cloning repository from project %d...", repoProjectID))
+	sm.startStep("get_project", fmt.Sprintf("Getting project info for project %d...", repoProjectID))
 	project, err := GetProject(tokenCtx, repoProjectID)
 	if err != nil {
-		publishError("cloning_repo", fmt.Errorf("failed to get project: %w", err))
+		sm.failStep("get_project", fmt.Sprintf("Failed to get project: %v", err))
 		return
 	}
+	// Update session info with project details
+	sessionInfo.ProjectName = project.Name
+	sm.completeStep("get_project", fmt.Sprintf("Project: %s", project.Name))
 
 	// Build clone URL with token
 	cloneURL := project.HTTPURLToRepo
@@ -236,32 +369,34 @@ func RunFixWithPi(ctx context.Context, issueProjectID int, issueIID int, repoPro
 
 	// Execute based on mode
 	if remoteMode {
-		runPiFixRemote(timeoutCtx, eventCh, publishEvent, publishError, workDir, cloneURL, branchName,
+		runPiFixRemote(timeoutCtx, sm, workDir, cloneURL, branchName,
 			issueTitle, issueDesc, additionalContext, gitUserName, gitUserEmail, targetBranch,
 			tokenCtx, repoProjectID, issueIID, issueProjectID)
 	} else {
-		runPiFixLocal(timeoutCtx, eventCh, publishEvent, publishError, workDir, cloneURL, branchName,
+		runPiFixLocal(timeoutCtx, sm, workDir, cloneURL, branchName,
 			issueTitle, issueDesc, additionalContext, gitUserName, gitUserEmail, targetBranch,
 			tokenCtx, repoProjectID, issueIID, issueProjectID)
 	}
 }
 
 // runPiFixLocal executes the fix workflow locally using Pi in RPC mode
-func runPiFixLocal(ctx context.Context, eventCh chan<- FixEvent, publishEvent func(string, string, ...map[string]string), publishError func(string, error), workDir, cloneURL, branchName, issueTitle, issueDesc, additionalContext, gitUserName, gitUserEmail, targetBranch string, tokenCtx context.Context, repoProjectID, issueIID, issueProjectID int) {
+func runPiFixLocal(ctx context.Context, sm *stepManager, workDir, cloneURL, branchName, issueTitle, issueDesc, additionalContext, gitUserName, gitUserEmail, targetBranch string, tokenCtx context.Context, repoProjectID, issueIID, issueProjectID int) {
 	// Cleanup on exit
 	defer func() {
 		log.Printf("[PiRunner] Cleaning up work directory: %s", workDir)
 		os.RemoveAll(workDir)
 	}()
 
-	// Step 1: Clone repository
+	// Step 3: Clone repository
+	sm.startStep("clone_repo", fmt.Sprintf("Cloning repository to %s...", workDir))
 	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", cloneURL, workDir)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		publishError("cloning_repo", fmt.Errorf("git clone failed: %w, %s", err, string(output)))
+		sm.failStep("clone_repo", fmt.Sprintf("Git clone failed: %s", string(output)))
 		return
 	}
+	sm.completeStep("clone_repo", "Repository cloned successfully")
 
-	// Step 2: Configure git user
+	// Step 4: Configure git user
 	for _, args := range [][]string{
 		{"git", "config", "user.email", gitUserEmail},
 		{"git", "config", "user.name", gitUserName},
@@ -269,72 +404,89 @@ func runPiFixLocal(ctx context.Context, eventCh chan<- FixEvent, publishEvent fu
 		cmd := exec.Command(args[0], args[1:]...)
 		cmd.Dir = workDir
 		if output, err := cmd.CombinedOutput(); err != nil {
-			publishError("creating_branch", fmt.Errorf("git config failed: %w, %s", err, string(output)))
+			sm.failStep("create_branch", fmt.Sprintf("Git config failed: %s", string(output)))
 			return
 		}
 	}
 
-	// Step 3: Create branch
-	publishEvent("creating_branch", fmt.Sprintf("Creating branch %s...", branchName))
+	// Step 4: Create branch
+	sm.startStep("create_branch", fmt.Sprintf("Creating branch %s...", branchName))
 	cmd2 := exec.Command("git", "checkout", "-b", branchName)
 	cmd2.Dir = workDir
 	if output, err := cmd2.CombinedOutput(); err != nil {
-		publishError("creating_branch", fmt.Errorf("git checkout failed: %w, %s", err, string(output)))
+		sm.failStep("create_branch", fmt.Sprintf("Git checkout failed: %s", string(output)))
 		return
 	}
+	sm.completeStep("create_branch", fmt.Sprintf("Branch %s created", branchName))
 
-	// Step 4: Run Pi in RPC mode
-	publishEvent("agent_running", "Starting Pi coding agent...")
+	// Step 5: Analyze issue and implement fix (combined for Pi)
+	sm.startStep("analyze_issue", "Analyzing issue and exploring codebase...")
+	sm.startStep("implement_fix", "Implementing fix with Pi coding agent...")
 
-	piResult, summaryText, err := runPiRPCWithSummary(ctx, workDir, issueTitle, issueDesc, additionalContext, eventCh)
+	piResult, summaryText, err := runPiRPCWithSummary(ctx, workDir, issueTitle, issueDesc, additionalContext, sm.eventCh)
 	if err != nil {
-		publishError("agent_running", fmt.Errorf("Pi agent failed: %w", err))
+		sm.failStep("implement_fix", fmt.Sprintf("Pi agent failed: %v", err))
 		return
 	}
 
 	log.Printf("[PiRunner] Pi completed: %s", piResult)
+	sm.completeStep("analyze_issue", "Issue analysis complete")
+	sm.completeStep("implement_fix", fmt.Sprintf("Fix implemented: %s", piResult))
 
-	// Step 5: Check for changes
+	// Step 6: Verify fix
+	sm.startStep("verify_fix", "Verifying the fix...")
+	// Check for changes
 	hasChanges, _ := localHasChanges(workDir)
 	if !hasChanges {
-		publishError("pushing_changes", fmt.Errorf("Pi did not make any changes"))
+		sm.failStep("verify_fix", "Pi did not make any changes")
 		return
 	}
 	hasSource, _ := localHasSourceChanges(workDir)
 	if !hasSource {
-		publishError("pushing_changes", fmt.Errorf("Pi only made config changes, no source code fixes"))
+		sm.failStep("verify_fix", "Pi only made config changes, no source code fixes")
 		return
 	}
 
 	// Log changed files
 	logChangedFiles(workDir)
+	sm.completeStep("verify_fix", "Changes verified successfully")
 
-	// Step 6: Commit and push
-	publishEvent("pushing_changes", "Committing and pushing changes...")
+	// Step 7: Commit changes
+	sm.startStep("commit_changes", "Committing changes...")
 	commitMsg := fmt.Sprintf("fix: resolve issue #%d - %s", issueIID, issueTitle)
 	for _, args := range [][]string{
 		{"git", "add", "-A"},
 		{"git", "commit", "-m", commitMsg},
-		{"git", "push", "-u", "origin", branchName, "--force"},
 	} {
 		cmd := exec.Command(args[0], args[1:]...)
 		cmd.Dir = workDir
 		if output, err := cmd.CombinedOutput(); err != nil {
-			publishError("pushing_changes", fmt.Errorf("%s failed: %w, %s", args[0], err, string(output)))
+			sm.failStep("commit_changes", fmt.Sprintf("%s failed: %s", args[0], string(output)))
 			return
 		}
 	}
+	sm.completeStep("commit_changes", fmt.Sprintf("Committed: %s", commitMsg))
 
-	// Step 7: Create MR
-	publishEvent("creating_mr", fmt.Sprintf("Creating merge request in project %d...", repoProjectID))
+	// Step 8: Push branch
+	sm.startStep("push_branch", fmt.Sprintf("Pushing branch %s...", branchName))
+	cmd = exec.Command("git", "push", "-u", "origin", branchName, "--force")
+	cmd.Dir = workDir
+	if output, err := cmd.CombinedOutput(); err != nil {
+		sm.failStep("push_branch", fmt.Sprintf("Git push failed: %s", string(output)))
+		return
+	}
+	sm.completeStep("push_branch", fmt.Sprintf("Branch pushed to origin/%s", branchName))
+
+	// Step 9: Create MR
+	sm.startStep("create_mr", fmt.Sprintf("Creating merge request in project %d...", repoProjectID))
 	mrTitle := fmt.Sprintf("Fix: %s", issueTitle)
-	
+
 	// Build MR description with agent-generated summary
 	changesSection := "See commits for details."
 	if summaryText != "" {
 		changesSection = summaryText
 	}
-	
+
 	mrDesc := fmt.Sprintf(`## Summary
 
 Fixes issue #%d: %s
@@ -353,11 +505,14 @@ Issue: #%d (Project %d)
 
 	mr, err := CreateMergeRequest(tokenCtx, repoProjectID, branchName, targetBranch, mrTitle, mrDesc)
 	if err != nil {
-		publishError("creating_mr", fmt.Errorf("failed to create MR: %w", err))
+		sm.failStep("create_mr", fmt.Sprintf("Failed to create MR: %v", err))
 		return
 	}
 
-	publishEvent("done", "Fix complete! Merge request created.", map[string]string{"mr_url": mr.WebURL})
+	sm.completeStep("create_mr", fmt.Sprintf("MR created: %s", mr.WebURL))
+
+	// Emit final done event
+	sm.emitDone(mr.WebURL)
 }
 
 // runPiRPC starts Pi in RPC mode and communicates via JSON protocol
@@ -806,11 +961,11 @@ func buildPiFixPrompt(title, desc, ctx string) string {
 }
 
 // runPiFixRemote executes the fix workflow on a remote server via SSH using RPC mode
-func runPiFixRemote(ctx context.Context, eventCh chan<- FixEvent, publishEvent func(string, string, ...map[string]string), publishError func(string, error), workDir, cloneURL, branchName, issueTitle, issueDesc, additionalContext, gitUserName, gitUserEmail, targetBranch string, tokenCtx context.Context, repoProjectID, issueIID, issueProjectID int) {
+func runPiFixRemote(ctx context.Context, sm *stepManager, workDir, cloneURL, branchName, issueTitle, issueDesc, additionalContext, gitUserName, gitUserEmail, targetBranch string, tokenCtx context.Context, repoProjectID, issueIID, issueProjectID int) {
 	// Create SSH client
 	sshClient, err := NewSSHClient()
 	if err != nil {
-		publishError("cloning_repo", fmt.Errorf("failed to create SSH client: %w", err))
+		sm.failStep("clone_repo", fmt.Sprintf("Failed to create SSH client: %v", err))
 		return
 	}
 	defer sshClient.Close()
@@ -822,75 +977,90 @@ func runPiFixRemote(ctx context.Context, eventCh chan<- FixEvent, publishEvent f
 		sshClient.RunCommand("rm -rf " + workDir)
 	}()
 
-	// Step 1: Create work directory on remote
-	publishEvent("cloning_repo", "Setting up remote work directory...")
+	// Step 3: Clone repository on remote
+	sm.startStep("clone_repo", "Setting up remote work directory...")
 	if _, err := sshClient.RunCommand("mkdir -p " + workDir); err != nil {
-		publishError("cloning_repo", fmt.Errorf("failed to create remote directory: %w", err))
+		sm.failStep("clone_repo", fmt.Sprintf("Failed to create remote directory: %v", err))
 		return
 	}
 
-	// Step 2: Clone on remote
-	publishEvent("cloning_repo", "Cloning repository on remote server...")
+	sm.startStep("clone_repo", "Cloning repository on remote server...")
 	if output, err := sshClient.RunCommand(fmt.Sprintf("git clone --depth 1 %s %s", cloneURL, workDir)); err != nil {
-		publishError("cloning_repo", fmt.Errorf("git clone failed: %w, %s", err, string(output)))
+		sm.failStep("clone_repo", fmt.Sprintf("Git clone failed: %s", string(output)))
 		return
 	}
+	sm.completeStep("clone_repo", "Repository cloned on remote server")
 
-	// Step 3: Configure git user on remote
+	// Step 4: Configure git user on remote
 	if _, err := sshClient.RunCommandInDir(fmt.Sprintf("git config user.email '%s' && git config user.name '%s'", gitUserEmail, gitUserName), workDir); err != nil {
-		publishError("creating_branch", fmt.Errorf("git config failed: %w", err))
+		sm.failStep("create_branch", fmt.Sprintf("Git config failed: %v", err))
 		return
 	}
 
 	// Step 4: Create branch on remote
-	publishEvent("creating_branch", fmt.Sprintf("Creating branch %s...", branchName))
+	sm.startStep("create_branch", fmt.Sprintf("Creating branch %s...", branchName))
 	if _, err := sshClient.RunCommandInDir("git checkout -b "+branchName, workDir); err != nil {
-		publishError("creating_branch", fmt.Errorf("git checkout failed: %w", err))
+		sm.failStep("create_branch", fmt.Sprintf("Git checkout failed: %v", err))
 		return
 	}
+	sm.completeStep("create_branch", fmt.Sprintf("Branch %s created", branchName))
 
-	// Step 5: Run Pi in RPC mode over SSH
-	publishEvent("agent_running", "Starting Pi coding agent on remote server...")
+	// Step 5: Analyze issue and implement fix (combined for Pi)
+	sm.startStep("analyze_issue", "Analyzing issue and exploring codebase...")
+	sm.startStep("implement_fix", "Implementing fix with Pi coding agent on remote server...")
 
-	piResult, summaryText, err := runPiRPCOverSSH(ctx, sshClient, workDir, issueTitle, issueDesc, additionalContext, eventCh)
+	piResult, summaryText, err := runPiRPCOverSSH(ctx, sshClient, workDir, issueTitle, issueDesc, additionalContext, sm.eventCh)
 	if err != nil {
-		publishError("agent_running", fmt.Errorf("Pi agent failed: %w", err))
+		sm.failStep("implement_fix", fmt.Sprintf("Pi agent failed: %v", err))
 		return
 	}
 
 	log.Printf("[PiRunner] Pi remote completed: %s", piResult)
+	sm.completeStep("analyze_issue", "Issue analysis complete")
+	sm.completeStep("implement_fix", fmt.Sprintf("Fix implemented: %s", piResult))
 
-	// Step 6: Check for changes on remote
+	// Step 6: Verify fix
+	sm.startStep("verify_fix", "Verifying the fix...")
 	output, err := sshClient.RunCommandInDir("git status --porcelain", workDir)
 	if err != nil {
-		publishError("pushing_changes", fmt.Errorf("failed to check remote changes: %w", err))
+		sm.failStep("verify_fix", fmt.Sprintf("Failed to check remote changes: %v", err))
 		return
 	}
 	if len(strings.TrimSpace(string(output))) == 0 {
-		publishError("pushing_changes", fmt.Errorf("Pi did not make any changes to fix the issue"))
+		sm.failStep("verify_fix", "Pi did not make any changes to fix the issue")
 		return
 	}
 
 	log.Printf("[PiRunner] Remote changed files:\n%s", string(output))
+	sm.completeStep("verify_fix", "Changes verified successfully")
 
-	// Step 7: Commit and push on remote
-	publishEvent("pushing_changes", "Committing and pushing changes...")
+	// Step 7: Commit changes
+	sm.startStep("commit_changes", "Committing changes...")
 	commitMsg := fmt.Sprintf("fix: resolve issue #%d - %s", issueIID, issueTitle)
-	if _, err := sshClient.RunCommandInDir(fmt.Sprintf("git add -A && git commit -m '%s' && git push -u origin %s --force", commitMsg, branchName), workDir); err != nil {
-		publishError("pushing_changes", fmt.Errorf("git push failed: %w", err))
+	if _, err := sshClient.RunCommandInDir(fmt.Sprintf("git add -A && git commit -m '%s'", commitMsg), workDir); err != nil {
+		sm.failStep("commit_changes", fmt.Sprintf("Git commit failed: %v", err))
 		return
 	}
+	sm.completeStep("commit_changes", fmt.Sprintf("Committed: %s", commitMsg))
 
-	// Step 8: Create MR (local - GitLab API)
-	publishEvent("creating_mr", fmt.Sprintf("Creating merge request in project %d...", repoProjectID))
+	// Step 8: Push branch
+	sm.startStep("push_branch", fmt.Sprintf("Pushing branch %s...", branchName))
+	if _, err := sshClient.RunCommandInDir(fmt.Sprintf("git push -u origin %s --force", branchName), workDir); err != nil {
+		sm.failStep("push_branch", fmt.Sprintf("Git push failed: %v", err))
+		return
+	}
+	sm.completeStep("push_branch", fmt.Sprintf("Branch pushed to origin/%s", branchName))
+
+	// Step 9: Create MR
+	sm.startStep("create_mr", fmt.Sprintf("Creating merge request in project %d...", repoProjectID))
 	mrTitle := fmt.Sprintf("Fix: %s", issueTitle)
-	
+
 	// Build MR description with agent-generated summary
 	changesSection := "See commits for details."
 	if summaryText != "" {
 		changesSection = summaryText
 	}
-	
+
 	mrDesc := fmt.Sprintf(`## Summary
 
 Fixes issue #%d: %s
@@ -909,11 +1079,14 @@ Issue: #%d (Project %d)
 
 	mr, err := CreateMergeRequest(tokenCtx, repoProjectID, branchName, targetBranch, mrTitle, mrDesc)
 	if err != nil {
-		publishError("creating_mr", fmt.Errorf("failed to create MR: %w", err))
+		sm.failStep("create_mr", fmt.Sprintf("Failed to create MR: %v", err))
 		return
 	}
 
-	publishEvent("done", "Fix complete! Merge request created.", map[string]string{"mr_url": mr.WebURL})
+	sm.completeStep("create_mr", fmt.Sprintf("MR created: %s", mr.WebURL))
+
+	// Emit final done event
+	sm.emitDone(mr.WebURL)
 }
 
 // runPiRPCOverSSH runs Pi in RPC mode over an SSH connection and returns response + summary
