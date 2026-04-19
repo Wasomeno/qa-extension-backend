@@ -107,6 +107,7 @@ func main() {
 		protected.POST("/projects/:id/issues/:issue_id/children", routes.CreateChildIssue)
 		protected.DELETE("/projects/:id/issues/:issue_id/children/:child_id", routes.UnlinkChildIssue)
 		protected.GET("/projects/:id/members", routes.GetProjectMembers)
+		protected.GET("/projects/:id/branches", routes.GetProjectBranches)
 		protected.GET("/projects/:id/boards", routes.GetProjectBoards)
 		protected.GET("/projects/:id/knowledge-graphs", routes.ListKnowledgeGraphs)
 		protected.GET("/projects/:id/knowledge-graph", routes.GetKnowledgeGraph)

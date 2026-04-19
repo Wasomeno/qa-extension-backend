@@ -494,3 +494,31 @@ func GetProjectBoards(ginContext *gin.Context) {
 		"boards": boardResponses,
 	})
 }
+
+func GetProjectBranches(ginContext *gin.Context) {
+	token := ginContext.MustGet("token").(*oauth2.Token)
+	sessionID := ginContext.MustGet("session_id").(string)
+
+	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
+		return auth.UpdateSession(ctx, sessionID, t)
+	}
+
+	gitlabClient, err := client.GetClient(ginContext, token, tokenSaver)
+	if err != nil {
+		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create GitLab client: " + err.Error()})
+		ginContext.Abort()
+		return
+	}
+
+	projectID := ginContext.Param("id")
+	branches, _, err := gitlabClient.Branches.ListBranches(projectID, &gitlab.ListBranchesOptions{})
+	if err != nil {
+		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		ginContext.Abort()
+		return
+	}
+
+	ginContext.JSON(http.StatusOK, gin.H{
+		"branches": branches,
+	})
+}
