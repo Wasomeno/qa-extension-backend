@@ -577,10 +577,8 @@ func (c *piRPCClient) waitForAgentEnd(ctx context.Context, timeout time.Duration
 	// Create a channel to receive agent_end event
 	agentEndCh := make(chan struct{}, 1)
 	
-	// Store the original handler
-	originalHandler := c.handleEvent
-	
-	// Replace handler with one that detects agent_end
+	// Set a custom handler that detects agent_end
+	oldHandler := c.handleEventFunc
 	c.handleEventFunc = func(response *PiRPCResponse) {
 		if response.Type == "agent_end" {
 			select {
@@ -588,9 +586,9 @@ func (c *piRPCClient) waitForAgentEnd(ctx context.Context, timeout time.Duration
 			default:
 			}
 		}
-		// Also call original handler
-		if originalHandler != nil {
-			originalHandler(response)
+		// Call the old handler if it was set
+		if oldHandler != nil {
+			oldHandler(response)
 		}
 	}
 	
