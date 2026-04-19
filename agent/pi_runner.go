@@ -286,7 +286,7 @@ func runPiFixLocal(ctx context.Context, eventCh chan<- FixEvent, publishEvent fu
 	// Step 4: Run Pi in RPC mode
 	publishEvent("agent_running", "Starting Pi coding agent...")
 
-	piResult, err := runPiRPC(ctx, workDir, issueTitle, issueDesc, additionalContext, eventCh)
+	piResult, summaryText, err := runPiRPCWithSummary(ctx, workDir, issueTitle, issueDesc, additionalContext, eventCh)
 	if err != nil {
 		publishError("agent_running", fmt.Errorf("Pi agent failed: %w", err))
 		return
@@ -328,13 +328,20 @@ func runPiFixLocal(ctx context.Context, eventCh chan<- FixEvent, publishEvent fu
 	// Step 7: Create MR
 	publishEvent("creating_mr", fmt.Sprintf("Creating merge request in project %d...", repoProjectID))
 	mrTitle := fmt.Sprintf("Fix: %s", issueTitle)
+	
+	// Build MR description with agent-generated summary
+	changesSection := "See commits for details."
+	if summaryText != "" {
+		changesSection = summaryText
+	}
+	
 	mrDesc := fmt.Sprintf(`## Summary
 
 Fixes issue #%d: %s
 
 ## Changes
 
-This MR addresses the issue by implementing the required changes. See commits for details.
+%s
 
 ## Issue Link
 
@@ -342,7 +349,7 @@ Issue: #%d (Project %d)
 
 ---
 *This merge request was created by AI agent (Pi).*`,
-		issueIID, issueTitle, issueIID, issueProjectID)
+		issueIID, issueTitle, changesSection, issueIID, issueProjectID)
 
 	mr, err := CreateMergeRequest(tokenCtx, repoProjectID, branchName, targetBranch, mrTitle, mrDesc)
 	if err != nil {
@@ -457,6 +464,142 @@ func runPiRPC(ctx context.Context, workDir, issueTitle, issueDesc, additionalCon
 	log.Printf("[PiRunner] Pi response: %s", lastText)
 
 	return lastText, nil
+}
+
+// runPiRPCWithSummary runs Pi in RPC mode and returns both the response and a summary of changes
+func runPiRPCWithSummary(ctx context.Context, workDir, issueTitle, issueDesc, additionalContext string, eventCh chan<- FixEvent) (string, string, error) {
+	// Find Pi binary
+	piPath := piBinaryName
+	if customPath := os.Getenv("PI_BINARY_PATH"); customPath != "" {
+		piPath = customPath
+	}
+
+	// Build arguments for RPC mode
+	args := []string{
+		"--mode", "rpc",
+		"--cwd", workDir,
+	}
+
+	// Add model if specified
+	if model := os.Getenv("PI_MODEL"); model != "" {
+		args = append(args, "--model", model)
+	}
+
+	log.Printf("[PiRunner] Starting Pi RPC: %s %v", piPath, args)
+
+	// Create command
+	cmd := exec.CommandContext(ctx, piPath, args...)
+	cmd.Dir = workDir
+
+	// Setup stdin/stdout pipes
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create stdin pipe: %w", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create stdout pipe: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create stderr pipe: %w", err)
+	}
+
+	// Setup environment
+	cmd.Env = append(os.Environ(),
+		"PI_DISABLE_UPDATE_CHECK=1",
+	)
+	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
+		cmd.Env = append(cmd.Env, "ANTHROPIC_API_KEY="+apiKey)
+	}
+	if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" {
+		cmd.Env = append(cmd.Env, "OPENAI_API_KEY="+apiKey)
+	}
+
+	// Start the process
+	if err := cmd.Start(); err != nil {
+		return "", "", fmt.Errorf("failed to start Pi: %w", err)
+	}
+	log.Printf("[PiRunner] Pi started (PID: %d)", cmd.Process.Pid)
+
+	// Ensure cleanup on exit
+	defer func() {
+		stdin.Close()
+		cmd.Wait()
+	}()
+
+	// Start stderr reader in background
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			log.Printf("[PiRunner stderr] %s", scanner.Text())
+		}
+	}()
+
+	// Create JSON-RPC client
+	client := newPiRPCClient(stdin, stdout, eventCh)
+
+	// Step 1: Build the fix prompt
+	fixPrompt := buildPiFixPrompt(issueTitle, issueDesc, additionalContext)
+
+	// Step 2: Send prompt command
+	log.Printf("[PiRunner] Sending fix prompt to Pi...")
+	
+	promptCmd := map[string]interface{}{
+		"type":    "prompt",
+		"message": fixPrompt,
+	}
+	
+	response, err := client.sendCommand(ctx, promptCmd)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to send prompt: %w", err)
+	}
+
+	log.Printf("[PiRunner] Prompt response: %+v", response)
+
+	// Step 3: Wait for agent to complete
+	log.Printf("[PiRunner] Waiting for agent to complete...")
+	agentEndErr := client.waitForAgentEnd(ctx, 10*time.Minute)
+	if agentEndErr != nil {
+		log.Printf("[PiRunner] Wait for agent_end failed: %v", agentEndErr)
+	}
+	log.Printf("[PiRunner] Agent completed processing")
+
+	// Step 4: Get last assistant text for logging
+	lastText, _ := client.getLastAssistantText(ctx)
+	log.Printf("[PiRunner] Pi response: %s", lastText)
+
+	// Step 5: Ask for summary of changes
+	summaryPrompt := "Please provide a brief summary of the changes you made to fix this issue. " +
+		"Include: 1) A list of files that were modified, created, or deleted. " +
+		"2) A brief description of the key changes in each file. " +
+		"3) How these changes address the issue. " +
+		"Be concise and factual. Format your response as markdown."
+
+	summaryCmd := map[string]interface{}{
+		"type":    "prompt",
+		"message": summaryPrompt,
+	}
+
+	summaryResponse, err := client.sendCommand(ctx, summaryCmd)
+	if err != nil {
+		log.Printf("[PiRunner] Failed to get summary: %v", err)
+		return lastText, "", nil // Return without summary but don't fail
+	}
+
+	log.Printf("[PiRunner] Summary response: %+v", summaryResponse)
+
+	// Wait for summary to complete
+	agentEndErr = client.waitForAgentEnd(ctx, 2*time.Minute)
+	if agentEndErr != nil {
+		log.Printf("[PiRunner] Wait for summary agent_end failed: %v", agentEndErr)
+	}
+
+	// Get the summary text
+	summaryText, _ := client.getLastAssistantText(ctx)
+	log.Printf("[PiRunner] Summary: %s", summaryText)
+
+	return lastText, summaryText, nil
 }
 
 // piRPCClient handles JSON-RPC communication with Pi
@@ -709,7 +852,7 @@ func runPiFixRemote(ctx context.Context, eventCh chan<- FixEvent, publishEvent f
 	// Step 5: Run Pi in RPC mode over SSH
 	publishEvent("agent_running", "Starting Pi coding agent on remote server...")
 
-	piResult, err := runPiRPCOverSSH(ctx, sshClient, workDir, issueTitle, issueDesc, additionalContext, eventCh)
+	piResult, summaryText, err := runPiRPCOverSSH(ctx, sshClient, workDir, issueTitle, issueDesc, additionalContext, eventCh)
 	if err != nil {
 		publishError("agent_running", fmt.Errorf("Pi agent failed: %w", err))
 		return
@@ -741,13 +884,20 @@ func runPiFixRemote(ctx context.Context, eventCh chan<- FixEvent, publishEvent f
 	// Step 8: Create MR (local - GitLab API)
 	publishEvent("creating_mr", fmt.Sprintf("Creating merge request in project %d...", repoProjectID))
 	mrTitle := fmt.Sprintf("Fix: %s", issueTitle)
+	
+	// Build MR description with agent-generated summary
+	changesSection := "See commits for details."
+	if summaryText != "" {
+		changesSection = summaryText
+	}
+	
 	mrDesc := fmt.Sprintf(`## Summary
 
 Fixes issue #%d: %s
 
 ## Changes
 
-This MR addresses the issue by implementing the required changes. See commits for details.
+%s
 
 ## Issue Link
 
@@ -755,7 +905,7 @@ Issue: #%d (Project %d)
 
 ---
 *This merge request was created by AI agent (Pi).*`,
-		issueIID, issueTitle, issueIID, issueProjectID)
+		issueIID, issueTitle, changesSection, issueIID, issueProjectID)
 
 	mr, err := CreateMergeRequest(tokenCtx, repoProjectID, branchName, targetBranch, mrTitle, mrDesc)
 	if err != nil {
@@ -766,12 +916,12 @@ Issue: #%d (Project %d)
 	publishEvent("done", "Fix complete! Merge request created.", map[string]string{"mr_url": mr.WebURL})
 }
 
-// runPiRPCOverSSH runs Pi in RPC mode over an SSH connection
-func runPiRPCOverSSH(ctx context.Context, sshClient *SSHClient, workDir, issueTitle, issueDesc, additionalContext string, eventCh chan<- FixEvent) (string, error) {
+// runPiRPCOverSSH runs Pi in RPC mode over an SSH connection and returns response + summary
+func runPiRPCOverSSH(ctx context.Context, sshClient *SSHClient, workDir, issueTitle, issueDesc, additionalContext string, eventCh chan<- FixEvent) (string, string, error) {
 	// Create SSH session for Pi RPC
 	session, err := sshClient.NewSession()
 	if err != nil {
-		return "", fmt.Errorf("failed to create SSH session: %w", err)
+		return "", "", fmt.Errorf("failed to create SSH session: %w", err)
 	}
 	defer session.Close()
 
@@ -779,15 +929,15 @@ func runPiRPCOverSSH(ctx context.Context, sshClient *SSHClient, workDir, issueTi
 	// Note: Do NOT request PTY - it causes echo which breaks the JSON-RPC protocol
 	stdin, err := session.StdinPipe()
 	if err != nil {
-		return "", fmt.Errorf("failed to create stdin pipe: %w", err)
+		return "", "", fmt.Errorf("failed to create stdin pipe: %w", err)
 	}
 	stdout, err := session.StdoutPipe()
 	if err != nil {
-		return "", fmt.Errorf("failed to create stdout pipe: %w", err)
+		return "", "", fmt.Errorf("failed to create stdout pipe: %w", err)
 	}
 	stderr, err := session.StderrPipe()
 	if err != nil {
-		return "", fmt.Errorf("failed to create stderr pipe: %w", err)
+		return "", "", fmt.Errorf("failed to create stderr pipe: %w", err)
 	}
 
 	// Get model from env or use default
@@ -802,7 +952,7 @@ func runPiRPCOverSSH(ctx context.Context, sshClient *SSHClient, workDir, issueTi
 
 	// Start Pi on remote server
 	if err := session.Start(piCmd); err != nil {
-		return "", fmt.Errorf("failed to start Pi on remote: %w", err)
+		return "", "", fmt.Errorf("failed to start Pi on remote: %w", err)
 	}
 
 	// Start stderr reader in background
@@ -829,7 +979,7 @@ func runPiRPCOverSSH(ctx context.Context, sshClient *SSHClient, workDir, issueTi
 	
 	_, err = client.sendCommand(ctx, promptCmd)
 	if err != nil {
-		return "", fmt.Errorf("failed to send prompt: %w", err)
+		return "", "", fmt.Errorf("failed to send prompt: %w", err)
 	}
 
 	log.Printf("[PiRunner] Prompt sent, waiting for agent to complete...")
@@ -846,6 +996,36 @@ func runPiRPCOverSSH(ctx context.Context, sshClient *SSHClient, workDir, issueTi
 	lastText, _ := client.getLastAssistantText(ctx)
 	log.Printf("[PiRunner] Pi response: %s", lastText)
 
+	// Ask for summary of changes
+	summaryPrompt := "Please provide a brief summary of the changes you made to fix this issue. " +
+		"Include: 1) A list of files that were modified, created, or deleted. " +
+		"2) A brief description of the key changes in each file. " +
+		"3) How these changes address the issue. " +
+		"Be concise and factual. Format your response as markdown."
+
+	summaryCmd := map[string]interface{}{
+		"type":    "prompt",
+		"message": summaryPrompt,
+	}
+
+	_, err = client.sendCommand(ctx, summaryCmd)
+	if err != nil {
+		log.Printf("[PiRunner] Failed to get summary: %v", err)
+		return lastText, "", nil // Return without summary but don't fail
+	}
+
+	log.Printf("[PiRunner] Waiting for summary...")
+
+	// Wait for summary to complete
+	agentEndErr = client.waitForAgentEnd(ctx, 2*time.Minute)
+	if agentEndErr != nil {
+		log.Printf("[PiRunner] Wait for summary agent_end failed: %v", agentEndErr)
+	}
+
+	// Get the summary text
+	summaryText, _ := client.getLastAssistantText(ctx)
+	log.Printf("[PiRunner] Summary: %s", summaryText)
+
 	// Close stdin to signal we're done
 	stdin.Close()
 
@@ -854,6 +1034,6 @@ func runPiRPCOverSSH(ctx context.Context, sshClient *SSHClient, workDir, issueTi
 		log.Printf("[PiRunner] Pi session exited with error: %v", err)
 	}
 
-	return lastText, nil
+	return lastText, summaryText, nil
 }
 
