@@ -18,12 +18,47 @@ import (
 )
 
 const (
-	defaultPiTimeout   = 10 * time.Minute
-	piBranchPrefix     = "fix/issue-"
-	piDefaultBranch    = "main"
-	piRPCTimeout       = 30 * time.Second
-	piBinaryName       = "pi"
+	defaultPiTimeout = 10 * time.Minute
+	piDefaultBranch  = "main"
+	piRPCTimeout     = 30 * time.Second
+	piBinaryName     = "pi"
 )
+
+// slugify converts a string to a lowercase, dash-separated format suitable for branch names
+func slugify(s string) string {
+	// Convert to lowercase
+	s = strings.ToLower(s)
+	
+	// Replace spaces and underscores with dashes
+	s = strings.ReplaceAll(s, " ", "-")
+	s = strings.ReplaceAll(s, "_", "-")
+	
+	// Remove special characters, keep only alphanumeric and dashes
+	var result strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			result.WriteRune(r)
+		}
+	}
+	s = result.String()
+	
+	// Replace multiple consecutive dashes with single dash
+	for strings.Contains(s, "--") {
+		s = strings.ReplaceAll(s, "--", "-")
+	}
+	
+	// Trim dashes from start and end
+	s = strings.Trim(s, "-")
+	
+	// Limit length to 50 characters
+	if len(s) > 50 {
+		s = s[:50]
+		// Trim trailing dash if we cut in the middle
+		s = strings.TrimRight(s, "-")
+	}
+	
+	return s
+}
 
 // PiRunnerConfig holds configuration for the Pi runner
 type PiRunnerConfig struct {
@@ -196,7 +231,8 @@ func RunFixWithPi(ctx context.Context, issueProjectID int, issueIID int, repoPro
 		targetBranch = piDefaultBranch
 	}
 
-	branchName := fmt.Sprintf("%s%d", piBranchPrefix, issueIID)
+	// Create branch name from issue title: fix/issue-title-parsed-to-dash-format
+	branchName := fmt.Sprintf("fix/%s", slugify(issueTitle))
 
 	// Execute based on mode
 	if remoteMode {
@@ -291,9 +327,22 @@ func runPiFixLocal(ctx context.Context, eventCh chan<- FixEvent, publishEvent fu
 
 	// Step 7: Create MR
 	publishEvent("creating_mr", fmt.Sprintf("Creating merge request in project %d...", repoProjectID))
-	mrTitle := fmt.Sprintf("Fix: %s (Issue #%d)", issueTitle, issueIID)
-	mrDesc := fmt.Sprintf("Closes #%d.\n\nFixed by AI agent (Pi).\n\n**Source:** Issue #%d in project %d\n\n**Changes:** See commits on branch `%s`.",
-		issueIID, issueIID, issueProjectID, branchName)
+	mrTitle := fmt.Sprintf("Fix: %s", issueTitle)
+	mrDesc := fmt.Sprintf(`## Summary
+
+Fixes issue #%d: %s
+
+## Changes
+
+This MR addresses the issue by implementing the required changes. See commits for details.
+
+## Issue Link
+
+Issue: #%d (Project %d)
+
+---
+*This merge request was created by AI agent (Pi).*`,
+		issueIID, issueTitle, issueIID, issueProjectID)
 
 	mr, err := CreateMergeRequest(tokenCtx, repoProjectID, branchName, targetBranch, mrTitle, mrDesc)
 	if err != nil {
@@ -691,9 +740,22 @@ func runPiFixRemote(ctx context.Context, eventCh chan<- FixEvent, publishEvent f
 
 	// Step 8: Create MR (local - GitLab API)
 	publishEvent("creating_mr", fmt.Sprintf("Creating merge request in project %d...", repoProjectID))
-	mrTitle := fmt.Sprintf("Fix: %s (Issue #%d)", issueTitle, issueIID)
-	mrDesc := fmt.Sprintf("Closes #%d.\n\nFixed by AI agent (Pi).\n\n**Source:** Issue #%d in project %d\n\n**Changes:** See commits on branch `%s`.",
-		issueIID, issueIID, issueProjectID, branchName)
+	mrTitle := fmt.Sprintf("Fix: %s", issueTitle)
+	mrDesc := fmt.Sprintf(`## Summary
+
+Fixes issue #%d: %s
+
+## Changes
+
+This MR addresses the issue by implementing the required changes. See commits for details.
+
+## Issue Link
+
+Issue: #%d (Project %d)
+
+---
+*This merge request was created by AI agent (Pi).*`,
+		issueIID, issueTitle, issueIID, issueProjectID)
 
 	mr, err := CreateMergeRequest(tokenCtx, repoProjectID, branchName, targetBranch, mrTitle, mrDesc)
 	if err != nil {
