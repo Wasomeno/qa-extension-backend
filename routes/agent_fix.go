@@ -40,7 +40,8 @@ func FixIssueWithAgent(c *gin.Context) {
 		IssueIID          int    `json:"issue_iid" binding:"required"`
 		RepoProjectID     *int   `json:"repo_project_id"`
 		TargetBranch      string `json:"target_branch"`
-		AdditionalContext  string `json:"additional_context"`
+		AdditionalContext string `json:"additional_context"`
+		Runner            string `json:"runner"` // "claude" (default) or "pi"
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -55,6 +56,17 @@ func FixIssueWithAgent(c *gin.Context) {
 	targetBranch := req.TargetBranch
 	if targetBranch == "" {
 		targetBranch = "main"
+	}
+
+	// Default to "claude" if runner not specified
+	runner := req.Runner
+	if runner == "" {
+		runner = "claude"
+	}
+	// Validate runner value
+	if runner != "claude" && runner != "pi" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid runner value, must be 'claude' or 'pi'"})
+		return
 	}
 
 	token, ok := c.Get("token")
@@ -73,22 +85,23 @@ func FixIssueWithAgent(c *gin.Context) {
 
 	// Save initial session state to Redis
 	session := FixSession{
-		SessionID:     sessionID,
-		ProjectID:     req.ProjectID,
-		IssueIID:      req.IssueIID,
-		RepoProjectID: repoProjectID,
-		TargetBranch:  targetBranch,
-		Status:        "running",
-		Message:       "Starting fix agent...",
-		CreatedAt:     time.Now().Format(time.RFC3339),
-		UpdatedAt:     time.Now().Format(time.RFC3339),
+		SessionID:      sessionID,
+		ProjectID:      req.ProjectID,
+		IssueIID:       req.IssueIID,
+		RepoProjectID:  repoProjectID,
+		TargetBranch:   targetBranch,
+		Status:         "running",
+		Message:        fmt.Sprintf("Starting %s fix agent...", runner),
+		CreatedAt:      time.Now().Format(time.RFC3339),
+		UpdatedAt:      time.Now().Format(time.RFC3339),
 	}
 	saveFixSession(session)
 
 	// Return immediately with session ID
 	c.JSON(http.StatusAccepted, gin.H{
-		"message":    "fix agent started",
+		"message":    fmt.Sprintf("%s fix agent started", runner),
 		"session_id": sessionID,
+		"runner":     runner,
 	})
 
 	// Run fix agent in background
@@ -127,12 +140,12 @@ func FixIssueWithAgent(c *gin.Context) {
 			}
 		}()
 
-		log.Printf("[FixRoute] Starting fix agent: session=%s issue project=%d, issue_iid=%d, repo project=%d, target_branch=%s",
-			sessionID, req.ProjectID, req.IssueIID, repoProjectID, targetBranch)
+		log.Printf("[FixRoute] Starting %s fix agent: session=%s issue project=%d, issue_iid=%d, repo project=%d, target_branch=%s",
+			runner, sessionID, req.ProjectID, req.IssueIID, repoProjectID, targetBranch)
 
-		events.Start("Starting fix for issue #%d in project %d...", req.IssueIID, req.ProjectID)
+		events.Start("Starting %s fix for issue #%d in project %d...", runner, req.IssueIID, req.ProjectID)
 
-		agent.RunFixAgent(bgCtx, req.ProjectID, req.IssueIID, repoProjectID, targetBranch, req.AdditionalContext, eventCh)
+		agent.RunFixAgent(bgCtx, runner, req.ProjectID, req.IssueIID, repoProjectID, targetBranch, req.AdditionalContext, eventCh)
 
 		log.Printf("[FixRoute] Fix agent completed: session=%s", sessionID)
 	}()

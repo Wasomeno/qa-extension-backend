@@ -80,7 +80,21 @@ func runCommand(ctx context.Context, dir string, args ...string) ([]byte, error)
 	return cmd.CombinedOutput()
 }
 
-func RunFixAgent(ctx context.Context, issueProjectID int, issueIID int, repoProjectID int, targetBranch string, additionalContext string, eventCh chan<- FixEvent) {
+// RunFixAgent is the main entry point that routes to the appropriate runner based on the runner parameter.
+// runner can be "claude" (default) or "pi".
+func RunFixAgent(ctx context.Context, runner string, issueProjectID int, issueIID int, repoProjectID int, targetBranch string, additionalContext string, eventCh chan<- FixEvent) {
+	switch runner {
+	case "pi":
+		RunFixWithPi(ctx, issueProjectID, issueIID, repoProjectID, targetBranch, additionalContext, eventCh)
+	case "claude":
+		fallthrough
+	default:
+		RunFixWithClaude(ctx, issueProjectID, issueIID, repoProjectID, targetBranch, additionalContext, eventCh)
+	}
+}
+
+// RunFixWithClaude executes the fix using Claude Code CLI (original implementation)
+func RunFixWithClaude(ctx context.Context, issueProjectID int, issueIID int, repoProjectID int, targetBranch string, additionalContext string, eventCh chan<- FixEvent) {
 	defer close(eventCh)
 
 	publishEvent := func(stage, message string, extra ...map[string]string) {
