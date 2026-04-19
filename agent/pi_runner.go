@@ -715,13 +715,8 @@ func runPiRPCOverSSH(ctx context.Context, sshClient *SSHClient, workDir, issueTi
 	}
 	defer session.Close()
 
-	// Request a pseudo-terminal (some programs need it for proper I/O)
-	// Use a dumb terminal type to avoid any terminal-specific behavior
-	if err := session.RequestPty("dumb", 80, 40, nil); err != nil {
-		log.Printf("[PiRunner] Warning: could not request PTY: %v (continuing anyway)", err)
-	}
-
 	// Setup stdin/stdout pipes for RPC communication
+	// Note: Do NOT request PTY - it causes echo which breaks the JSON-RPC protocol
 	stdin, err := session.StdinPipe()
 	if err != nil {
 		return "", fmt.Errorf("failed to create stdin pipe: %w", err)
