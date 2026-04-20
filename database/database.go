@@ -151,6 +151,20 @@ func GenerateIssueCacheKey(labels, search, issueIds, assigneeId, assigneeIds, au
 	return key
 }
 
+// GenerateIssueCacheKeyOptimized creates a cache key including optimization parameters
+// This allows separate caching for list vs detail views and different field selections
+func GenerateIssueCacheKeyOptimized(
+	labels, search, issueIds, assigneeId, assigneeIds, authorId, state, projectIds string,
+	limit int,
+	viewType, includeChildren, fieldsParam string,
+) string {
+	// Include optimization params in cache key
+	key := fmt.Sprintf("l:%s|s:%s|i:%s|ai:%s|ais:%s|au:%s|st:%s|p:%s|lim:%d|vt:%s|ic:%s|f:%s",
+		labels, search, issueIds, assigneeId, assigneeIds, authorId, state, projectIds, limit,
+		viewType, includeChildren, fieldsParam)
+	return key
+}
+
 // BoardResponseCacheTTL is the TTL for cached board responses
 const BoardResponseCacheTTL = 2 * time.Minute
 

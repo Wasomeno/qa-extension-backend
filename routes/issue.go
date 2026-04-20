@@ -169,10 +169,9 @@ Use the exact structure below:
 	ginContext.JSON(http.StatusOK, gin.H{"message": "Issue completion Success", "issue_description": description.String()})
 }
 
-type IssueWithProject struct {
-	*gitlab.Issue
-	ProjectName string `json:"project_name"`
-}
+// ============================================================================
+// Response Structures - Optimized for List vs Detail Views
+// ============================================================================
 
 type ChildIssueItem struct {
 	ID  string `json:"id"`
@@ -184,9 +183,118 @@ type ChildIssueInfo struct {
 	Items  []ChildIssueItem `json:"items"`
 }
 
+// IssueWithProject - Full issue data with project name (for detail views)
+type IssueWithProject struct {
+	*gitlab.Issue
+	ProjectName string `json:"project_name"`
+}
+
+// IssueWithChild - Full issue with child hierarchy (existing structure for backward compatibility)
 type IssueWithChild struct {
 	IssueWithProject
 	Child ChildIssueInfo `json:"child"`
+}
+
+// IssueListItem - Lightweight structure optimized for list views
+// Excludes heavy fields like description, time_stats, task_completion_status, etc.
+type IssueListItem struct {
+	ID           int64                       `json:"id"`
+	IID          int64                       `json:"iid"`
+	Title        string                      `json:"title"`
+	State        string                      `json:"state"`
+	Confidential bool                        `json:"confidential"`
+	ProjectID    int64                       `json:"project_id"`
+	ProjectName  string                      `json:"project_name"`
+	Author       *gitlab.IssueAuthor         `json:"author"`
+	Assignees    []*gitlab.IssueAssignee     `json:"assignees"`
+	Labels       gitlab.Labels               `json:"labels"`
+	LabelDetails []*gitlab.LabelDetails      `json:"label_details,omitempty"`
+	Milestone    *gitlab.Milestone           `json:"milestone,omitempty"`
+	CreatedAt    *time.Time                  `json:"created_at"`
+	UpdatedAt    *time.Time                  `json:"updated_at"`
+	ClosedAt     *time.Time                  `json:"closed_at,omitempty"`
+	DueDate      *gitlab.ISOTime             `json:"due_date,omitempty"`
+	Weight       int64                       `json:"weight"`
+	Iteration    *gitlab.GroupIteration      `json:"iteration,omitempty"`
+	Epic         *gitlab.Epic                `json:"epic,omitempty"`
+	Child        ChildIssueInfo              `json:"child,omitempty"`
+}
+
+// ToIssueListItem converts a full IssueWithChild to lightweight IssueListItem
+func (iwc *IssueWithChild) ToIssueListItem(includeFields map[string]bool) IssueListItem {
+	item := IssueListItem{
+		ID:           iwc.ID,
+		IID:          iwc.IID,
+		Title:        iwc.Title,
+		State:        iwc.State,
+		Confidential: iwc.Confidential,
+		ProjectID:    iwc.ProjectID,
+		ProjectName:  iwc.ProjectName,
+		Author:       iwc.Author,
+		Assignees:    iwc.Assignees,
+		Labels:       iwc.Labels,
+		CreatedAt:    iwc.CreatedAt,
+		UpdatedAt:    iwc.UpdatedAt,
+		ClosedAt:     iwc.ClosedAt,
+		Weight:       iwc.Weight,
+	}
+
+	// Conditionally include optional fields
+	if includeFields["label_details"] || includeFields["all"] {
+		item.LabelDetails = iwc.LabelDetails
+	}
+	if includeFields["milestone"] || includeFields["all"] {
+		item.Milestone = iwc.Milestone
+	}
+	if includeFields["due_date"] || includeFields["all"] {
+		item.DueDate = iwc.DueDate
+	}
+	if includeFields["iteration"] || includeFields["all"] {
+		item.Iteration = iwc.Iteration
+	}
+	if includeFields["epic"] || includeFields["all"] {
+		item.Epic = iwc.Epic
+	}
+	if includeFields["child"] || includeFields["all"] {
+		item.Child = iwc.Child
+	}
+
+	return item
+}
+
+// ============================================================================
+// Helper Functions for Optimization
+// ============================================================================
+
+// parseFieldSelection parses the fields query parameter and returns a map of fields to include
+func parseFieldSelection(fieldsParam string, includeChildren bool) map[string]bool {
+	// Default: include all fields for backward compatibility
+	includeFields := make(map[string]bool)
+	
+	if fieldsParam == "" {
+		// No field selection = include all fields
+		includeFields["all"] = true
+		if includeChildren {
+			includeFields["child"] = true
+		}
+		return includeFields
+	}
+	
+	// Parse comma-separated fields
+	fields := strings.Split(fieldsParam, ",")
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field != "" {
+			includeFields[field] = true
+		}
+	}
+	
+	// Always include child if explicitly requested
+	if includeChildren {
+		includeFields["child"] = true
+	}
+	
+	return includeFields
 }
 
 func GetIssues(ginContext *gin.Context) {
@@ -194,6 +302,9 @@ func GetIssues(ginContext *gin.Context) {
 	token := ginContext.MustGet("token").(*oauth2.Token)
 	sessionID := ginContext.MustGet("session_id").(string)
 
+	// ========================================================================
+	// Query Parameters - Including new optimization params
+	// ========================================================================
 	labels := ginContext.Query("labels")
 	search := ginContext.Query("search")
 	issueIds := ginContext.Query("issue_ids")
@@ -202,6 +313,20 @@ func GetIssues(ginContext *gin.Context) {
 	authorId := ginContext.Query("author_id")
 	state := ginContext.Query("state")
 	projectIds := ginContext.Query("project_ids")
+	
+	// NEW: Optimization parameters
+	viewType := ginContext.Query("view_type")           // "list" (default) or "detail"
+	includeChildren := ginContext.Query("include_children") // "true" or "false" (default: "false" for performance)
+	fieldsParam := ginContext.Query("fields")            // comma-separated fields to include
+
+	// Determine if we need child issue data (GraphQL is expensive!)
+	fetchChildren := includeChildren == "true" || (viewType == "detail" && includeChildren != "false")
+	
+	// Determine response type: "list" = lightweight, "detail" = full data
+	isListView := viewType != "detail"
+
+	// Parse field selection for list views
+	includeFields := parseFieldSelection(fieldsParam, fetchChildren)
 
 	// Optional pagination limit (default 100)
 	limit := 100
@@ -211,9 +336,9 @@ func GetIssues(ginContext *gin.Context) {
 		}
 	}
 
-	// Generate cache key from query parameters
-	cacheKey := database.GenerateIssueCacheKey(labels, search, issueIds, assigneeId, assigneeIds, authorId, state, projectIds, limit)
-	ginContext.Header("X-Cache-Key", cacheKey) // Debug: see what cache key is generated
+	// Generate cache key from query parameters (including new params)
+	cacheKey := database.GenerateIssueCacheKeyOptimized(labels, search, issueIds, assigneeId, assigneeIds, authorId, state, projectIds, limit, viewType, includeChildren, fieldsParam)
+	ginContext.Header("X-Cache-Key", cacheKey)
 
 	// Check cache first - return immediately if found
 	// Note: Caching is skipped when projectIds is specified as those are user-specific queries
@@ -221,21 +346,40 @@ func GetIssues(ginContext *gin.Context) {
 		cacheStart := time.Now()
 		cachedData, cacheHit := database.GetCachedIssueResponse(ginContext, cacheKey)
 		if cacheHit {
-			var cached []IssueWithChild
-			if err := json.Unmarshal(cachedData, &cached); err == nil {
-				log.Printf("[CACHE DEBUG] CACHE HIT - serving %d issues from cache, time: %v", len(cached), time.Since(cacheStart))
-				ginContext.Header("X-Cache", "HIT")
-				ginContext.Header("X-Timing-Cache", time.Since(cacheStart).String())
-				ginContext.Header("X-Timing-Total", time.Since(startTime).String())
-				ginContext.JSON(http.StatusOK, cached)
-				return
+			// Try to unmarshal as IssueWithChild first (backward compatibility)
+			var cachedFull []IssueWithChild
+			if err := json.Unmarshal(cachedData, &cachedFull); err == nil {
+				if isListView {
+					// Convert to lightweight format
+					lightweight := make([]IssueListItem, len(cachedFull))
+					for i, issue := range cachedFull {
+						lightweight[i] = issue.ToIssueListItem(includeFields)
+					}
+					log.Printf("[CACHE DEBUG] CACHE HIT (list) - serving %d issues, time: %v", len(lightweight), time.Since(cacheStart))
+					ginContext.Header("X-Cache", "HIT")
+					ginContext.Header("X-Timing-Cache", time.Since(cacheStart).String())
+					ginContext.Header("X-Timing-Total", time.Since(startTime).String())
+					ginContext.Header("X-View-Type", "list")
+					ginContext.Header("X-Children-Fetched", "false")
+					ginContext.JSON(http.StatusOK, lightweight)
+					return
+				} else {
+					log.Printf("[CACHE DEBUG] CACHE HIT (detail) - serving %d issues, time: %v", len(cachedFull), time.Since(cacheStart))
+					ginContext.Header("X-Cache", "HIT")
+					ginContext.Header("X-Timing-Cache", time.Since(cacheStart).String())
+					ginContext.Header("X-Timing-Total", time.Since(startTime).String())
+					ginContext.Header("X-View-Type", "detail")
+					ginContext.JSON(http.StatusOK, cachedFull)
+					return
+				}
 			} else {
 				log.Printf("[CACHE DEBUG] CACHE GET OK but Unmarshal FAILED: %v", err)
 			}
+		} else {
+			log.Printf("[CACHE DEBUG] CACHE MISS - proceeding to REST/GraphQL")
+			ginContext.Header("X-Cache", "MISS")
+			ginContext.Header("X-Timing-Cache", time.Since(cacheStart).String())
 		}
-		log.Printf("[CACHE DEBUG] CACHE MISS - proceeding to REST/GraphQL")
-		ginContext.Header("X-Cache", "MISS")
-		ginContext.Header("X-Timing-Cache", time.Since(cacheStart).String())
 	}
 
 	opts := &gitlab.ListIssuesOptions{
@@ -360,66 +504,117 @@ func GetIssues(ginContext *gin.Context) {
 	var issuesWithChild []IssueWithChild
 
 	if len(issues) == 0 {
+		ginContext.Header("X-View-Type", viewType)
+		ginContext.Header("X-Children-Fetched", "false")
+		ginContext.Header("X-Timing-Total", time.Since(startTime).String())
 		ginContext.JSON(http.StatusOK, issuesWithChild)
 		return
 	}
 
-	// 1. Concurrent GraphQL Batching with Semaphore (Primary Strategy)
-	// GitLab has Max Query Complexity of ~250. Each issue with hierarchy widget uses ~14 complexity.
-	// Safe batch size: 250 / 14 ≈ 17. Using 10 to have more headroom under the limit.
-	const BatchSize = 10
-	const MaxConcurrency = 10  // Increased to process more batches in parallel
-	graphqlStart := time.Now()
-
-	graphqlEndpoint := "https://gitlab.com/api/graphql"
-	if url := os.Getenv("GITLAB_BASE_URL"); url != "" {
-		graphqlEndpoint = strings.TrimRight(url, "/") + "/api/graphql"
-	}
-
-	// Context data map - Use sync.Map for concurrent writes
-	type AuxData struct {
-		ProjectName string
-		ChildCount  int
-		ChildItems  []ChildIssueItem
-	}
-	auxMap := sync.Map{}
-
-	// Semaphore channels for concurrency control
-	sem := make(chan struct{}, MaxConcurrency)
-	var parseWg sync.WaitGroup
-	var parseMu sync.Mutex
-	var parseErrors []string
-
-	ctx := ginContext.Request.Context()
-
-	// Collect unique project IDs for Redis lookup
-	projectIDs := make(map[int64]bool)
-	for _, issue := range issues {
-		projectIDs[issue.ProjectID] = true
-	}
-
-	// Check Redis cache for project names first
-	projectNameCache := make(map[int64]string)
-	for projID := range projectIDs {
-		if name, ok := database.GetCachedProjectName(ctx, projID); ok {
-			projectNameCache[projID] = name
+	// ========================================================================
+	// OPTIMIZED PATH: Skip GraphQL if children not needed (list view default)
+	// ========================================================================
+	if !fetchChildren {
+		ginContext.Header("X-View-Type", viewType)
+		ginContext.Header("X-Children-Fetched", "false")
+		
+		// Fast path: Only fetch project names from Redis cache
+		graphqlStart := time.Now()
+		
+		ctx := ginContext.Request.Context()
+		
+		// Collect unique project IDs
+		projectIDs := make(map[int64]bool)
+		for _, issue := range issues {
+			projectIDs[issue.ProjectID] = true
 		}
-	}
 
-	// Iterate issues in chunks - each chunk launches a goroutine
-	for i := 0; i < len(issues); i += BatchSize {
-		parseWg.Add(1)
-		go func(batch []*gitlab.Issue) {
-			defer parseWg.Done()
-			sem <- struct{}{}        // Acquire semaphore
-			defer func() { <-sem }() // Release semaphore
+		// Fetch all project names from Redis cache (very fast)
+		projectNameCache := make(map[int64]string)
+		for projID := range projectIDs {
+			if name, ok := database.GetCachedProjectName(ctx, projID); ok {
+				projectNameCache[projID] = name
+			}
+		}
 
-			var queryBuilder strings.Builder
-			queryBuilder.WriteString("query {")
+		// Build lightweight response
+		for _, issue := range issues {
+			projectName := projectNameCache[issue.ProjectID]
+			
+			issuesWithChild = append(issuesWithChild, IssueWithChild{
+				IssueWithProject: IssueWithProject{
+					Issue:       issue,
+					ProjectName: projectName,
+				},
+				Child: ChildIssueInfo{Amount: 0, Items: []ChildIssueItem{}},
+			})
+		}
 
-			for _, issue := range batch {
-				gid := fmt.Sprintf("gid://gitlab/WorkItem/%d", issue.ID)
-				alias := fmt.Sprintf("item_%d", issue.ID)
+		ginContext.Header("X-Timing-GraphQL", time.Since(graphqlStart).String())
+		log.Printf("[OPTIMIZATION] Skipped GraphQL - fetched %d project names from Redis in %v", len(projectNameCache), time.Since(graphqlStart))
+	} else {
+		// ====================================================================
+		// FULL PATH: GraphQL batching for child issues (detail view)
+		// ====================================================================
+		ginContext.Header("X-View-Type", "detail")
+		ginContext.Header("X-Children-Fetched", "true")
+		
+		// 1. Concurrent GraphQL Batching with Semaphore
+		// GitLab has Max Query Complexity of ~250. Each issue with hierarchy widget uses ~14 complexity.
+		// Safe batch size: 250 / 14 ≈ 17. Using 10 to have more headroom under the limit.
+		const BatchSize = 10
+		const MaxConcurrency = 10
+		graphqlStart := time.Now()
+
+		graphqlEndpoint := "https://gitlab.com/api/graphql"
+		if url := os.Getenv("GITLAB_BASE_URL"); url != "" {
+			graphqlEndpoint = strings.TrimRight(url, "/") + "/api/graphql"
+		}
+
+		// Context data map - Use sync.Map for concurrent writes
+		type AuxData struct {
+			ProjectName string
+			ChildCount  int
+			ChildItems  []ChildIssueItem
+		}
+		auxMap := sync.Map{}
+
+		// Semaphore channels for concurrency control
+		sem := make(chan struct{}, MaxConcurrency)
+		var parseWg sync.WaitGroup
+		var parseMu sync.Mutex
+		var parseErrors []string
+
+		ctx := ginContext.Request.Context()
+
+		// Collect unique project IDs for Redis lookup
+		projectIDs := make(map[int64]bool)
+		for _, issue := range issues {
+			projectIDs[issue.ProjectID] = true
+		}
+
+		// Check Redis cache for project names first
+		projectNameCache := make(map[int64]string)
+		for projID := range projectIDs {
+			if name, ok := database.GetCachedProjectName(ctx, projID); ok {
+				projectNameCache[projID] = name
+			}
+		}
+
+		// Iterate issues in chunks - each chunk launches a goroutine
+		for i := 0; i < len(issues); i += BatchSize {
+			parseWg.Add(1)
+			go func(batch []*gitlab.Issue) {
+				defer parseWg.Done()
+				sem <- struct{}{}        // Acquire semaphore
+				defer func() { <-sem }() // Release semaphore
+
+				var queryBuilder strings.Builder
+				queryBuilder.WriteString("query {")
+
+				for _, issue := range batch {
+					gid := fmt.Sprintf("gid://gitlab/WorkItem/%d", issue.ID)
+					alias := fmt.Sprintf("item_%d", issue.ID)
 
 				queryBuilder.WriteString(fmt.Sprintf(`
 				%s: workItem(id: "%s") {
@@ -520,91 +715,119 @@ func GetIssues(ginContext *gin.Context) {
 	parseWg.Wait()
 	ginContext.Header("X-Timing-GraphQL", time.Since(graphqlStart).String())
 
-	// Add debug header if any errors occurred
-	if len(parseErrors) > 0 {
-		ginContext.Header("X-Debug-GraphQL-Status", strings.Join(parseErrors, "; "))
+		// Add debug header if any errors occurred
+		if len(parseErrors) > 0 {
+			ginContext.Header("X-Debug-GraphQL-Status", strings.Join(parseErrors, "; "))
+		} else {
+			ginContext.Header("X-Debug-GraphQL-Status", "Success")
+		}
+
+		// 2. Construct Final Response (With REST Fallback)
+		// Use pre-fetched Redis cache first, then in-memory cache, then REST fallback
+		projectCache := sync.Map{}
+		var cacheWg sync.WaitGroup
+
+		for _, issue := range issues {
+			// Retrieve from sync.Map
+			var aux AuxData
+			if v, ok := auxMap.Load(issue.ID); ok {
+				aux = v.(AuxData)
+			}
+
+			// Validation: Ensure ChildItems is non-nil
+			if aux.ChildItems == nil {
+				aux.ChildItems = []ChildIssueItem{}
+			}
+
+			// Fallback: If ProjectName is missing from GraphQL, try Redis cache first, then in-memory, then REST
+			finalProjectName := aux.ProjectName
+			if finalProjectName == "" {
+				// Check Redis cache first
+				if name, ok := projectNameCache[issue.ProjectID]; ok {
+					finalProjectName = name
+				} else if cached, ok := projectCache.Load(issue.ProjectID); ok {
+					// Fallback to in-memory cache
+					finalProjectName = cached.(string)
+				} else {
+					// Fetch via REST and cache in parallel
+					cacheWg.Add(1)
+					go func(projID interface{}) {
+						defer cacheWg.Done()
+						project, _, err := gitlabClient.Projects.GetProject(projID, nil)
+						if err == nil {
+							projectCache.Store(projID, project.NameWithNamespace)
+						}
+					}(issue.ProjectID)
+				}
+			}
+
+			issuesWithChild = append(issuesWithChild, IssueWithChild{
+				IssueWithProject: IssueWithProject{
+					Issue:       issue,
+					ProjectName: finalProjectName,
+				},
+				Child: ChildIssueInfo{
+					Amount: aux.ChildCount,
+					Items:  aux.ChildItems,
+				},
+			})
+		}
+		cacheWg.Wait()
+
+		// Populate finalProjectName from cache for any that were fetched in parallel
+		for i, iwc := range issuesWithChild {
+			if iwc.ProjectName == "" {
+				if cached, ok := projectCache.Load(issuesWithChild[i].ProjectID); ok {
+					issuesWithChild[i].ProjectName = cached.(string)
+				}
+			}
+		}
+	} // end of else (fetchChildren == true)
+
+	// ========================================================================
+	// 3. Response Transformation - Convert to lightweight format for list views
+	// ========================================================================
+	var response interface{} = issuesWithChild
+	
+	if isListView {
+		// Convert to lightweight format
+		lightweight := make([]IssueListItem, len(issuesWithChild))
+		for i, issue := range issuesWithChild {
+			lightweight[i] = issue.ToIssueListItem(includeFields)
+		}
+		response = lightweight
+		
+		// Cache the lightweight response separately
+		marshalStart := time.Now()
+		if data, err := json.Marshal(lightweight); err == nil {
+			cacheWriteStart := time.Now()
+			if cacheErr := database.SetCachedIssueResponse(context.Background(), cacheKey, data); cacheErr != nil {
+				ginContext.Header("X-Cache-Error", cacheErr.Error())
+			}
+			ginContext.Header("X-Timing-CacheWrite", time.Since(cacheWriteStart).String())
+			ginContext.Header("X-Timing-JSONMarshal", time.Since(marshalStart).String())
+			ginContext.Header("X-Issues-Count", fmt.Sprintf("%d", len(lightweight)))
+			ginContext.Header("X-Response-Size", fmt.Sprintf("%d bytes", len(data)))
+			ginContext.Header("X-Redis-Key", database.GetRedisKeyForDebug(cacheKey))
+		}
 	} else {
-		ginContext.Header("X-Debug-GraphQL-Status", "Success")
-	}
-
-	// 2. Construct Final Response (With REST Fallback)
-	// Use pre-fetched Redis cache first, then in-memory cache, then REST fallback
-	projectCache := sync.Map{}
-	var cacheWg sync.WaitGroup
-
-	for _, issue := range issues {
-		// Retrieve from sync.Map
-		var aux AuxData
-		if v, ok := auxMap.Load(issue.ID); ok {
-			aux = v.(AuxData)
-		}
-
-		// Validation: Ensure ChildItems is non-nil
-		if aux.ChildItems == nil {
-			aux.ChildItems = []ChildIssueItem{}
-		}
-
-		// Fallback: If ProjectName is missing from GraphQL, try Redis cache first, then in-memory, then REST
-		finalProjectName := aux.ProjectName
-		if finalProjectName == "" {
-			// Check Redis cache first
-			if name, ok := projectNameCache[issue.ProjectID]; ok {
-				finalProjectName = name
-			} else if cached, ok := projectCache.Load(issue.ProjectID); ok {
-				// Fallback to in-memory cache
-				finalProjectName = cached.(string)
-			} else {
-				// Fetch via REST and cache in parallel
-				cacheWg.Add(1)
-				go func(projID interface{}) {
-					defer cacheWg.Done()
-					project, _, err := gitlabClient.Projects.GetProject(projID, nil)
-					if err == nil {
-						projectCache.Store(projID, project.NameWithNamespace)
-					}
-				}(issue.ProjectID)
+		// Cache the full response
+		marshalStart := time.Now()
+		if data, err := json.Marshal(issuesWithChild); err == nil {
+			cacheWriteStart := time.Now()
+			if cacheErr := database.SetCachedIssueResponse(context.Background(), cacheKey, data); cacheErr != nil {
+				ginContext.Header("X-Cache-Error", cacheErr.Error())
 			}
+			ginContext.Header("X-Timing-CacheWrite", time.Since(cacheWriteStart).String())
+			ginContext.Header("X-Timing-JSONMarshal", time.Since(marshalStart).String())
+			ginContext.Header("X-Issues-Count", fmt.Sprintf("%d", len(issuesWithChild)))
+			ginContext.Header("X-Response-Size", fmt.Sprintf("%d bytes", len(data)))
+			ginContext.Header("X-Redis-Key", database.GetRedisKeyForDebug(cacheKey))
 		}
-
-		issuesWithChild = append(issuesWithChild, IssueWithChild{
-			IssueWithProject: IssueWithProject{
-				Issue:       issue,
-				ProjectName: finalProjectName,
-			},
-			Child: ChildIssueInfo{
-				Amount: aux.ChildCount,
-				Items:  aux.ChildItems,
-			},
-		})
-	}
-	cacheWg.Wait()
-
-	// Populate finalProjectName from cache for any that were fetched in parallel
-	for i, iwc := range issuesWithChild {
-		if iwc.ProjectName == "" {
-			if cached, ok := projectCache.Load(issuesWithChild[i].ProjectID); ok {
-				issuesWithChild[i].ProjectName = cached.(string)
-			}
-		}
-	}
-
-	// Cache the response synchronously for debugging
-	marshalStart := time.Now()
-	if data, err := json.Marshal(issuesWithChild); err == nil {
-		cacheWriteStart := time.Now()
-		// Use context.Background() - Gin context may be cancelled after response starts
-		if cacheErr := database.SetCachedIssueResponse(context.Background(), cacheKey, data); cacheErr != nil {
-			ginContext.Header("X-Cache-Error", cacheErr.Error())
-		}
-		ginContext.Header("X-Timing-CacheWrite", time.Since(cacheWriteStart).String())
-		ginContext.Header("X-Timing-JSONMarshal", time.Since(marshalStart).String())
-		ginContext.Header("X-Issues-Count", fmt.Sprintf("%d", len(issuesWithChild)))
-		ginContext.Header("X-Response-Size", fmt.Sprintf("%d bytes", len(data)))
-		ginContext.Header("X-Redis-Key", database.GetRedisKeyForDebug(cacheKey))
 	}
 
 	ginContext.Header("X-Timing-Total", time.Since(startTime).String())
-	ginContext.JSON(http.StatusOK, issuesWithChild)
+	ginContext.JSON(http.StatusOK, response)
 }
 
 func GetIssueComments(ginContext *gin.Context) {
