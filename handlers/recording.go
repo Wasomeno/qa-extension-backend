@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -50,9 +51,17 @@ func getProjectName(c *gin.Context, projectID string) string {
 }
 
 // getProjectDetails fetches comprehensive project information from GitLab API
+// Uses Redis cache to avoid repeated GitLab API calls (5 min TTL)
 func getProjectDetails(c *gin.Context, projectID string) *models.ProjectDetails {
 	if projectID == "" {
 		return nil
+	}
+
+	ctx := context.Background()
+
+	// Check cache first
+	if cached, ok := database.GetCachedProjectDetails(ctx, projectID); ok {
+		return cached
 	}
 
 	token, exists := c.Get("token")
@@ -102,6 +111,9 @@ func getProjectDetails(c *gin.Context, projectID string) *models.ProjectDetails 
 			WebURL:    project.Namespace.WebURL,
 		}
 	}
+
+	// Cache the result for future requests
+	database.SetCachedProjectDetails(ctx, projectID, details)
 
 	return details
 }
@@ -199,6 +211,7 @@ func ListRecordings(c *gin.Context) {
 
 	userID, _ := identity.GetCurrentUserID(c)
 
+	// Step 1: Get recording IDs from Redis sets
 	var ids []string
 	var err error
 
@@ -218,29 +231,56 @@ func ListRecordings(c *gin.Context) {
 		return
 	}
 
+	// Step 2: OPTIMIZATION - Batch fetch recordings with MGet instead of N+1 GETs
+	// This reduces Redis round-trips from N calls to 1 call
+	if len(ids) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"data":       []models.TestRecording{},
+			"pagination": gin.H{"page": page, "limit": limit, "total": 0, "totalPages": 0},
+		})
+		return
+	}
+
+	keys := make([]string, len(ids))
+	for i, id := range ids {
+		keys[i] = fmt.Sprintf("recording:%s", id)
+	}
+
+	vals, err := database.RedisClient.MGet(ctx, keys...).Result()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list recordings"})
+		return
+	}
+
+	// Step 3: Parse and filter recordings
 	var recordings []models.TestRecording
 	processedIDs := make(map[string]bool)
 
-	for _, id := range ids {
+	for i, val := range vals {
+		if val == nil {
+			continue
+		}
+
+		id := ids[i]
 		if processedIDs[id] {
 			continue
 		}
-		val, err := database.RedisClient.Get(ctx, fmt.Sprintf("recording:%s", id)).Result()
-		if err == nil {
-			var r models.TestRecording
-			if json.Unmarshal([]byte(val), &r) == nil {
-				// Filter for current user or legacy
-				if userID == 0 || r.CreatorID == 0 || r.CreatorID == userID {
-					recordings = append(recordings, r)
-					processedIDs[id] = true
-				}
-			}
+
+		var r models.TestRecording
+		if err := json.Unmarshal([]byte(val.(string)), &r); err != nil {
+			continue
+		}
+
+		// Filter for current user or legacy
+		if userID == 0 || r.CreatorID == 0 || r.CreatorID == userID {
+			recordings = append(recordings, r)
+			processedIDs[id] = true
 		}
 	}
 
-	// Apply filters
+	// Step 4: Apply status filter
 	if status != "" {
-		filtered := make([]models.TestRecording, 0)
+		filtered := make([]models.TestRecording, 0, len(recordings))
 		for _, r := range recordings {
 			if r.Status == status {
 				filtered = append(filtered, r)
@@ -249,10 +289,10 @@ func ListRecordings(c *gin.Context) {
 		recordings = filtered
 	}
 
-	// Apply search
+	// Step 5: Apply search filter
 	if search != "" {
 		searchLower := strings.ToLower(search)
-		filtered := make([]models.TestRecording, 0)
+		filtered := make([]models.TestRecording, 0, len(recordings))
 		for _, r := range recordings {
 			if strings.Contains(strings.ToLower(r.Name), searchLower) ||
 				strings.Contains(strings.ToLower(r.Description), searchLower) {
@@ -262,7 +302,7 @@ func ListRecordings(c *gin.Context) {
 		recordings = filtered
 	}
 
-	// Default sort if sortBy not provided
+	// Step 6: Sort recordings
 	if sortBy == "" {
 		sortBy = "created_at"
 	}
@@ -271,34 +311,33 @@ func ListRecordings(c *gin.Context) {
 	}
 
 	sort.Slice(recordings, func(i, j int) bool {
-		var condition bool
 		switch sortBy {
 		case "name":
 			if order == "asc" {
-				condition = recordings[i].Name < recordings[j].Name
-			} else {
-				condition = recordings[i].Name > recordings[j].Name
+				return recordings[i].Name < recordings[j].Name
 			}
+			return recordings[i].Name > recordings[j].Name
 		case "status":
 			if order == "asc" {
-				condition = recordings[i].Status < recordings[j].Status
-			} else {
-				condition = recordings[i].Status > recordings[j].Status
+				return recordings[i].Status < recordings[j].Status
 			}
+			return recordings[i].Status > recordings[j].Status
 		case "created_at":
 			fallthrough
 		default:
 			if order == "asc" {
-				condition = recordings[i].CreatedAt.Before(recordings[j].CreatedAt)
-			} else {
-				condition = recordings[i].CreatedAt.After(recordings[j].CreatedAt)
+				return recordings[i].CreatedAt.Before(recordings[j].CreatedAt)
 			}
+			return recordings[i].CreatedAt.After(recordings[j].CreatedAt)
 		}
-		return condition
 	})
 
+	// Step 7: Paginate
 	total := len(recordings)
-	totalPages := (total + limit - 1) / limit
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + limit - 1) / limit
+	}
 	start := (page - 1) * limit
 	end := start + limit
 
@@ -313,11 +352,51 @@ func ListRecordings(c *gin.Context) {
 		end = total
 	}
 
-	// Enrich recordings with project details
 	paginatedRecordings := recordings[start:end]
-	for i := range paginatedRecordings {
-		if paginatedRecordings[i].ProjectID != "" && paginatedRecordings[i].ProjectDetails == nil {
-			paginatedRecordings[i].ProjectDetails = getProjectDetails(c, paginatedRecordings[i].ProjectID)
+
+	// Step 8: OPTIMIZATION - Parallel fetch of project details
+	// Collect unique project IDs that need fetching
+	projectIDs := make(map[string]int) // projectID -> index in paginatedRecordings
+	for i, r := range paginatedRecordings {
+		if r.ProjectID != "" && r.ProjectDetails == nil {
+			projectIDs[r.ProjectID] = i
+		}
+	}
+
+	if len(projectIDs) > 0 {
+		// Fetch project details in parallel using goroutines
+		type projectResult struct {
+			id      string
+			details *models.ProjectDetails
+		}
+
+		results := make(chan projectResult, len(projectIDs))
+		var wg sync.WaitGroup
+
+		for pid := range projectIDs {
+			wg.Add(1)
+			go func(id string) {
+				defer wg.Done()
+				details := getProjectDetails(c, id)
+				results <- projectResult{id: id, details: details}
+			}(pid)
+		}
+
+		// Wait for all goroutines to complete
+		wg.Wait()
+		close(results)
+
+		// Build a map of project details
+		projectDetailsMap := make(map[string]*models.ProjectDetails)
+		for result := range results {
+			projectDetailsMap[result.id] = result.details
+		}
+
+		// Assign project details to recordings
+		for i := range paginatedRecordings {
+			if paginatedRecordings[i].ProjectID != "" {
+				paginatedRecordings[i].ProjectDetails = projectDetailsMap[paginatedRecordings[i].ProjectID]
+			}
 		}
 	}
 

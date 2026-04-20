@@ -66,6 +66,31 @@ func SetCachedProjectName(ctx context.Context, projectID interface{}, name strin
 	RedisClient.Set(ctx, key, name, projectCacheTTL)
 }
 
+// projectDetailsCacheTTL defines how long to cache project details
+// Project metadata changes rarely, so 5 minutes is safe and effective
+var projectDetailsCacheTTL = 5 * time.Minute
+
+// GetCachedProjectDetails retrieves cached project details by project ID
+func GetCachedProjectDetails(ctx context.Context, projectID string) (*models.ProjectDetails, bool) {
+	key := fmt.Sprintf("project:details:%s", projectID)
+	data, err := RedisClient.Get(ctx, key).Bytes()
+	if err != nil {
+		return nil, false
+	}
+	var details models.ProjectDetails
+	if err := json.Unmarshal(data, &details); err != nil {
+		return nil, false
+	}
+	return &details, true
+}
+
+// SetCachedProjectDetails stores project details in cache
+func SetCachedProjectDetails(ctx context.Context, projectID string, details *models.ProjectDetails) {
+	key := fmt.Sprintf("project:details:%s", projectID)
+	data, _ := json.Marshal(details)
+	RedisClient.Set(ctx, key, data, projectDetailsCacheTTL)
+}
+
 // GetCachedWorkItemData retrieves cached work item data (child count, child items) by issue ID
 func GetCachedWorkItemData(ctx context.Context, issueID int64) (childCount int, childItems []string, found bool) {
 	key := fmt.Sprintf("workitem:children:%d", issueID)
