@@ -49,6 +49,63 @@ func getProjectName(c *gin.Context, projectID string) string {
 	return project.NameWithNamespace
 }
 
+// getProjectDetails fetches comprehensive project information from GitLab API
+func getProjectDetails(c *gin.Context, projectID string) *models.ProjectDetails {
+	if projectID == "" {
+		return nil
+	}
+
+	token, exists := c.Get("token")
+	if !exists {
+		return nil
+	}
+
+	oauthToken, ok := token.(*oauth2.Token)
+	if !ok {
+		return nil
+	}
+
+	gitlabClient, err := client.GetClient(c, oauthToken, nil)
+	if err != nil {
+		return nil
+	}
+
+	project, _, err := gitlabClient.Projects.GetProject(projectID, &gitlab.GetProjectOptions{})
+	if err != nil {
+		return nil
+	}
+
+	details := &models.ProjectDetails{
+		ID:                project.ID,
+		Name:              project.Name,
+		NameWithNamespace: project.NameWithNamespace,
+		Path:              project.Path,
+		PathWithNamespace: project.PathWithNamespace,
+		Description:       project.Description,
+		WebURL:            project.WebURL,
+		Visibility:        string(project.Visibility),
+	}
+
+	if project.DefaultBranch != "" {
+		details.DefaultBranch = project.DefaultBranch
+	}
+	if project.AvatarURL != "" {
+		details.AvatarURL = project.AvatarURL
+	}
+	if project.Namespace != nil {
+		details.Namespace = &models.Namespace{
+			ID:        project.Namespace.ID,
+			Name:      project.Namespace.Name,
+			Path:      project.Namespace.Path,
+			Kind:      project.Namespace.Kind,
+			AvatarURL: project.Namespace.AvatarURL,
+			WebURL:    project.Namespace.WebURL,
+		}
+	}
+
+	return details
+}
+
 func SaveRecording(c *gin.Context) {
 	var recording models.TestRecording
 	if err := c.ShouldBindJSON(&recording); err != nil {
@@ -256,8 +313,16 @@ func ListRecordings(c *gin.Context) {
 		end = total
 	}
 
+	// Enrich recordings with project details
+	paginatedRecordings := recordings[start:end]
+	for i := range paginatedRecordings {
+		if paginatedRecordings[i].ProjectID != "" && paginatedRecordings[i].ProjectDetails == nil {
+			paginatedRecordings[i].ProjectDetails = getProjectDetails(c, paginatedRecordings[i].ProjectID)
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"data":       recordings[start:end],
+		"data":       paginatedRecordings,
 		"pagination": gin.H{"page": page, "limit": limit, "total": total, "totalPages": totalPages},
 	})
 }
@@ -440,6 +505,11 @@ func GetRecording(c *gin.Context) {
 	if err := json.Unmarshal([]byte(val), &recording); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to unmarshal recording"})
 		return
+	}
+
+	// Enrich with project details if project_id is present
+	if recording.ProjectID != "" && recording.ProjectDetails == nil {
+		recording.ProjectDetails = getProjectDetails(c, recording.ProjectID)
 	}
 
 	c.JSON(http.StatusOK, recording)
