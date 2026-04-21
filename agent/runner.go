@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"qa-extension-backend/client"
 	"qa-extension-backend/internal/models"
+	"strings"
 	"time"
 
 	"github.com/playwright-community/playwright-go"
@@ -114,6 +115,57 @@ func RunTest(ctx context.Context, recording *models.TestRecording) (*models.Test
 		return nil, fmt.Errorf("could not create page: %w", err)
 	}
 	defer page.Close()
+
+	// CRITICAL: Add stealth scripts to bypass Cloudflare/bot detection
+	// These scripts hide webdriver and automation detection
+	stealthScript := `
+		// Hide webdriver property
+		Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+		
+		// Hide automation indicators
+		Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+		Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+		
+		// Hide Chrome automation
+		window.chrome = { runtime: {} };
+		
+		// Hide permissions API issues
+		const originalQuery = window.navigator.permissions.query;
+		window.navigator.permissions.query = (parameters) => (
+			parameters.name === 'notifications' ?
+				Promise.resolve({ state: Notification.permission }) :
+				originalQuery(parameters)
+		);
+		
+		// Fake plugin array length
+		Object.defineProperty(navigator, 'plugins', {
+			get: () => {
+				const plugins = [
+					{ name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+					{ name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+					{ name: 'Native Client', filename: 'internal-nacl-plugin' }
+				];
+				plugins.length = 3;
+				return plugins;
+			}
+		});
+		
+		// Hide WebGL vendor and renderer fingerprinting
+		const getParameter = WebGLRenderingContext.prototype.getParameter;
+		WebGLRenderingContext.prototype.getParameter = function(parameter) {
+			if (parameter === 37445) return 'Intel Inc.';
+			if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+			return getParameter.apply(this, arguments);
+		};
+	`
+	
+	if err := page.AddInitScript(playwright.Script{
+		Content: &stealthScript,
+	}); err != nil {
+		log.Printf("[Runner] Warning: Failed to add stealth script: %v", err)
+	} else {
+		log.Printf("[Runner] Stealth scripts injected successfully")
+	}
 
 	// CRITICAL: Capture browser console logs and page errors
 	page.OnConsole(func(msg playwright.ConsoleMessage) {
@@ -414,6 +466,45 @@ func RunTestsChained(ctx context.Context, recordings []models.TestRecording) []*
 		return results
 	}
 
+	// CRITICAL: Add stealth scripts to bypass Cloudflare/bot detection
+	stealthScript := `
+		Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+		Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+		Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+		window.chrome = { runtime: {} };
+		const originalQuery = window.navigator.permissions.query;
+		window.navigator.permissions.query = (parameters) => (
+			parameters.name === 'notifications' ?
+				Promise.resolve({ state: Notification.permission }) :
+				originalQuery(parameters)
+		);
+		Object.defineProperty(navigator, 'plugins', {
+			get: () => {
+				const plugins = [
+					{ name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+					{ name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+					{ name: 'Native Client', filename: 'internal-nacl-plugin' }
+				];
+				plugins.length = 3;
+				return plugins;
+			}
+		});
+		const getParameter = WebGLRenderingContext.prototype.getParameter;
+		WebGLRenderingContext.prototype.getParameter = function(parameter) {
+			if (parameter === 37445) return 'Intel Inc.';
+			if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+			return getParameter.apply(this, arguments);
+		};
+	`
+	
+	if err := page.AddInitScript(playwright.Script{
+		Content: &stealthScript,
+	}); err != nil {
+		log.Printf("[Runner] Warning: Failed to add stealth script: %v", err)
+	} else {
+		log.Printf("[Runner] Stealth scripts injected successfully")
+	}
+
 	// CRITICAL: Capture browser console logs and page errors
 	page.OnConsole(func(msg playwright.ConsoleMessage) {
 		logType := msg.Type()
@@ -694,9 +785,26 @@ func executeStep(page playwright.Page, step models.RecordingStep) error {
 				title, _ := page.Title()
 				log.Printf("[Runner DEBUG] Page title: %s", title)
 
+				// CRITICAL: Detect Cloudflare challenge/block page
+				if strings.Contains(title, "Cloudflare") || strings.Contains(title, "Attention Required") {
+					log.Printf("[Runner] ⚠️  CLOUDFLARE DETECTED: Page is showing Cloudflare challenge/block")
+					log.Printf("[Runner] ⚠️  The website is blocking automated browser access")
+					log.Printf("[Runner] ⚠️  Possible solutions:")
+					log.Printf("[Runner] ⚠️    1. Whitelist this server's IP in Cloudflare")
+					log.Printf("[Runner] ⚠️    2. Use a different URL without Cloudflare protection")
+					log.Printf("[Runner] ⚠️    3. Contact the website administrator")
+				}
+
 				// Log page content snippet (first 500 chars of body)
 				bodyContent, err := page.Locator("body").InnerHTML()
 				if err == nil && len(bodyContent) > 0 {
+					// Check for Cloudflare block indicators in body
+					if strings.Contains(bodyContent, "cf-wrapper") || 
+					   strings.Contains(bodyContent, "You are unable to access") ||
+					   strings.Contains(bodyContent, "been blocked") {
+						log.Printf("[Runner] ⚠️  CLOUDFLARE BLOCK CONFIRMED in page content")
+					}
+					
 					preview := bodyContent
 					if len(preview) > 500 {
 						preview = preview[:500] + "..."
