@@ -95,6 +95,14 @@ func RunTest(ctx context.Context, recording *models.TestRecording) (*models.Test
 			Width:  1920,
 			Height: 1080,
 		},
+		// CRITICAL: Hide headless browser detection
+		UserAgent: playwright.String("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
+		// Set locale and timezone for consistent rendering
+		Locale:        playwright.String("en-US"),
+		TimezoneId:    playwright.String("Asia/Jakarta"),
+		HasTouch:      playwright.Bool(false),
+		IsMobile:      playwright.Bool(false),
+		DeviceScaleFactor: playwright.Float(1),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("could not create context: %w", err)
@@ -106,6 +114,37 @@ func RunTest(ctx context.Context, recording *models.TestRecording) (*models.Test
 		return nil, fmt.Errorf("could not create page: %w", err)
 	}
 	defer page.Close()
+
+	// CRITICAL: Capture browser console logs and page errors
+	page.OnConsole(func(msg playwright.ConsoleMessage) {
+		logType := msg.Type()
+		text := msg.Text()
+		switch logType {
+		case "error":
+			log.Printf("[Browser Console ERROR] %s", text)
+		case "warning":
+			log.Printf("[Browser Console WARN] %s", text)
+		default:
+			log.Printf("[Browser Console] %s: %s", logType, text)
+		}
+	})
+
+	page.OnPageError(func(err error) {
+		log.Printf("[Browser Page ERROR] %v", err)
+	})
+
+	// Capture failed requests (network errors, 4xx, 5xx)
+	page.OnRequestFailed(func(request playwright.Request) {
+		log.Printf("[Browser Network FAILED] %s %s", request.Method(), request.URL())
+	})
+
+	// Capture responses with error status codes
+	page.OnResponse(func(response playwright.Response) {
+		status := response.Status()
+		if status >= 400 {
+			log.Printf("[Browser Network ERROR] %d %s %s", status, response.Request().Method(), response.URL())
+		}
+	})
 
 	result := &models.TestResult{
 		TestID:      recording.ID,
@@ -355,6 +394,13 @@ func RunTestsChained(ctx context.Context, recordings []models.TestRecording) []*
 			Width:  1920,
 			Height: 1080,
 		},
+		// CRITICAL: Hide headless browser detection
+		UserAgent: playwright.String("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
+		Locale:        playwright.String("en-US"),
+		TimezoneId:    playwright.String("Asia/Jakarta"),
+		HasTouch:      playwright.Bool(false),
+		IsMobile:      playwright.Bool(false),
+		DeviceScaleFactor: playwright.Float(1),
 	})
 	if err != nil {
 		log.Printf("[FATAL ERROR] could not create chained context: %v", err)
@@ -367,6 +413,35 @@ func RunTestsChained(ctx context.Context, recordings []models.TestRecording) []*
 		log.Printf("[FATAL ERROR] could not create chained page: %v", err)
 		return results
 	}
+
+	// CRITICAL: Capture browser console logs and page errors
+	page.OnConsole(func(msg playwright.ConsoleMessage) {
+		logType := msg.Type()
+		text := msg.Text()
+		switch logType {
+		case "error":
+			log.Printf("[Browser Console ERROR] %s", text)
+		case "warning":
+			log.Printf("[Browser Console WARN] %s", text)
+		default:
+			log.Printf("[Browser Console] %s: %s", logType, text)
+		}
+	})
+
+	page.OnPageError(func(err error) {
+		log.Printf("[Browser Page ERROR] %v", err)
+	})
+
+	page.OnRequestFailed(func(request playwright.Request) {
+		log.Printf("[Browser Network FAILED] %s %s", request.Method(), request.URL())
+	})
+
+	page.OnResponse(func(response playwright.Response) {
+		status := response.Status()
+		if status >= 400 {
+			log.Printf("[Browser Network ERROR] %d %s %s", status, response.Request().Method(), response.URL())
+		}
+	})
 
 	// We run sequentially on the EXACT SAME page
 	for i, rec := range recordings {
@@ -609,6 +684,41 @@ func executeStep(page playwright.Page, step models.RecordingStep) error {
 			if attempts%5 == 0 {
 				log.Printf("[Runner] Waiting for DOM to settle after %d attempts...", attempts)
 				page.WaitForTimeout(1000)
+
+				// HIGH PRIORITY: Debug page state when selectors are failing
+				// Log current URL to detect redirects
+				currentURL := page.URL()
+				log.Printf("[Runner DEBUG] Current URL: %s", currentURL)
+
+				// Log page title
+				title, _ := page.Title()
+				log.Printf("[Runner DEBUG] Page title: %s", title)
+
+				// Log page content snippet (first 500 chars of body)
+				bodyContent, err := page.Locator("body").InnerHTML()
+				if err == nil && len(bodyContent) > 0 {
+					preview := bodyContent
+					if len(preview) > 500 {
+						preview = preview[:500] + "..."
+					}
+					log.Printf("[Runner DEBUG] Page body preview: %s", preview)
+				}
+
+				// Check if React root has content
+				rootContent, err := page.Locator("#root").InnerHTML()
+				if err == nil {
+					if len(rootContent) == 0 {
+						log.Printf("[Runner DEBUG] WARNING: #root is EMPTY - React may not have hydrated")
+					} else {
+						preview := rootContent
+						if len(preview) > 300 {
+							preview = preview[:300] + "..."
+						}
+						log.Printf("[Runner DEBUG] #root content: %s", preview)
+					}
+				} else {
+					log.Printf("[Runner DEBUG] #root not found on page")
+				}
 			}
 		}
 
@@ -637,6 +747,18 @@ func executeStep(page playwright.Page, step models.RecordingStep) error {
 
 		// Use the same settling strategy as other actions
 		waitForPageSettled()
+
+		// HIGH PRIORITY: Log final URL after navigation (detect redirects)
+		finalURL := page.URL()
+		if finalURL != url {
+			log.Printf("[Runner] WARNING: Page redirected from %s to %s", url, finalURL)
+		} else {
+			log.Printf("[Runner] Final URL after navigation: %s", finalURL)
+		}
+
+		// Log page title for debugging
+		title, _ := page.Title()
+		log.Printf("[Runner] Page title: %s", title)
 
 	case "type":
 		// First, wait for page to settle if this is after a navigation
