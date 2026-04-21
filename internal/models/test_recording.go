@@ -25,6 +25,8 @@ type TestRecording struct {
 	Name            string          `json:"name"`
 	Description     string          `json:"description"`
 	Status          string          `json:"status"`
+	SourceType      string          `json:"source_type,omitempty"` // "manual" | "test_scenario"
+	SourceID        string          `json:"source_id,omitempty"`   // Links to test_scenario ID if source_type is "test_scenario"
 	ProjectID       string          `json:"project_id,omitempty"`
 	ProjectName     string          `json:"project_name,omitempty"`
 	ProjectDetails  *ProjectDetails `json:"projectDetails,omitempty"`
@@ -43,6 +45,8 @@ type RecordingSummary struct {
 	Name           string          `json:"name"`
 	Description    string          `json:"description"`
 	Status         string          `json:"status"`
+	SourceType     string          `json:"source_type,omitempty"` // "manual" | "test_scenario"
+	SourceID       string          `json:"source_id,omitempty"`   // Links to test_scenario ID if source_type is "test_scenario"
 	ProjectID      string          `json:"project_id,omitempty"`
 	ProjectName    string          `json:"project_name,omitempty"`
 	ProjectDetails *ProjectDetails `json:"projectDetails,omitempty"`

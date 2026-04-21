@@ -135,6 +135,11 @@ func SaveRecording(c *gin.Context) {
 		recording.CreatedAt = time.Now()
 	}
 
+	// Set SourceType to "manual" if not provided (default for user recordings)
+	if recording.SourceType == "" {
+		recording.SourceType = "manual"
+	}
+
 	userID, err := identity.GetCurrentUserID(c)
 	if err == nil {
 		recording.CreatorID = userID
@@ -193,8 +198,9 @@ func ListRecordings(c *gin.Context) {
 	issueID := c.Query("issue_id")
 	search := c.Query("search")
 	status := c.Query("status")
-	sortBy := c.Query("sort_by") // "created_at", "name", "status"
-	order := c.Query("order")    // "asc", "desc"
+	sourceType := c.Query("source_type") // "manual" | "test_scenario"
+	sortBy := c.Query("sort_by")         // "created_at", "name", "status"
+	order := c.Query("order")            // "asc", "desc"
 	page := 1
 	limit := 20
 
@@ -289,7 +295,18 @@ func ListRecordings(c *gin.Context) {
 		recordings = filtered
 	}
 
-	// Step 5: Apply search filter
+	// Step 5: Apply source_type filter
+	if sourceType != "" {
+		filtered := make([]models.TestRecording, 0, len(recordings))
+		for _, r := range recordings {
+			if r.SourceType == sourceType {
+				filtered = append(filtered, r)
+			}
+		}
+		recordings = filtered
+	}
+
+	// Step 6: Apply search filter
 	if search != "" {
 		searchLower := strings.ToLower(search)
 		filtered := make([]models.TestRecording, 0, len(recordings))

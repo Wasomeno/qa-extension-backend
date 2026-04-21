@@ -428,16 +428,18 @@ func listRecordedTestsDirect(ctx context.Context, args map[string]any) (*ListRec
 		}
 
 		summaries = append(summaries, models.RecordingSummary{
-			ID:          r.ID,
-			Name:        r.Name,
+			ID:         r.ID,
+			Name:       r.Name,
 			Description: r.Description,
-			Status:      r.Status,
-			ProjectID:   r.ProjectID,
-			IssueID:     r.IssueID,
-			CreatorID:   r.CreatorID,
-			VideoURL:    r.VideoURL,
-			StepCount:   len(r.Steps),
-			CreatedAt:   r.CreatedAt,
+			Status:     r.Status,
+			SourceType: r.SourceType,
+			SourceID:   r.SourceID,
+			ProjectID:  r.ProjectID,
+			IssueID:    r.IssueID,
+			CreatorID:  r.CreatorID,
+			VideoURL:   r.VideoURL,
+			StepCount:  len(r.Steps),
+			CreatedAt:  r.CreatedAt,
 		})
 	}
 

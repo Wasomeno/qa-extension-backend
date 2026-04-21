@@ -499,6 +499,8 @@ func GenerateTests(c *gin.Context) {
 			rec.ProjectID = scenario.ProjectID
 			rec.CreatorID = scenario.CreatorID
 			rec.CreatedAt = time.Now()
+			rec.SourceType = "test_scenario"
+			rec.SourceID = id // Link to the parent test scenario
 
 			recKey := fmt.Sprintf("recording:%s", rec.ID)
 			recVal, _ := json.Marshal(rec)

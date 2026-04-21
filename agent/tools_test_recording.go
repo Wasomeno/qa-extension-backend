@@ -131,6 +131,8 @@ func saveTestRecording(ctx tool.Context, input SaveTestRecordingInput) (*SaveTes
 	recording := &models.TestRecording{
 		ID:          fmt.Sprintf("rec_%d", time.Now().UnixMilli()),
 		Status:      "generated",
+		SourceType:  "test_scenario",
+		SourceID:    input.ScenarioID,
 		ProjectID:   input.ProjectID,
 		CreatorID:   input.CreatorID,
 		Name:        input.Name,
@@ -715,6 +717,8 @@ func buildRecordingSteps(ctx tool.Context, input BuildRecordingInput) (*BuildRec
 		Recording: &models.TestRecording{
 			ID:         fmt.Sprintf("rec_%d", time.Now().UnixMilli()),
 			Status:     "generated",
+			SourceType: "test_scenario",
+			SourceID:   input.ScenarioID,
 			Steps:      []models.RecordingStep{},
 			Parameters: make([]any, 0),
 		},
@@ -1378,7 +1382,7 @@ func RunAgentForTestGeneration(ctx context.Context, input TestRecordingAgentInpu
 	// For each test case, let the agent figure out what to fetch
 	// Agent will look at test case name → infer what files are needed
 	for _, tc := range targetCases {
-		recording, warnings, err := agentGenerateSingleRecording(ctx, glClient, scenario.ProjectID, branch, tc)
+		recording, warnings, err := agentGenerateSingleRecording(ctx, glClient, scenario.ProjectID, scenario.ID, branch, tc)
 		if err != nil {
 			log.Printf("[TestRecordingAgent] Failed for %s: %v", tc.ID, err)
 			output.FailedIDs = append(output.FailedIDs, tc.ID)
@@ -1412,13 +1416,15 @@ func fetchSingleFileWithClient(glClient *gitlab.Client, projectID, branch, fileP
 
 // agentGenerateSingleRecording uses GitLab tools to figure out what files to fetch
 // based on the test case steps content
-func agentGenerateSingleRecording(ctx context.Context, glClient *gitlab.Client, projectID, branch string, tc *models.ParsedTestCase) (*models.TestRecording, []string, error) {
+func agentGenerateSingleRecording(ctx context.Context, glClient *gitlab.Client, projectID, scenarioID, branch string, tc *models.ParsedTestCase) (*models.TestRecording, []string, error) {
 	log.Printf("[TestRecordingAgent] agentGenerateSingleRecording: %s - %s", tc.ID, tc.Name)
 
 	warnings := []string{}
 	recording := &models.TestRecording{
 		ID:          fmt.Sprintf("rec_%d", time.Now().UnixMilli()),
 		Status:      "generated",
+		SourceType:  "test_scenario",
+		SourceID:    scenarioID,
 		Steps:       []models.RecordingStep{},
 		Parameters:  make([]any, 0),
 		Name:        fmt.Sprintf("[%s] %s", tc.ID, tc.Name),
