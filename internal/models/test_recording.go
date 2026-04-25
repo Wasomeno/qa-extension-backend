@@ -28,16 +28,18 @@ type ConsoleLogEntry struct {
 }
 
 type NetworkRequestEntry struct {
-	RequestID   string            `json:"requestId"`
-	URL         string            `json:"url"`
-	Method      string            `json:"method"`
-	Status      int               `json:"status,omitempty"`
-	StatusText  string            `json:"statusText,omitempty"`
-	RequestHeaders map[string]string `json:"requestHeaders,omitempty"`
+	RequestID       string            `json:"requestId"`
+	URL             string            `json:"url"`
+	Method          string            `json:"method"`
+	Status          int               `json:"status,omitempty"`
+	StatusText      string            `json:"statusText,omitempty"`
+	RequestHeaders  map[string]string `json:"requestHeaders,omitempty"`
 	ResponseHeaders map[string]string `json:"responseHeaders,omitempty"`
-	Timestamp   int64             `json:"timestamp"`
-	DurationMs  int64             `json:"durationMs,omitempty"`
-	Error       string            `json:"error,omitempty"`
+	RequestPayload  string            `json:"requestPayload,omitempty"`
+	ResponsePayload string            `json:"responsePayload,omitempty"`
+	Timestamp       int64             `json:"timestamp"`
+	DurationMs      int64             `json:"durationMs,omitempty"`
+	Error           string            `json:"error,omitempty"`
 }
 
 type JSErrorEntry struct {
