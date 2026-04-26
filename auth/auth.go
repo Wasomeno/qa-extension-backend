@@ -25,9 +25,9 @@ func getOAuthConfig() *oauth2.Config {
 	return configMap
 }
 
-func GetAuthURL() string {
+func GetAuthURL(state string) string {
 	cfg := getOAuthConfig()
-	return cfg.AuthCodeURL("state", oauth2.AccessTypeOffline)
+	return cfg.AuthCodeURL(state, oauth2.AccessTypeOffline)
 }
 
 func ExchangeToken(ctx context.Context, code string) (*oauth2.Token, error) {

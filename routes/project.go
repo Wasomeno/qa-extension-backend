@@ -304,44 +304,80 @@ func GetProjectBoards(ginContext *gin.Context) {
 		return
 	}
 
-	// 2. Fetch all open issues for the project WITH PAGINATION
-	// Previous implementation fetched ALL issues at once, which is slow for large projects
-	// Now we paginate to avoid memory explosion and reduce response time
+	// 2. Fetch all open issues for the project WITH PARALLEL PAGINATION
+	// Fetch pages concurrently to reduce latency
 	var allIssues []*gitlab.Issue
 	perPage := 100
-	page := 1
-	for {
-		opt := &gitlab.ListProjectIssuesOptions{
-			State: gitlab.Ptr("opened"),
-			ListOptions: gitlab.ListOptions{
-				PerPage: int64(perPage),
-				Page:    int64(page),
-			},
+	
+	// First, fetch page 1 to get total pages
+	firstOpt := &gitlab.ListProjectIssuesOptions{
+		State: gitlab.Ptr("opened"),
+		ListOptions: gitlab.ListOptions{
+			PerPage: int64(perPage),
+			Page:    1,
+		},
+	}
+	issues, resp, err := gitlabClient.Issues.ListProjectIssues(projectID, firstOpt)
+	if err != nil {
+		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch issues: " + err.Error()})
+		ginContext.Abort()
+		return
+	}
+	allIssues = append(allIssues, issues...)
+	
+	// Fetch remaining pages in parallel
+	if resp.NextPage > 0 {
+		g2, _ := errgroup.WithContext(ctx)
+		g2.SetLimit(3) // Max 3 concurrent page fetches
+		
+		for page := resp.NextPage; page <= resp.TotalPages; page++ {
+			page := page
+			g2.Go(func() error {
+				opt := &gitlab.ListProjectIssuesOptions{
+					State: gitlab.Ptr("opened"),
+					ListOptions: gitlab.ListOptions{
+						PerPage: int64(perPage),
+						Page:    int64(page),
+					},
+				}
+				pageIssues, _, err := gitlabClient.Issues.ListProjectIssues(projectID, opt)
+				if err != nil {
+					return err
+				}
+				allIssues = append(allIssues, pageIssues...)
+				return nil
+			})
 		}
-		issues, resp, err := gitlabClient.Issues.ListProjectIssues(projectID, opt)
-		if err != nil {
+		
+		if err := g2.Wait(); err != nil {
 			ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch issues: " + err.Error()})
 			ginContext.Abort()
 			return
 		}
-		allIssues = append(allIssues, issues...)
+	}
+
+	// 3. Fetch all labels WITH PAGINATION to get details (colors)
+	var allLabels []*gitlab.Label
+	labelPerPage := 100
+	labelPage := 1
+	for {
+		labelOpts := &gitlab.ListLabelsOptions{
+			ListOptions: gitlab.ListOptions{
+				PerPage: int64(labelPerPage),
+				Page:    int64(labelPage),
+			},
+		}
+		labels, resp, err := gitlabClient.Labels.ListLabels(projectID, labelOpts)
+		if err != nil {
+			ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch labels: " + err.Error()})
+			ginContext.Abort()
+			return
+		}
+		allLabels = append(allLabels, labels...)
 		if resp.NextPage == 0 {
 			break
 		}
-		page++
-	}
-
-	// 3. Fetch all labels to get details (colors)
-	labelOpts := &gitlab.ListLabelsOptions{
-		ListOptions: gitlab.ListOptions{
-			PerPage: 100,
-		},
-	}
-	allLabels, _, err := gitlabClient.Labels.ListLabels(projectID, labelOpts)
-	if err != nil {
-		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch labels: " + err.Error()})
-		ginContext.Abort()
-		return
+		labelPage++
 	}
 
 	// Create a map for quick label lookup by name
@@ -391,10 +427,13 @@ func GetProjectBoards(ginContext *gin.Context) {
 		return
 	}
 
-	// Helper to convert gitlab.Issue to IssueResponse
-	toResponse := func(i *gitlab.Issue) *IssueResponse {
+	// OPTIMIZATION: Convert all issues ONCE before the board loop
+	// Previous implementation converted the same issue multiple times (once per board)
+	// This is O(boards × issues) - now it's O(issues)
+	convertedIssues := make([]*IssueResponse, len(allIssues))
+	for i, issue := range allIssues {
 		issueLabels := make([]*LabelResponse, 0)
-		for _, labelName := range i.Labels {
+		for _, labelName := range issue.Labels {
 			if l, ok := labelMap[labelName]; ok {
 				issueLabels = append(issueLabels, l)
 			} else {
@@ -404,17 +443,16 @@ func GetProjectBoards(ginContext *gin.Context) {
 				})
 			}
 		}
-
-		return &IssueResponse{
-			ID:          int(i.ID),
-			IID:         int(i.IID),
-			Title:       i.Title,
-			Description: i.Description,
-			State:       i.State,
+		convertedIssues[i] = &IssueResponse{
+			ID:          int(issue.ID),
+			IID:         int(issue.IID),
+			Title:       issue.Title,
+			Description: issue.Description,
+			State:       issue.State,
 			Labels:      issueLabels,
-			Assignees:   i.Assignees,
-			Author:      i.Author,
-			CreatedAt:   i.CreatedAt,
+			Assignees:   issue.Assignees,
+			Author:      issue.Author,
+			CreatedAt:   issue.CreatedAt,
 		}
 	}
 
@@ -453,17 +491,18 @@ func GetProjectBoards(ginContext *gin.Context) {
 			}
 		}
 
-		for _, issue := range allIssues {
+		// Use pre-converted issues instead of converting on-the-fly
+		for i, issue := range allIssues {
 			assigned := false
 			for _, labelName := range issue.Labels {
 				if listID, ok := labelToListId[labelName]; ok {
-					listMap[listID] = append(listMap[listID], toResponse(issue))
+					listMap[listID] = append(listMap[listID], convertedIssues[i])
 					assigned = true
 				}
 			}
 
 			if !assigned {
-				openListIssues = append(openListIssues, toResponse(issue))
+				openListIssues = append(openListIssues, convertedIssues[i])
 			}
 		}
 

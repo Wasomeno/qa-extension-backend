@@ -2,17 +2,28 @@ package routes
 
 import (
 	"context"
+	"encoding/base64"
 	"net/http"
+	"net/url"
 	"qa-extension-backend/client"
 	"qa-extension-backend/config"
 	"qa-extension-backend/auth"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/oauth2"
 )
 
 func LoginEndpoint(ginContext *gin.Context) {
-	url := auth.GetAuthURL()
+	redirectURL := ginContext.Query("redirect_url")
+	
+	// Encode redirect URL into state parameter for callback retrieval
+	state := "default"
+	if redirectURL != "" {
+		state = base64.URLEncoding.EncodeToString([]byte(redirectURL))
+	}
+	
+	url := auth.GetAuthURL(state)
 	ginContext.JSON(http.StatusOK, gin.H{"url": url})
 }
 
@@ -62,12 +73,62 @@ func AuthCallbackEndpoint(ginContext *gin.Context) {
 	// MaxAge: 3600*24 (24 hours) as per handler logic
 	ginContext.SetCookie("session_id", sessionID, 3600*24, "/", cookieDomain, isSecure, true)
 
-	ginContext.Redirect(http.StatusFound, "/static/auth_success.html")
+	// Check if a custom redirect was encoded in the state
+	oauthState := ginContext.Query("state")
+	redirectTarget := "/static/auth_success.html"
+	
+	if oauthState != "" && oauthState != "default" {
+		decodedBytes, decodeErr := base64.URLEncoding.DecodeString(oauthState)
+		if decodeErr == nil {
+			decodedURL := string(decodedBytes)
+			// Security: only allow localhost and known domains
+			if isValidRedirectURL(decodedURL) {
+				redirectTarget = decodedURL
+			}
+		}
+	}
+
+	// If redirecting to web app (not static page), append session_id to URL
+	// so the web app can store it in localStorage (cookies won't work cross-domain via proxy)
+	if redirectTarget != "/static/auth_success.html" {
+		sep := "?"
+		if strings.Contains(redirectTarget, "?") {
+			sep = "&"
+		}
+		redirectTarget = redirectTarget + sep + "session_id=" + sessionID
+	}
+
+	ginContext.Redirect(http.StatusFound, redirectTarget)
+}
+
+// isValidRedirectURL prevents open redirect vulnerabilities
+func isValidRedirectURL(target string) bool {
+	u, err := url.Parse(target)
+	if err != nil {
+		return false
+	}
+	
+	// Allow localhost for development
+	if strings.HasPrefix(u.Host, "localhost:") || u.Host == "localhost" {
+		return true
+	}
+	
+	// Add your production domain here
+	if u.Host == "playground-qa-extension.online" || strings.HasSuffix(u.Host, ".playground-qa-extension.online") {
+		return true
+	}
+	
+	return false
 }
 
 func GetSessionEndpoint(ginContext *gin.Context) {
+	// Try cookie first, then fallback to X-Session-ID header
 	sessionID, err := ginContext.Cookie("session_id")
 	if err != nil || sessionID == "" {
+		sessionID = ginContext.GetHeader("X-Session-ID")
+	}
+
+	if sessionID == "" {
 		ginContext.JSON(http.StatusUnauthorized, gin.H{"error": "No session cookie found"})
 		return
 	}

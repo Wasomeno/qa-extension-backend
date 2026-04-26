@@ -191,10 +191,13 @@ func GenerateIssueCacheKeyOptimized(
 }
 
 // BoardResponseCacheTTL is the TTL for cached board responses
-const BoardResponseCacheTTL = 2 * time.Minute
+const BoardResponseCacheTTL = 15 * time.Minute
 
 // GetCachedBoardResponse retrieves a cached board response
 func GetCachedBoardResponse(ctx context.Context, projectID string) ([]byte, bool) {
+	if RedisClient == nil {
+		return nil, false
+	}
 	key := fmt.Sprintf("boards:response:%s", projectID)
 	data, err := RedisClient.Get(ctx, key).Bytes()
 	if err != nil {
@@ -205,12 +208,18 @@ func GetCachedBoardResponse(ctx context.Context, projectID string) ([]byte, bool
 
 // SetCachedBoardResponse stores a board response in cache
 func SetCachedBoardResponse(ctx context.Context, projectID string, data []byte) {
+	if RedisClient == nil {
+		return
+	}
 	key := fmt.Sprintf("boards:response:%s", projectID)
 	RedisClient.Set(ctx, key, data, BoardResponseCacheTTL)
 }
 
 // InvalidateBoardCache invalidates board cache for a project
 func InvalidateBoardCache(ctx context.Context, projectID string) {
+	if RedisClient == nil {
+		return
+	}
 	key := fmt.Sprintf("boards:response:%s", projectID)
 	RedisClient.Del(ctx, key)
 }

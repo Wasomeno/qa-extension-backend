@@ -9,8 +9,13 @@ import (
 
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Try cookie first, then fallback to X-Session-ID header (for web app)
 		sessionID, err := c.Cookie("session_id")
 		if err != nil || sessionID == "" {
+			sessionID = c.GetHeader("X-Session-ID")
+		}
+
+		if sessionID == "" {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: No session found"})
 			return
 		}
