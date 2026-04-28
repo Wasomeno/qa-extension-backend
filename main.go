@@ -114,6 +114,17 @@ func main() {
 		protected.GET("/projects/:id/knowledge-graph/coverage", routes.GetKnowledgeGraphCoverage)
 		protected.DELETE("/projects/:id/knowledge-graph", routes.InvalidateKnowledgeGraph)
 
+		// Specs (GitLab-backed spec file management)
+		protected.GET("/projects/:id/specs/tree", routes.GetSpecsTree)
+		protected.GET("/projects/:id/specs/file", routes.GetSpecsFile)
+		protected.PUT("/projects/:id/specs/file", routes.SaveSpecsFile)
+		protected.DELETE("/projects/:id/specs/file", routes.DeleteSpecsFile)
+		protected.POST("/projects/:id/specs/commit", routes.CommitSpecsFiles)
+		protected.GET("/projects/:id/specs/commits", routes.GetSpecsCommits)
+		protected.GET("/projects/:id/specs/commits/:sha", routes.GetSpecsCommitDetail)
+		protected.GET("/projects/:id/specs/search", routes.SearchSpecs)
+		protected.GET("/projects/:id/specs/blame", routes.GetSpecsFileBlame)
+
 		protected.GET("/issues", routes.GetIssues)
 		protected.GET("/issues/:id", routes.GetIssue)
 		protected.GET("/issues/open-ai-test", routes.SmartAutoCompleteIssueDescription)
