@@ -86,7 +86,7 @@ Each step MUST include ALL of these fields:
 User: "Generate recordings for this test scenario with 2 test cases..."
 
 Your response:
-1. Call listGitLabRepositoryTree with {"projectId": "...", "path": "app"} to see the routes
+1. Call listGitLabRepositoryTree with {"projectId": "...", "path": "src/app"} or {"projectId": "...", "path": "app"} to see the routes
 2. Identify relevant pages for each test case
 3. Call getGitLabFileContent for each relevant page/component
 4. Extract selectors from the source code

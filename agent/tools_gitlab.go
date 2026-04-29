@@ -379,8 +379,9 @@ type RepoTreeNode struct {
 }
 
 type ListRepoTreeResponse struct {
-	Nodes []RepoTreeNode `json:"nodes"`
-	Count int            `json:"count"`
+	Nodes   []RepoTreeNode `json:"nodes"`
+	Count   int            `json:"count"`
+	Message string         `json:"message,omitempty"`
 }
 
 func listGitLabRepositoryTree(ctx tool.Context, args ListRepoTreeArgs) (*ListRepoTreeResponse, error) {
@@ -418,7 +419,12 @@ func listGitLabRepositoryTree(ctx tool.Context, args ListRepoTreeArgs) (*ListRep
 	nodes, _, err := glClient.Repositories.ListTree(args.ProjectID, opt)
 	if err != nil {
 		log.Printf("[AgentTool] listGitLabRepositoryTree failed: %v", err)
-		return nil, fmt.Errorf("failed to list repository tree at ref '%s': %w", ref, err)
+		// Return gracefully instead of hard error so LLM doesn't get stuck
+		return &ListRepoTreeResponse{
+			Nodes:   []RepoTreeNode{},
+			Count:   0,
+			Message: fmt.Sprintf("Directory not found or access error at path '%s' (ref '%s'). Try another path like 'src/app', 'app', or '.' (root). Error: %v", path, ref, err),
+		}, nil
 	}
 
 	var result []RepoTreeNode
@@ -450,6 +456,7 @@ type FileContentResponse struct {
 	Content   string `json:"content"`
 	Size      int    `json:"size"`
 	Encoding  string `json:"encoding"`
+	Message   string `json:"message,omitempty"`
 }
 
 func getGitLabFileContent(ctx tool.Context, args GetFileContentArgs) (*FileContentResponse, error) {
@@ -477,7 +484,11 @@ func getGitLabFileContent(ctx tool.Context, args GetFileContentArgs) (*FileConte
 	file, _, err := glClient.RepositoryFiles.GetFile(args.ProjectID, args.FilePath, fileOpt)
 	if err != nil {
 		log.Printf("[AgentTool] getGitLabFileContent failed: %v", err)
-		return nil, fmt.Errorf("failed to get file content: %w", err)
+		return &FileContentResponse{
+			FilePath: args.FilePath,
+			Content:  "",
+			Message:  fmt.Sprintf("File not found at '%s' (ref '%s'). Try using listGitLabRepositoryTree first to confirm the correct file path. Error: %v", args.FilePath, ref, err),
+		}, nil
 	}
 
 	// Decode base64 content

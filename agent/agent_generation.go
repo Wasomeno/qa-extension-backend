@@ -135,14 +135,29 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input TestRecordingAg
 	}
 
 	// Find recordings saved by the agent for this scenario
+	// Wait a moment for Redis replication/persistence just in case
+	time.Sleep(500 * time.Millisecond)
 	allRecordings := collectGeneratedRecordings(input.ScenarioID)
 	
-	// Filter to only include those requested in this specific run/batch
+	// Because the agent might save a recording but get the ID slightly wrong in its output,
+	// let's do a loose match or track newly created recordings during this session if needed.
+	// For now, doing a strict ID match:
 	var currentBatchRecordings []models.TestRecording
 	for _, r := range allRecordings {
 		for _, targetID := range input.TestCaseIDs {
-			if r.TestCaseID == targetID {
-				currentBatchRecordings = append(currentBatchRecordings, r)
+			// Looser match in case AI outputs "MED05-07-success" instead of "MED05-07"
+			if r.TestCaseID == targetID || strings.HasPrefix(r.TestCaseID, targetID) || strings.Contains(r.TestCaseID, targetID) || strings.Contains(targetID, r.TestCaseID) {
+				// Prevent duplicates
+				alreadyAdded := false
+				for _, existing := range currentBatchRecordings {
+					if existing.ID == r.ID {
+						alreadyAdded = true
+						break
+					}
+				}
+				if !alreadyAdded {
+					currentBatchRecordings = append(currentBatchRecordings, r)
+				}
 				break
 			}
 		}
@@ -156,7 +171,7 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input TestRecordingAg
 	for _, targetID := range input.TestCaseIDs {
 		found := false
 		for _, r := range currentBatchRecordings {
-			if r.TestCaseID == targetID {
+			if r.TestCaseID == targetID || strings.HasPrefix(r.TestCaseID, targetID) || strings.Contains(r.TestCaseID, targetID) || strings.Contains(targetID, r.TestCaseID) {
 				found = true
 				break
 			}
@@ -323,8 +338,10 @@ func collectGeneratedRecordings(scenarioID string) []models.TestRecording {
 		return recordings
 	}
 
-	log.Printf("[AgentGeneration] Found %d recordings for scenario %s", len(ids), scenarioID)
-
+	// Sort IDs so newer recordings come last (assuming rec_timestamp format)
+	// We do this to ensure we process the most recent ones if there are duplicates for a test case
+	// Redis SMembers returns in random order
+	
 	for _, id := range ids {
 		key := fmt.Sprintf("recording:%s", id)
 		val, err := database.RedisClient.Get(ctx, key).Result()
@@ -342,8 +359,21 @@ func collectGeneratedRecordings(scenarioID string) []models.TestRecording {
 		recordings = append(recordings, recording)
 	}
 
-	// Clear the scenario set after collection
-	database.RedisClient.Del(ctx, setKey)
+	// Sort recordings by CreatedAt so newest ones come last
+	for i := 0; i < len(recordings); i++ {
+		for j := i + 1; j < len(recordings); j++ {
+			if recordings[i].CreatedAt.After(recordings[j].CreatedAt) {
+				recordings[i], recordings[j] = recordings[j], recordings[i]
+			}
+		}
+	}
+
+	// We DO NOT clear the set here anymore because batching requires
+	// multiple queries to this set, and deleting it early breaks the subsequent batches
+	// We'll let normal Redis TTL or manual cleanup handle it
+	// database.RedisClient.Del(ctx, setKey)
+
+	log.Printf("[AgentGeneration] Found %d recordings for scenario %s", len(recordings), scenarioID)
 
 	return recordings
 }

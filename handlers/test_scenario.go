@@ -862,6 +862,9 @@ func GenerateTests(c *gin.Context) {
 			services.LinkRecording(&s, &rec)
 		}
 
+		// Clear the scenario tracking set now that we've collected all batches
+		database.RedisClient.Del(bgCtx, fmt.Sprintf("recordings:scenario:%s", id))
+
 		// Update any that were running but didn't get a recording to failed
 		for i := range s.Sections {
 			for j := range s.Sections[i].TestCases {

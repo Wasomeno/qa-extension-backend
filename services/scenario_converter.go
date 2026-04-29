@@ -210,7 +210,7 @@ func LinkRecording(scenario *models.TestScenario, rec *models.TestRecording) boo
 		for i := range scenario.Sections {
 			for j := range scenario.Sections[i].TestCases {
 				tc := &scenario.Sections[i].TestCases[j]
-				if tc.ID == rec.TestCaseID {
+				if tc.ID == rec.TestCaseID || strings.HasPrefix(rec.TestCaseID, tc.ID) || strings.Contains(rec.TestCaseID, tc.ID) || strings.Contains(tc.ID, rec.TestCaseID) {
 					tc.AutomationTest = &models.AutomationTest{
 						ID:          fmt.Sprintf("auto-%s", rec.ID),
 						Name:        rec.Name,
