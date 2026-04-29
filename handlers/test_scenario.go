@@ -779,31 +779,57 @@ func GenerateTests(c *gin.Context) {
 		events.SetTotalSteps(len(targetIDs))
 		events.Start("Generating %d test recording%s for '%s'...",
 			len(targetIDs), pluralize(len(targetIDs)), projectName)
-		events.Progressf("Generating test recordings using QA Agent...")
 
-		// Use agent 
-		result, err := agent.RunAgentForTestGenerationWithLLM(bgCtx, agent.TestRecordingAgentInput{
-			ScenarioID:  id,
-			TestCaseIDs: targetIDs,
-		}, token)
-		
-		if err != nil {
-			events.Error(fmt.Sprintf("Agent generation failed: %v", err))
+		var allRecordings []models.TestRecording
+		var allFailedIDs []string
+
+		// Batch execution: 5 test cases at a time to prevent LLM token limits and hallucinations
+		batchSize := 5
+		for i := 0; i < len(targetIDs); i += batchSize {
+			end := i + batchSize
+			if end > len(targetIDs) {
+				end = len(targetIDs)
+			}
+			batchIDs := targetIDs[i:end]
+			
+			events.Progressf("Generating recordings for batch %d to %d (of %d)...", i+1, end, len(targetIDs))
+
+			// Use agent for this batch
+			result, err := agent.RunAgentForTestGenerationWithLLM(bgCtx, agent.TestRecordingAgentInput{
+				ScenarioID:  id,
+				TestCaseIDs: batchIDs,
+			}, token)
+			
+			if err != nil {
+				log.Printf("[Agent] Batch generation failed: %v", err)
+				// Log but keep going with other batches
+				allFailedIDs = append(allFailedIDs, batchIDs...)
+				continue
+			}
+
+			if result != nil {
+				allRecordings = append(allRecordings, result.Recordings...)
+				allFailedIDs = append(allFailedIDs, result.FailedIDs...)
+			}
+		}
+
+		if len(allRecordings) == 0 && len(allFailedIDs) == len(targetIDs) {
+			events.Error(fmt.Sprintf("Agent generation completely failed for all test cases"))
 			
 			// Mark all running as failed
 			setTestCasesAutomationStatus(bgCtx, id, targetIDs, models.AutomationStatusFail)
 			
 			s, _ := getScenario(bgCtx, id)
 			s.Status = models.ScenarioStatusFailed
-			s.Error = fmt.Sprintf("failed to generate tests: %v", err)
+			s.Error = "failed to generate tests: all batches failed"
 			saveScenario(bgCtx, &s)
 			return
 		}
 
-		recordings := result.Recordings
+		recordings := allRecordings
 
-		if len(result.FailedIDs) > 0 {
-			log.Printf("[Agent] Failed to generate %d test cases: %v", len(result.FailedIDs), result.FailedIDs)
+		if len(allFailedIDs) > 0 {
+			log.Printf("[Agent] Failed to generate %d test cases: %v", len(allFailedIDs), allFailedIDs)
 		}
 
 		events.Progressf("Saving %d generated test recording%s to database...", len(recordings), pluralize(len(recordings)))

@@ -135,11 +135,39 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input TestRecordingAg
 	}
 
 	// Find recordings saved by the agent for this scenario
-	recordings := collectGeneratedRecordings(input.ScenarioID)
-	output.Recordings = recordings
-	output.SuccessCount = len(recordings)
+	allRecordings := collectGeneratedRecordings(input.ScenarioID)
+	
+	// Filter to only include those requested in this specific run/batch
+	var currentBatchRecordings []models.TestRecording
+	for _, r := range allRecordings {
+		for _, targetID := range input.TestCaseIDs {
+			if r.TestCaseID == targetID {
+				currentBatchRecordings = append(currentBatchRecordings, r)
+				break
+			}
+		}
+	}
 
-	log.Printf("[AgentGeneration] Collected %d recordings", len(recordings))
+	output.Recordings = currentBatchRecordings
+	output.SuccessCount = len(currentBatchRecordings)
+
+	// Determine failed IDs in this batch
+	var failedIDs []string
+	for _, targetID := range input.TestCaseIDs {
+		found := false
+		for _, r := range currentBatchRecordings {
+			if r.TestCaseID == targetID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			failedIDs = append(failedIDs, targetID)
+		}
+	}
+	output.FailedIDs = failedIDs
+
+	log.Printf("[AgentGeneration] Collected %d recordings for this batch (Failed: %d)", len(currentBatchRecordings), len(failedIDs))
 
 	return output, nil
 }
@@ -273,6 +301,8 @@ Each recording must have:
 }
 
 CRITICAL: The automation framework runs on Playwright. You MUST extract real CSS and XPath selectors from the source files. DO NOT invent fake selectors. DO NOT leave 'selector' or 'xpath' blank. If you cannot find a file, use semantic locators like "button:has-text('Login')" as fallback.
+
+CRITICAL BRANCH POLICY: When using listGitLabRepositoryTree or getGitLabFileContent, you MUST leave the 'ref' argument empty so the tool automatically uses the default branch. DO NOT use random branch names like 'Prod/25-06-2025'. Always leave 'ref' empty to analyze the default branch.
 
 Generate recordings for ALL test cases now. Use the save_test_recording tool for each one.
 `)
