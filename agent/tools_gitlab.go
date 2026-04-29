@@ -50,21 +50,27 @@ func GetGitLabTools() []tool.Tool {
 	// New tools for code exploration
 	t6, _ := functiontool.New(functiontool.Config{
 		Name: "listGitLabRepositoryTree",
-		Description: "List the file and directory structure of a GitLab project repository. Use path='app' to see page routes, path='components' to see components.",
+		Description: "List the file and directory structure of a GitLab project repository at any branch/tag/commit. Use path='app' to see page routes, path='components' to see components. Use ref='feature-branch' to explore a specific branch.",
 	}, listGitLabRepositoryTree)
 	tools = append(tools, t6)
 
 	t7, _ := functiontool.New(functiontool.Config{
 		Name: "getGitLabFileContent",
-		Description: "Read the content of a file from GitLab. Use this to read React/Next.js components and pages to find selectors like data-testid, id, aria-label, class names.",
+		Description: "Read the content of a file from GitLab at any branch/tag/commit. Use ref='feature-branch' to read from a specific branch. Use this to read React/Next.js components and pages to find selectors like data-testid, id, aria-label, class names.",
 	}, getGitLabFileContent)
 	tools = append(tools, t7)
 
 	t8, _ := functiontool.New(functiontool.Config{
 		Name: "searchGitLabCode",
-		Description: "Search for code/patterns in GitLab repository files. Use this to find specific components, buttons, or selectors.",
+		Description: "Search for code/patterns in GitLab repository files at any branch/tag/commit. Use ref='feature-branch' to search a specific branch. Use this to find specific components, buttons, or selectors.",
 	}, searchGitLabCode)
 	tools = append(tools, t8)
+
+	t9, _ := functiontool.New(functiontool.Config{
+		Name: "listGitLabBranches",
+		Description: "List all branches in a GitLab project repository. Use this to discover available branches before navigating the repo at a specific branch.",
+	}, listGitLabBranches)
+	tools = append(tools, t9)
 
 	return tools
 }
@@ -361,6 +367,7 @@ func getGitLabClient(ctx context.Context) (*gitlab.Client, error) {
 type ListRepoTreeArgs struct {
 	ProjectID string `json:"projectId"`
 	Path      string `json:"path"`
+	Ref       string `json:"ref,omitempty"` // branch name, tag, or commit SHA. Defaults to project's default branch.
 	Recursive bool   `json:"recursive"`
 }
 
@@ -377,37 +384,41 @@ type ListRepoTreeResponse struct {
 }
 
 func listGitLabRepositoryTree(ctx tool.Context, args ListRepoTreeArgs) (*ListRepoTreeResponse, error) {
-	log.Printf("[AgentTool] listGitLabRepositoryTree called: project=%s, path=%s, recursive=%v", args.ProjectID, args.Path, args.Recursive)
+	log.Printf("[AgentTool] listGitLabRepositoryTree called: project=%s, path=%s, ref=%s, recursive=%v", args.ProjectID, args.Path, args.Ref, args.Recursive)
 
 	glClient, err := getGitLabClient(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get GitLab client: %w", err)
 	}
 
-	// Get project branch
-	project, _, err := glClient.Projects.GetProject(args.ProjectID, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get project: %w", err)
-	}
-	branch := project.DefaultBranch
-	if branch == "" {
-		branch = "main"
+	// Resolve ref: use provided ref or fall back to project's default branch
+	ref := args.Ref
+	if ref == "" {
+		project, _, err := glClient.Projects.GetProject(args.ProjectID, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get project: %w", err)
+		}
+		ref = project.DefaultBranch
+		if ref == "" {
+			ref = "main"
+		}
 	}
 
 	path := args.Path
 	if path == "" {
-		path = "app"
+		path = "."
 	}
 
 	opt := &gitlab.ListTreeOptions{
 		Path:      &path,
+		Ref:       &ref,
 		Recursive: &args.Recursive,
 	}
 
 	nodes, _, err := glClient.Repositories.ListTree(args.ProjectID, opt)
 	if err != nil {
 		log.Printf("[AgentTool] listGitLabRepositoryTree failed: %v", err)
-		return nil, fmt.Errorf("failed to list repository tree: %w", err)
+		return nil, fmt.Errorf("failed to list repository tree at ref '%s': %w", ref, err)
 	}
 
 	var result []RepoTreeNode
@@ -420,7 +431,7 @@ func listGitLabRepositoryTree(ctx tool.Context, args ListRepoTreeArgs) (*ListRep
 		})
 	}
 
-	log.Printf("[AgentTool] listGitLabRepositoryTree found %d items", len(result))
+	log.Printf("[AgentTool] listGitLabRepositoryTree found %d items at ref '%s'", len(result), ref)
 
 	return &ListRepoTreeResponse{
 		Nodes: result,
@@ -489,6 +500,7 @@ type SearchCodeArgs struct {
 	ProjectID string `json:"projectId"`
 	Query     string `json:"query"`
 	Path      string `json:"path,omitempty"`
+	Ref       string `json:"ref,omitempty"` // branch name, tag, or commit SHA. Defaults to project's default branch.
 }
 
 type SearchResult struct {
@@ -503,30 +515,38 @@ type SearchCodeResponse struct {
 }
 
 func searchGitLabCode(ctx tool.Context, args SearchCodeArgs) (*SearchCodeResponse, error) {
-	log.Printf("[AgentTool] searchGitLabCode called: project=%s, query=%s", args.ProjectID, args.Query)
+	log.Printf("[AgentTool] searchGitLabCode called: project=%s, query=%s, ref=%s", args.ProjectID, args.Query, args.Ref)
 
 	glClient, err := getGitLabClient(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get GitLab client: %w", err)
 	}
 
-	searchOpts := &gitlab.SearchOptions{}
+	// Resolve ref: use provided ref or fall back to project's default branch
+	ref := args.Ref
+	if ref == "" {
+		project, _, err := glClient.Projects.GetProject(args.ProjectID, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get project: %w", err)
+		}
+		ref = project.DefaultBranch
+		if ref == "" {
+			ref = "main"
+		}
+	}
+
+	searchOpts := &gitlab.SearchOptions{
+		Ref: &ref,
+	}
 
 	results, _, err := glClient.Search.BlobsByProject(args.ProjectID, args.Query, searchOpts)
 	if err != nil {
 		log.Printf("[AgentTool] searchGitLabCode failed: %v", err)
-		return nil, fmt.Errorf("search failed: %w", err)
+		return nil, fmt.Errorf("search failed at ref '%s': %w", ref, err)
 	}
 
 	var searchResults []SearchResult
 	for _, r := range results {
-		// Get file content for each result
-		project, _, _ := glClient.Projects.GetProject(args.ProjectID, nil)
-		ref := "main"
-		if project != nil {
-			ref = project.DefaultBranch
-		}
-
 		fileOpt := &gitlab.GetFileOptions{Ref: &ref}
 		file, _, err := glClient.RepositoryFiles.GetFile(args.ProjectID, r.Filename, fileOpt)
 		if err == nil {
@@ -539,10 +559,77 @@ func searchGitLabCode(ctx tool.Context, args SearchCodeArgs) (*SearchCodeRespons
 		}
 	}
 
-	log.Printf("[AgentTool] searchGitLabCode found %d results", len(searchResults))
+	log.Printf("[AgentTool] searchGitLabCode found %d results at ref '%s'", len(searchResults), ref)
 
 	return &SearchCodeResponse{
 		Results: searchResults,
 		Count:   len(searchResults),
+	}, nil
+}
+
+// --- listGitLabBranches ---
+
+type ListBranchesArgs struct {
+	ProjectID string `json:"projectId"`
+	Search    string `json:"search,omitempty"` // filter branches by name
+}
+
+type BranchInfo struct {
+	Name               string `json:"name"`
+	Protected          bool   `json:"protected"`
+	Default            bool   `json:"default"`
+	DevelopersCanPush  bool   `json:"developersCanPush"`
+	DevelopersCanMerge bool   `json:"developersCanMerge"`
+	WebURL             string `json:"webUrl"`
+}
+
+type ListBranchesResponse struct {
+	Branches []BranchInfo `json:"branches"`
+	Count    int          `json:"count"`
+}
+
+func listGitLabBranches(ctx tool.Context, args ListBranchesArgs) (*ListBranchesResponse, error) {
+	log.Printf("[AgentTool] listGitLabBranches called: project=%s, search=%s", args.ProjectID, args.Search)
+
+	glClient, err := getGitLabClient(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get GitLab client: %w", err)
+	}
+
+	opts := &gitlab.ListBranchesOptions{}
+	if args.Search != "" {
+		opts.Search = &args.Search
+	}
+
+	branches, _, err := glClient.Branches.ListBranches(args.ProjectID, opts)
+	if err != nil {
+		log.Printf("[AgentTool] listGitLabBranches failed: %v", err)
+		return nil, fmt.Errorf("failed to list branches: %w", err)
+	}
+
+	// Get project to identify the default branch
+	project, _, projErr := glClient.Projects.GetProject(args.ProjectID, nil)
+	defaultBranch := ""
+	if projErr == nil && project != nil {
+		defaultBranch = project.DefaultBranch
+	}
+
+	var result []BranchInfo
+	for _, b := range branches {
+		result = append(result, BranchInfo{
+			Name:               b.Name,
+			Protected:          b.Protected,
+			Default:            b.Name == defaultBranch,
+			DevelopersCanPush:  b.DevelopersCanPush,
+			DevelopersCanMerge: b.DevelopersCanMerge,
+			WebURL:             b.WebURL,
+		})
+	}
+
+	log.Printf("[AgentTool] listGitLabBranches found %d branches", len(result))
+
+	return &ListBranchesResponse{
+		Branches: result,
+		Count:    len(result),
 	}, nil
 }

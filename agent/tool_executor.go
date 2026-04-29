@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -33,6 +34,11 @@ func init() {
 	registerToolExecutor("updateGitLabIssue", execUpdateGitLabIssue)
 
 	// Test tools
+	registerToolExecutor("listGitLabRepositoryTree", execListGitLabRepositoryTree)
+	registerToolExecutor("getGitLabFileContent", execGetGitLabFileContent)
+	registerToolExecutor("searchGitLabCode", execSearchGitLabCode)
+	registerToolExecutor("listGitLabBranches", execListGitLabBranches)
+
 	registerToolExecutor("listRecordedTests", execListRecordedTests)
 	registerToolExecutor("runRecordedTest", execRunRecordedTest)
 	registerToolExecutor("listTestScenarios", execListTestScenarios)
@@ -298,6 +304,241 @@ func getGitLabClientDirect(ctx context.Context) (*gitlab.Client, error) {
 	}
 
 	return client.GetClient(ctx, token, nil)
+}
+
+// --- Repository Explorer Tool Executors ---
+
+func execListGitLabRepositoryTree(ctx context.Context, args map[string]any) (any, error) {
+	log.Printf("[ToolExecutor] execListGitLabRepositoryTree called with args: %+v", args)
+
+	events := NewAgentToolEmitter(ctx)
+	events.Start("Listing repository tree...")
+
+	gitlabClient, err := getGitLabClientDirect(ctx)
+	if err != nil {
+		events.Error("Failed to list repository tree: " + err.Error())
+		return nil, err
+	}
+
+	projectID, _ := args["projectId"].(string)
+	path, _ := args["path"].(string)
+	ref, _ := args["ref"].(string)
+	recursive, _ := args["recursive"].(bool)
+
+	if projectID == "" {
+		return nil, fmt.Errorf("projectId is required")
+	}
+
+	// Resolve ref
+	if ref == "" {
+		project, _, err := gitlabClient.Projects.GetProject(projectID, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get project: %w", err)
+		}
+		ref = project.DefaultBranch
+		if ref == "" {
+			ref = "main"
+		}
+	}
+
+	if path == "" {
+		path = "."
+	}
+
+	opt := &gitlab.ListTreeOptions{
+		Path:      &path,
+		Ref:       &ref,
+		Recursive: &recursive,
+	}
+
+	nodes, _, err := gitlabClient.Repositories.ListTree(projectID, opt)
+	if err != nil {
+		events.Error("Failed to list repository tree: " + err.Error())
+		return nil, fmt.Errorf("failed to list repository tree at ref '%s': %w", ref, err)
+	}
+
+	var result []RepoTreeNode
+	for _, n := range nodes {
+		result = append(result, RepoTreeNode{
+			ID:   fmt.Sprintf("%d", n.ID),
+			Name: n.Name,
+			Type: n.Type,
+			Path: n.Path,
+		})
+	}
+
+	events.Done("Found %d items at ref '%s'", len(result), ref)
+
+	return &ListRepoTreeResponse{Nodes: result, Count: len(result)}, nil
+}
+
+func execGetGitLabFileContent(ctx context.Context, args map[string]any) (any, error) {
+	log.Printf("[ToolExecutor] execGetGitLabFileContent called with args: %+v", args)
+
+	events := NewAgentToolEmitter(ctx)
+	events.Start("Reading file content...")
+
+	gitlabClient, err := getGitLabClientDirect(ctx)
+	if err != nil {
+		events.Error("Failed to read file: " + err.Error())
+		return nil, err
+	}
+
+	projectID, _ := args["projectId"].(string)
+	filePath, _ := args["filePath"].(string)
+	ref, _ := args["ref"].(string)
+
+	if projectID == "" || filePath == "" {
+		return nil, fmt.Errorf("projectId and filePath are required")
+	}
+
+	// Resolve ref
+	if ref == "" {
+		project, _, err := gitlabClient.Projects.GetProject(projectID, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get project: %w", err)
+		}
+		ref = project.DefaultBranch
+		if ref == "" {
+			ref = "main"
+		}
+	}
+
+	fileOpt := &gitlab.GetFileOptions{Ref: &ref}
+	file, _, err := gitlabClient.RepositoryFiles.GetFile(projectID, filePath, fileOpt)
+	if err != nil {
+		events.Error("Failed to read file: " + err.Error())
+		return nil, fmt.Errorf("failed to get file '%s' at ref '%s': %w", filePath, ref, err)
+	}
+
+	contentBytes, err := base64.StdEncoding.DecodeString(file.Content)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode file content: %w", err)
+	}
+
+	events.Done("Read %d bytes from %s", len(contentBytes), filePath)
+
+	return &FileContentResponse{
+		FilePath: filePath,
+		Content:  string(contentBytes),
+		Size:     int(file.Size),
+		Encoding: file.Encoding,
+	}, nil
+}
+
+func execSearchGitLabCode(ctx context.Context, args map[string]any) (any, error) {
+	log.Printf("[ToolExecutor] execSearchGitLabCode called with args: %+v", args)
+
+	events := NewAgentToolEmitter(ctx)
+	events.Start("Searching code...")
+
+	gitlabClient, err := getGitLabClientDirect(ctx)
+	if err != nil {
+		events.Error("Failed to search code: " + err.Error())
+		return nil, err
+	}
+
+	projectID, _ := args["projectId"].(string)
+	query, _ := args["query"].(string)
+	ref, _ := args["ref"].(string)
+
+	if projectID == "" || query == "" {
+		return nil, fmt.Errorf("projectId and query are required")
+	}
+
+	// Resolve ref
+	if ref == "" {
+		project, _, err := gitlabClient.Projects.GetProject(projectID, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get project: %w", err)
+		}
+		ref = project.DefaultBranch
+		if ref == "" {
+			ref = "main"
+		}
+	}
+
+	searchOpts := &gitlab.SearchOptions{
+		Ref: &ref,
+	}
+
+	results, _, err := gitlabClient.Search.BlobsByProject(projectID, query, searchOpts)
+	if err != nil {
+		events.Error("Search failed: " + err.Error())
+		return nil, fmt.Errorf("search failed at ref '%s': %w", ref, err)
+	}
+
+	var searchResults []SearchResult
+	for _, r := range results {
+		fileOpt := &gitlab.GetFileOptions{Ref: &ref}
+		file, _, err := gitlabClient.RepositoryFiles.GetFile(projectID, r.Filename, fileOpt)
+		if err == nil {
+			contentBytes, _ := base64.StdEncoding.DecodeString(file.Content)
+			searchResults = append(searchResults, SearchResult{
+				FilePath: r.Filename,
+				Ref:      ref,
+				Content:  string(contentBytes),
+			})
+		}
+	}
+
+	events.Done("Found %d results at ref '%s'", len(searchResults), ref)
+
+	return &SearchCodeResponse{Results: searchResults, Count: len(searchResults)}, nil
+}
+
+func execListGitLabBranches(ctx context.Context, args map[string]any) (any, error) {
+	log.Printf("[ToolExecutor] execListGitLabBranches called with args: %+v", args)
+
+	events := NewAgentToolEmitter(ctx)
+	events.Start("Fetching branches...")
+
+	gitlabClient, err := getGitLabClientDirect(ctx)
+	if err != nil {
+		events.Error("Failed to fetch branches: " + err.Error())
+		return nil, err
+	}
+
+	projectID, _ := args["projectId"].(string)
+	search, _ := args["search"].(string)
+
+	if projectID == "" {
+		return nil, fmt.Errorf("projectId is required")
+	}
+
+	opts := &gitlab.ListBranchesOptions{}
+	if search != "" {
+		opts.Search = &search
+	}
+
+	branches, _, err := gitlabClient.Branches.ListBranches(projectID, opts)
+	if err != nil {
+		events.Error("Failed to list branches: " + err.Error())
+		return nil, fmt.Errorf("failed to list branches: %w", err)
+	}
+
+	// Get project to identify the default branch
+	project, _, projErr := gitlabClient.Projects.GetProject(projectID, nil)
+	defaultBranch := ""
+	if projErr == nil && project != nil {
+		defaultBranch = project.DefaultBranch
+	}
+
+	var result []BranchInfo
+	for _, b := range branches {
+		result = append(result, BranchInfo{
+			Name:               b.Name,
+			Protected:          b.Protected,
+			Default:            b.Name == defaultBranch,
+			DevelopersCanPush:  b.DevelopersCanPush,
+			DevelopersCanMerge: b.DevelopersCanMerge,
+			WebURL:             b.WebURL,
+		})
+	}
+
+	events.Done("Found %d branches", len(result))
+
+	return &ListBranchesResponse{Branches: result, Count: len(result)}, nil
 }
 
 // --- Test Tool Executors ---
