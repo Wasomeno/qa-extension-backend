@@ -107,11 +107,11 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input TestRecordingAg
 
 	// Count total test cases
 	totalCases := 0
-	for _, sheet := range scenario.Sheets {
+	for _, section := range scenario.Sections {
 		if len(input.SheetNames) > 0 {
 			found := false
 			for _, sn := range input.SheetNames {
-				if sheet.Name == sn {
+				if section.Title == sn {
 					found = true
 					break
 				}
@@ -120,7 +120,7 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input TestRecordingAg
 				continue
 			}
 		}
-		totalCases += len(sheet.TestCases)
+		totalCases += len(section.TestCases)
 	}
 
 	// Collect generated recordings from Redis
@@ -173,13 +173,13 @@ For EACH test case in the scenario below:
 
 	prompt.WriteString("\n## Test Scenario Data\n\n")
 
-	// Add each sheet and test case
-	for _, sheet := range scenario.Sheets {
-		// Filter by sheet names if provided
+	// Add each section and test case
+	for _, section := range scenario.Sections {
+		// Filter by section titles if provided
 		if len(sheetNames) > 0 {
 			found := false
 			for _, sn := range sheetNames {
-				if sheet.Name == sn {
+				if section.Title == sn {
 					found = true
 					break
 				}
@@ -189,13 +189,13 @@ For EACH test case in the scenario below:
 			}
 		}
 
-		prompt.WriteString(fmt.Sprintf("### Sheet: %s\n\n", sheet.Name))
+		prompt.WriteString(fmt.Sprintf("### Section: %s\n\n", section.Title))
 
-		for _, tc := range sheet.TestCases {
-			prompt.WriteString(fmt.Sprintf("#### Test Case: %s - %s\n", tc.ID, tc.Name))
+		for _, tc := range section.TestCases {
+			prompt.WriteString(fmt.Sprintf("#### Test Case: %s - %s\n", tc.ID, tc.Title))
 			
-			if tc.UserStory != "" {
-				prompt.WriteString(fmt.Sprintf("**User Story:** %s\n", tc.UserStory))
+			if tc.Description != "" {
+				prompt.WriteString(fmt.Sprintf("**Description:** %s\n", tc.Description))
 			}
 			if tc.PreCondition != "" {
 				prompt.WriteString(fmt.Sprintf("**Pre-condition:** %s\n", tc.PreCondition))
@@ -204,11 +204,11 @@ For EACH test case in the scenario below:
 			prompt.WriteString("\n**Test Steps:**\n")
 			for i, step := range tc.Steps {
 				prompt.WriteString(fmt.Sprintf("%d. %s\n", i+1, step.Action))
-				if step.InputData != "" {
-					prompt.WriteString(fmt.Sprintf("   - Input: %s\n", step.InputData))
+				if step.Data != "" {
+					prompt.WriteString(fmt.Sprintf("   - Input: %s\n", step.Data))
 				}
-				if step.ExpectedResult != "" {
-					prompt.WriteString(fmt.Sprintf("   - Expected: %s\n", step.ExpectedResult))
+				if step.Expected != "" {
+					prompt.WriteString(fmt.Sprintf("   - Expected: %s\n", step.Expected))
 				}
 			}
 

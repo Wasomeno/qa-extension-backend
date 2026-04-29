@@ -763,20 +763,24 @@ func runTestScenarioDirect(ctx context.Context, args map[string]any) (*RunTestSc
 		return nil, fmt.Errorf("failed to parse scenario: %w", err)
 	}
 
-	if len(scenario.GeneratedTests) == 0 {
+	if scenario.Stats != nil && scenario.Stats.AutomatedCount == 0 {
 		return nil, fmt.Errorf("no tests have been generated for this scenario yet")
 	}
 
 	var recordings []models.TestRecording
-	for _, gt := range scenario.GeneratedTests {
-		rVal, err := database.RedisClient.Get(ctx, fmt.Sprintf("recording:%s", gt.ID)).Result()
-		if err != nil {
-			continue
-		}
+	for _, section := range scenario.Sections {
+		for _, tc := range section.TestCases {
+			if tc.AutomationTest != nil && tc.AutomationTest.RecordingID != "" {
+				rVal, err := database.RedisClient.Get(ctx, fmt.Sprintf("recording:%s", tc.AutomationTest.RecordingID)).Result()
+				if err != nil {
+					continue
+				}
 
-		var r models.TestRecording
-		if err := json.Unmarshal([]byte(rVal), &r); err == nil {
-			recordings = append(recordings, r)
+				var r models.TestRecording
+				if err := json.Unmarshal([]byte(rVal), &r); err == nil {
+					recordings = append(recordings, r)
+				}
+			}
 		}
 	}
 
@@ -821,11 +825,12 @@ func runScenarioTestCaseDirect(ctx context.Context, args map[string]any) (*model
 		return nil, fmt.Errorf("failed to parse scenario: %w", err)
 	}
 
-	var targetCase *models.ParsedTestCase
-	for _, sheet := range scenario.Sheets {
-		for _, tc := range sheet.TestCases {
+	var targetCase *models.TestCase
+	for _, section := range scenario.Sections {
+		for _, tc := range section.TestCases {
 			if tc.ID == testCaseID {
-				targetCase = &tc
+				tcCopy := tc // Create a local copy to take address of safely in loop
+				targetCase = &tcCopy
 				break
 			}
 		}
@@ -839,15 +844,12 @@ func runScenarioTestCaseDirect(ctx context.Context, args map[string]any) (*model
 	}
 
 	var recording *models.TestRecording
-	for _, gt := range scenario.GeneratedTests {
-		if strings.Contains(gt.Name, testCaseID) {
-			rVal, err := database.RedisClient.Get(ctx, fmt.Sprintf("recording:%s", gt.ID)).Result()
-			if err == nil {
-				var r models.TestRecording
-				if err := json.Unmarshal([]byte(rVal), &r); err == nil {
-					recording = &r
-					break
-				}
+	if targetCase.AutomationTest != nil && targetCase.AutomationTest.RecordingID != "" {
+		rVal, err := database.RedisClient.Get(ctx, fmt.Sprintf("recording:%s", targetCase.AutomationTest.RecordingID)).Result()
+		if err == nil {
+			var r models.TestRecording
+			if err := json.Unmarshal([]byte(rVal), &r); err == nil {
+				recording = &r
 			}
 		}
 	}

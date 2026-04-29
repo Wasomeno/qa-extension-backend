@@ -76,10 +76,17 @@ func main() {
 		protected.POST("/test-scenarios/upload", handlers.UploadScenario)
 		protected.GET("/test-scenarios", handlers.ListScenarios)
 		protected.GET("/test-scenarios/:id", handlers.GetScenario)
+		protected.PATCH("/test-scenarios/:id", handlers.UpdateScenario)
 		protected.DELETE("/test-scenarios/:id", handlers.DeleteScenario)
 		protected.POST("/test-scenarios/:id/generate", handlers.GenerateTests)
 		protected.GET("/test-scenarios/:id/stream", handlers.StreamEvents)
 		protected.POST("/test-scenarios/bulk-delete", handlers.BulkDeleteScenarios)
+		
+		// Test case CRUD endpoints
+		protected.POST("/test-scenarios/:id/sections/:sectionId/test-cases", handlers.AddTestCase)
+		protected.PATCH("/test-scenarios/:id/sections/:sectionId/test-cases/reorder", handlers.ReorderTestCases)
+		protected.PATCH("/test-scenarios/:id/sections/:sectionId/test-cases/:tcId", handlers.UpdateTestCase)
+		protected.DELETE("/test-scenarios/:id/sections/:sectionId/test-cases/:tcId", handlers.DeleteTestCase)
 
 		protected.POST("/recordings/:id/run", handlers.RunRecording)
 

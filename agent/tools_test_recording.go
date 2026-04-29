@@ -1788,7 +1788,7 @@ func buildGenerationPrompt(scenario *models.TestScenario, sheetNames []string) s
 	var lines []string
 	lines = append(lines, "You are generating test recordings from a test scenario.")
 	lines = append(lines, "")
-	lines = append(lines, fmt.Sprintf("Scenario: %s", scenario.FileName))
+	lines = append(lines, fmt.Sprintf("Scenario: %s", scenario.Title))
 	lines = append(lines, "")
 	
 	for _, sheet := range scenario.Sheets {

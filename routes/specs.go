@@ -36,7 +36,7 @@ func GetSpecsTree(c *gin.Context) {
 	}
 
 	projectID := c.Param("id")
-	specsPath := c.DefaultQuery("path", "specs")
+	specsPath := c.Query("path")
 	ref := c.Query("ref")
 	recursive := c.Query("recursive") == "true"
 
@@ -306,7 +306,7 @@ func SearchSpecs(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "q query parameter is required"})
 		return
 	}
-	specsPath := c.DefaultQuery("path", "specs")
+	specsPath := c.Query("path")
 	ref := c.Query("ref")
 
 	results, err := specsService.SearchTree(glClient, projectID, specsPath, ref, query)

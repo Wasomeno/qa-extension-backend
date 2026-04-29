@@ -34,7 +34,6 @@ func pluralize(n int) string {
 
 // UploadScenario handles uploading an XLSX file and parsing it into a TestScenario
 func UploadScenario(c *gin.Context) {
-	// Parse multipart form
 	err := c.Request.ParseMultipartForm(10 << 20) // 10 MB limit
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to parse multipart form"})
@@ -59,7 +58,6 @@ func UploadScenario(c *gin.Context) {
 		}
 	}
 
-	// Parse XLSX
 	sheets, err := services.ParseXLSX(file)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("failed to parse xlsx: %v", err)})
@@ -84,22 +82,13 @@ func UploadScenario(c *gin.Context) {
 		}
 	}
 
-	scenario := models.TestScenario{
-		ID:             uuid.NewString(),
-		FileName:       header.Filename,
-		ProjectID:      projectID,
-		ProjectName:    projectName,
-		Sheets:         sheets,
-		GeneratedTests: []models.TestScenarioRecording{},
-		Status:         "uploaded",
-		AuthConfig:     authConfig,
-		CreatedAt:      time.Now(),
+	userID, err := identity.GetCurrentUserID(c)
+	if err != nil {
+		userID = 0
 	}
 
-	userID, err := identity.GetCurrentUserID(c)
-	if err == nil {
-		scenario.CreatorID = userID
-	}
+	scenario := services.BuildScenarioFromXLSX(header.Filename, sheets, projectID, projectName, authConfig, userID)
+	scenario.ID = uuid.NewString()
 
 	// Save to Redis
 	ctx := c.Request.Context()
@@ -128,7 +117,7 @@ func UploadScenario(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"message": "scenario uploaded and parsed successfully",
 		"id":      scenario.ID,
-		"sheets":  len(sheets),
+		"sections": len(scenario.Sections),
 	})
 }
 
@@ -138,7 +127,7 @@ func ListScenarios(c *gin.Context) {
 	userID, _ := identity.GetCurrentUserID(c)
 	search := c.Query("search")
 	status := c.Query("status")
-	sortBy := c.Query("sort_by") // "created_at", "file_name", "status"
+	sortBy := c.Query("sort_by") // "created_at", "title", "status"
 	order := c.Query("order")    // "asc", "desc"
 	page := 1
 	limit := 20
@@ -158,7 +147,6 @@ func ListScenarios(c *gin.Context) {
 	var err error
 
 	if userID != 0 {
-		// Fetch user's scenarios and legacy (CreatorID == 0)
 		userKey := fmt.Sprintf("scenarios:user:%d", userID)
 		ids, err = database.RedisClient.SUnion(ctx, "scenarios:legacy", userKey).Result()
 	} else {
@@ -181,8 +169,12 @@ func ListScenarios(c *gin.Context) {
 		if err == nil {
 			var s models.TestScenario
 			if json.Unmarshal([]byte(val), &s) == nil {
-				// Filter for current user or legacy
 				if userID == 0 || s.CreatorID == 0 || s.CreatorID == userID {
+					// For lists, we don't need the full parsed sheets or massive test cases payload
+					// We can just compute stats and clear out the heavy parts
+					s.ComputeStats()
+					s.Sections = nil
+					s.Sheets = nil
 					scenarios = append(scenarios, s)
 					processedIDs[id] = true
 				}
@@ -194,7 +186,7 @@ func ListScenarios(c *gin.Context) {
 	if status != "" {
 		filtered := make([]models.TestScenario, 0)
 		for _, s := range scenarios {
-			if s.Status == status {
+			if string(s.Status) == status {
 				filtered = append(filtered, s)
 			}
 		}
@@ -206,7 +198,7 @@ func ListScenarios(c *gin.Context) {
 		searchLower := strings.ToLower(search)
 		filtered := make([]models.TestScenario, 0)
 		for _, s := range scenarios {
-			if strings.Contains(strings.ToLower(s.FileName), searchLower) ||
+			if strings.Contains(strings.ToLower(s.Title), searchLower) ||
 				strings.Contains(strings.ToLower(s.ProjectName), searchLower) {
 				filtered = append(filtered, s)
 			}
@@ -225,11 +217,11 @@ func ListScenarios(c *gin.Context) {
 	sort.Slice(scenarios, func(i, j int) bool {
 		var condition bool
 		switch sortBy {
-		case "file_name":
+		case "title", "file_name":
 			if order == "asc" {
-				condition = scenarios[i].FileName < scenarios[j].FileName
+				condition = scenarios[i].Title < scenarios[j].Title
 			} else {
-				condition = scenarios[i].FileName > scenarios[j].FileName
+				condition = scenarios[i].Title > scenarios[j].Title
 			}
 		case "status":
 			if order == "asc" {
@@ -279,21 +271,309 @@ func GetScenario(c *gin.Context) {
 		return
 	}
 
-	ctx := c.Request.Context()
-	key := fmt.Sprintf("scenario:%s", id)
-
-	val, err := database.RedisClient.Get(ctx, key).Result()
+	scenario, err := getScenario(c.Request.Context(), id)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "scenario not found"})
 		return
 	}
 
-	var scenario models.TestScenario
-	if err := json.Unmarshal([]byte(val), &scenario); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to unmarshal scenario"})
+	// Ensure stats are computed
+	scenario.ComputeStats()
+	
+	// Exclude sheets from response to save bandwidth
+	scenario.Sheets = nil
+
+	c.JSON(http.StatusOK, scenario)
+}
+
+// UpdateScenario updates top-level scenario fields
+func UpdateScenario(c *gin.Context) {
+	id := c.Param("id")
+	var req models.UpdateScenarioRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
+	ctx := c.Request.Context()
+	scenario, err := getScenario(ctx, id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "scenario not found"})
+		return
+	}
+
+	if req.Title != nil {
+		scenario.Title = *req.Title
+	}
+	if req.Description != nil {
+		scenario.Description = *req.Description
+	}
+
+	scenario.UpdatedAt = time.Now()
+	saveScenario(ctx, &scenario)
+
+	scenario.Sheets = nil
+	c.JSON(http.StatusOK, scenario)
+}
+
+// UpdateTestCase updates fields of a specific test case
+func UpdateTestCase(c *gin.Context) {
+	id := c.Param("id")
+	sectionID := c.Param("sectionId")
+	tcID := c.Param("tcId")
+
+	var req models.UpdateTestCaseRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx := c.Request.Context()
+	scenario, err := getScenario(ctx, id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "scenario not found"})
+		return
+	}
+
+	updated := false
+	for i := range scenario.Sections {
+		if scenario.Sections[i].ID == sectionID {
+			for j := range scenario.Sections[i].TestCases {
+				if scenario.Sections[i].TestCases[j].ID == tcID {
+					tc := &scenario.Sections[i].TestCases[j]
+					
+					if req.Title != nil { tc.Title = *req.Title }
+					if req.Description != nil { tc.Description = *req.Description }
+					if req.PreCondition != nil { tc.PreCondition = *req.PreCondition }
+					if req.Tags != nil { tc.Tags = *req.Tags }
+					if req.Priority != nil { tc.Priority = *req.Priority }
+					if req.Type != nil { tc.Type = *req.Type }
+					if req.Status != nil { tc.Status = *req.Status }
+					if req.Note != nil { tc.Note = *req.Note }
+					if req.Steps != nil { 
+						tc.Steps = *req.Steps
+						// Enforce order
+						for k := range tc.Steps {
+							tc.Steps[k].Order = k + 1
+						}
+					}
+					
+					tc.UpdatedAt = time.Now().Format(time.RFC3339)
+					updated = true
+					break
+				}
+			}
+			break
+		}
+	}
+
+	if !updated {
+		c.JSON(http.StatusNotFound, gin.H{"error": "section or test case not found"})
+		return
+	}
+
+	scenario.UpdatedAt = time.Now()
+	scenario.ComputeStats()
+	saveScenario(ctx, &scenario)
+
+	scenario.Sheets = nil
+	c.JSON(http.StatusOK, scenario)
+}
+
+// ReorderTestCases updates the order of test cases in a section
+func ReorderTestCases(c *gin.Context) {
+	id := c.Param("id")
+	sectionID := c.Param("sectionId")
+
+	var req models.ReorderTestCasesRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx := c.Request.Context()
+	scenario, err := getScenario(ctx, id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "scenario not found"})
+		return
+	}
+
+	updated := false
+	for i := range scenario.Sections {
+		if scenario.Sections[i].ID == sectionID {
+			// Create map for fast lookup
+			tcMap := make(map[string]*models.TestCase)
+			for j := range scenario.Sections[i].TestCases {
+				tcMap[scenario.Sections[i].TestCases[j].ID] = &scenario.Sections[i].TestCases[j]
+			}
+
+			// Rebuild array based on requested order
+			var newCases []models.TestCase
+			for idx, tcID := range req.OrderedIDs {
+				if tc, ok := tcMap[tcID]; ok {
+					tc.Order = idx + 1
+					newCases = append(newCases, *tc)
+					delete(tcMap, tcID)
+				}
+			}
+
+			// Append any remaining test cases that weren't in the ordered list
+			idx := len(newCases)
+			for _, tc := range tcMap {
+				tc.Order = idx + 1
+				newCases = append(newCases, *tc)
+				idx++
+			}
+
+			scenario.Sections[i].TestCases = newCases
+			updated = true
+			break
+		}
+	}
+
+	if !updated {
+		c.JSON(http.StatusNotFound, gin.H{"error": "section not found"})
+		return
+	}
+
+	scenario.UpdatedAt = time.Now()
+	saveScenario(ctx, &scenario)
+
+	scenario.Sheets = nil
+	c.JSON(http.StatusOK, scenario)
+}
+
+// AddTestCase adds a new test case to a section
+func AddTestCase(c *gin.Context) {
+	id := c.Param("id")
+	sectionID := c.Param("sectionId")
+
+	var req models.CreateTestCaseRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx := c.Request.Context()
+	scenario, err := getScenario(ctx, id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "scenario not found"})
+		return
+	}
+
+	updated := false
+	for i := range scenario.Sections {
+		if scenario.Sections[i].ID == sectionID {
+			now := time.Now().Format(time.RFC3339)
+			
+			// Enforce step orders
+			for k := range req.Steps {
+				req.Steps[k].Order = k + 1
+				if req.Steps[k].ID == "" {
+					req.Steps[k].ID = models.NewTestStepID()
+				}
+			}
+
+			// Generate TC-XXX code
+			maxCode := 0
+			for _, s := range scenario.Sections {
+				for _, tc := range s.TestCases {
+					if strings.HasPrefix(tc.Code, "TC-") {
+						var num int
+						fmt.Sscanf(tc.Code, "TC-%d", &num)
+						if num > maxCode {
+							maxCode = num
+						}
+					}
+				}
+			}
+			code := fmt.Sprintf("TC-%03d", maxCode+1)
+
+			newTC := models.TestCase{
+				ID:           models.NewTestCaseID(),
+				Order:        len(scenario.Sections[i].TestCases) + 1,
+				Code:         code,
+				Title:        req.Title,
+				Description:  req.Description,
+				PreCondition: req.PreCondition,
+				Steps:        req.Steps,
+				Tags:         req.Tags,
+				Priority:     req.Priority,
+				Type:         req.Type,
+				Status:       req.Status,
+				CreatedAt:    now,
+				UpdatedAt:    now,
+			}
+
+			if newTC.Priority == "" { newTC.Priority = models.PriorityMedium }
+			if newTC.Type == "" { newTC.Type = "positive" }
+			if newTC.Status == "" { newTC.Status = models.TCStatusDraft }
+
+			scenario.Sections[i].TestCases = append(scenario.Sections[i].TestCases, newTC)
+			updated = true
+			break
+		}
+	}
+
+	if !updated {
+		c.JSON(http.StatusNotFound, gin.H{"error": "section not found"})
+		return
+	}
+
+	scenario.UpdatedAt = time.Now()
+	scenario.ComputeStats()
+	saveScenario(ctx, &scenario)
+
+	scenario.Sheets = nil
+	c.JSON(http.StatusOK, scenario)
+}
+
+// DeleteTestCase removes a test case
+func DeleteTestCase(c *gin.Context) {
+	id := c.Param("id")
+	sectionID := c.Param("sectionId")
+	tcID := c.Param("tcId")
+
+	ctx := c.Request.Context()
+	scenario, err := getScenario(ctx, id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "scenario not found"})
+		return
+	}
+
+	updated := false
+	for i := range scenario.Sections {
+		if scenario.Sections[i].ID == sectionID {
+			var newCases []models.TestCase
+			for j := range scenario.Sections[i].TestCases {
+				tc := &scenario.Sections[i].TestCases[j]
+				if tc.ID == tcID {
+					// Clean up automation recording if exists
+					if tc.AutomationTest != nil && tc.AutomationTest.RecordingID != "" {
+						database.RedisClient.Del(ctx, fmt.Sprintf("recording:%s", tc.AutomationTest.RecordingID))
+						database.RedisClient.SRem(ctx, "recordings", tc.AutomationTest.RecordingID)
+					}
+					updated = true
+				} else {
+					tc.Order = len(newCases) + 1
+					newCases = append(newCases, *tc)
+				}
+			}
+			scenario.Sections[i].TestCases = newCases
+			break
+		}
+	}
+
+	if !updated {
+		c.JSON(http.StatusNotFound, gin.H{"error": "section or test case not found"})
+		return
+	}
+
+	scenario.UpdatedAt = time.Now()
+	scenario.ComputeStats()
+	saveScenario(ctx, &scenario)
+
+	scenario.Sheets = nil
 	c.JSON(http.StatusOK, scenario)
 }
 
@@ -306,28 +586,24 @@ func DeleteScenario(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	key := fmt.Sprintf("scenario:%s", id)
-
-	val, err := database.RedisClient.Get(ctx, key).Result()
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "scenario not found"})
-		return
-	}
-
-	var scenario models.TestScenario
-	if err := json.Unmarshal([]byte(val), &scenario); err == nil {
-		// Clean up generated recordings implicitly
-		for _, test := range scenario.GeneratedTests {
-			database.RedisClient.Del(ctx, fmt.Sprintf("recording:%s", test.ID))
-			database.RedisClient.SRem(ctx, "recordings", test.ID)
-			
-			if scenario.ProjectID != "" {
-				database.RedisClient.SRem(ctx, fmt.Sprintf("recordings:project:%s", scenario.ProjectID), test.ID)
+	scenario, err := getScenario(ctx, id)
+	if err == nil {
+		// Clean up generated recordings linked to test cases
+		for _, section := range scenario.Sections {
+			for _, tc := range section.TestCases {
+				if tc.AutomationTest != nil && tc.AutomationTest.RecordingID != "" {
+					recID := tc.AutomationTest.RecordingID
+					database.RedisClient.Del(ctx, fmt.Sprintf("recording:%s", recID))
+					database.RedisClient.SRem(ctx, "recordings", recID)
+					if scenario.ProjectID != "" {
+						database.RedisClient.SRem(ctx, fmt.Sprintf("recordings:project:%s", scenario.ProjectID), recID)
+					}
+				}
 			}
 		}
 	}
 
-	err = database.RedisClient.Del(ctx, key).Err()
+	err = database.RedisClient.Del(ctx, fmt.Sprintf("scenario:%s", id)).Err()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete scenario from redis"})
 		return
@@ -336,210 +612,6 @@ func DeleteScenario(c *gin.Context) {
 	database.RedisClient.SRem(ctx, "scenarios", id)
 
 	c.JSON(http.StatusOK, gin.H{"message": "scenario deleted successfully", "id": id})
-}
-
-// GenerateTests triggers AI generation for a given sheet inside a scenario
-func GenerateTests(c *gin.Context) {
-	id := c.Param("id")
-	if id == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "scenario id is required"})
-		return
-	}
-
-	var req struct {
-		SheetNames []string `json:"sheetNames"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	if len(req.SheetNames) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "sheetNames array is required and cannot be empty"})
-		return
-	}
-
-	ctx := c.Request.Context()
-	key := fmt.Sprintf("scenario:%s", id)
-
-	// Fetch scenario
-	val, err := database.RedisClient.Get(ctx, key).Result()
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "scenario not found"})
-		return
-	}
-
-	var scenario models.TestScenario
-	if err := json.Unmarshal([]byte(val), &scenario); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to unmarshal scenario"})
-		return
-	}
-
-	// Update status to generating
-	scenario.Status = "generating"
-	newVal, _ := json.Marshal(scenario)
-	database.RedisClient.Set(ctx, key, newVal, 0)
-
-	// Get auth token for GitLab
-	token, ok := c.MustGet("token").(*oauth2.Token)
-	if !ok {
-		scenario.Status = "failed"
-		scenario.Error = "unauthorized: missing GitLab token"
-		updateScenarioStatus(id, scenario)
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
-	}
-
-	gitlabClient, err := client.GetClient(ctx, token, nil)
-	if err != nil {
-		scenario.Status = "failed"
-		scenario.Error = fmt.Sprintf("failed to get gitlab client: %v", err)
-		updateScenarioStatus(id, scenario)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": scenario.Error})
-		return
-	}
-
-	// We return immediately and do the heavy lifting in a goroutine
-	c.JSON(http.StatusAccepted, gin.H{"message": "generation started", "id": id})
-
-	go func(scenario models.TestScenario, sheetNames []string, gitlabClient interface{}) {
-		bgCtx := context.Background()
-
-		// Create event emitter for consistent event publishing
-		events := agent.NewGenerationEmitter(bgCtx, id)
-
-		// Build a descriptive context for messages
-		projectName := scenario.ProjectName
-		if projectName == "" {
-			projectName = scenario.ProjectID
-		}
-
-		// Re-instantiate client with bgCtx
-		clientObj, _ := client.GetClient(bgCtx, token, nil)
-		if clientObj == nil {
-			clientObj = gitlabClient.(*gitlab.Client) // fallback
-		}
-
-		// Collect test cases from all target sheets
-		var targetTestCases []models.ParsedTestCase
-		testCaseNames := []string{}
-		for _, s := range scenario.Sheets {
-			for _, name := range sheetNames {
-				if s.Name == name {
-					for _, tc := range s.TestCases {
-						targetTestCases = append(targetTestCases, tc)
-						if len(testCaseNames) < 5 {
-							testCaseNames = append(testCaseNames, tc.Name)
-						}
-					}
-					break
-				}
-			}
-		}
-
-		if len(targetTestCases) == 0 {
-			events.Error("No test cases found in selected sheets")
-			scenario.Status = "failed"
-			scenario.Error = "no test cases found in selected sheets"
-			updateScenarioStatus(id, scenario)
-			return
-		}
-
-		// Set total steps for progress tracking
-		events.SetTotalSteps(len(targetTestCases))
-
-		// Stage: start
-		totalSheets := len(sheetNames)
-		totalCases := len(targetTestCases)
-		events.Start("Generating %d test recording%s for '%s' (%d sheet%s: %s)...",
-			totalCases, pluralize(totalCases),
-			projectName,
-			totalSheets, pluralize(totalSheets),
-			strings.Join(sheetNames, ", "))
-
-		// Stage: progress - sending to agent
-		if totalCases > 1 {
-			events.Progressf("Generating %d test recordings using QA Agent...", totalCases)
-		} else {
-			tcName := ""
-			if len(testCaseNames) > 0 {
-				tcName = testCaseNames[0]
-			}
-			events.Progressf("Generating Playwright test for '%s' using QA Agent...", tcName)
-		}
-
-		// Use agent - it will use GitLab tools to navigate repo and find files
-		// Use the LLM-based agent for intelligent code exploration
-		result, err := agent.RunAgentForTestGenerationWithLLM(bgCtx, agent.TestRecordingAgentInput{
-			ScenarioID: id,
-			SheetNames: sheetNames,
-		}, token)
-		if err != nil {
-			events.Error(fmt.Sprintf("Agent generation failed: %v", err))
-			scenario.Status = "failed"
-			scenario.Error = fmt.Sprintf("failed to generate tests: %v", err)
-			updateScenarioStatus(id, scenario)
-			return
-		}
-
-		recordings := result.Recordings
-
-		// Log missing routes if any
-		if len(result.FailedIDs) > 0 {
-			log.Printf("[Agent] Failed to generate %d test cases: %v", len(result.FailedIDs), result.FailedIDs)
-		}
-
-		// Stage: processing AI response
-		events.Progressf("Processing %d generated test recording%s from AI...", len(recordings), pluralize(len(recordings)))
-
-		// Stage: saving recordings
-		events.Progressf("Saving %d generated test recording%s to database...", len(recordings), pluralize(len(recordings)))
-
-		// Save generated recordings to Redis
-		for _, rec := range recordings {
-			rec.ProjectID = scenario.ProjectID
-			rec.CreatorID = scenario.CreatorID
-			rec.CreatedAt = time.Now()
-			rec.SourceType = "test_scenario"
-			rec.SourceID = id // Link to the parent test scenario
-
-			recKey := fmt.Sprintf("recording:%s", rec.ID)
-			recVal, _ := json.Marshal(rec)
-
-			database.RedisClient.Set(bgCtx, recKey, recVal, 0)
-			database.RedisClient.SAdd(bgCtx, "recordings", rec.ID)
-			if rec.CreatorID != 0 {
-				database.RedisClient.SAdd(bgCtx, fmt.Sprintf("recordings:user:%d", rec.CreatorID), rec.ID)
-			} else {
-				database.RedisClient.SAdd(bgCtx, "recordings:legacy", rec.ID)
-			}
-
-			if rec.ProjectID != "" {
-				database.RedisClient.SAdd(bgCtx, fmt.Sprintf("recordings:project:%s", rec.ProjectID), rec.ID)
-			}
-
-			scenario.GeneratedTests = append(scenario.GeneratedTests, models.TestScenarioRecording{
-				ID:   rec.ID,
-				Name: rec.Name,
-			})
-		}
-
-		// Stage: done
-		events.Done("Successfully generated %d test recording%s for '%s'",
-			len(recordings), pluralize(len(recordings)),
-			projectName)
-
-		// Update scenario as ready
-		scenario.Status = "ready"
-		scenario.Error = ""
-		updateScenarioStatus(id, scenario)
-	}(scenario, req.SheetNames, gitlabClient)
-}
-
-func updateScenarioStatus(id string, scenario models.TestScenario) {
-	ctx := context.Background()
-	key := fmt.Sprintf("scenario:%s", id)
-	val, _ := json.Marshal(scenario)
-	database.RedisClient.Set(ctx, key, val, 0)
 }
 
 // BulkDeleteScenarios deletes multiple test scenarios by their IDs
@@ -562,33 +634,27 @@ func BulkDeleteScenarios(c *gin.Context) {
 	var errors []string
 
 	for _, id := range req.IDs {
-		key := fmt.Sprintf("scenario:%s", id)
-
-		val, err := database.RedisClient.Get(ctx, key).Result()
+		scenario, err := getScenario(ctx, id)
 		if err != nil {
 			notFound = append(notFound, id)
 			continue
 		}
 
-		var scenario models.TestScenario
-		if err := json.Unmarshal([]byte(val), &scenario); err != nil {
-			errors = append(errors, fmt.Sprintf("%s: %v", id, err))
-			continue
-		}
-
 		// Clean up generated recordings
-		for _, test := range scenario.GeneratedTests {
-			recKey := fmt.Sprintf("recording:%s", test.ID)
-			database.RedisClient.Del(ctx, recKey)
-			database.RedisClient.SRem(ctx, "recordings", test.ID)
-
-			if scenario.ProjectID != "" {
-				database.RedisClient.SRem(ctx, fmt.Sprintf("recordings:project:%s", scenario.ProjectID), test.ID)
+		for _, section := range scenario.Sections {
+			for _, tc := range section.TestCases {
+				if tc.AutomationTest != nil && tc.AutomationTest.RecordingID != "" {
+					recID := tc.AutomationTest.RecordingID
+					database.RedisClient.Del(ctx, fmt.Sprintf("recording:%s", recID))
+					database.RedisClient.SRem(ctx, "recordings", recID)
+					if scenario.ProjectID != "" {
+						database.RedisClient.SRem(ctx, fmt.Sprintf("recordings:project:%s", scenario.ProjectID), recID)
+					}
+				}
 			}
 		}
 
-		// Delete scenario
-		err = database.RedisClient.Del(ctx, key).Err()
+		err = database.RedisClient.Del(ctx, fmt.Sprintf("scenario:%s", id)).Err()
 		if err != nil {
 			errors = append(errors, fmt.Sprintf("%s: %v", id, err))
 			continue
@@ -604,4 +670,250 @@ func BulkDeleteScenarios(c *gin.Context) {
 		"notFound":     notFound,
 		"errors":       errors,
 	})
+}
+
+// GenerateTests triggers AI generation. It can take either sheetNames (legacy/fallback)
+// or sectionIds/testCaseIds.
+func GenerateTests(c *gin.Context) {
+	id := c.Param("id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "scenario id is required"})
+		return
+	}
+
+	var req struct {
+		SheetNames  []string `json:"sheetNames"`
+		SectionIDs  []string `json:"sectionIds"`
+		TestCaseIDs []string `json:"testCaseIds"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	
+	if len(req.SheetNames) == 0 && len(req.SectionIDs) == 0 && len(req.TestCaseIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "must provide sheetNames, sectionIds, or testCaseIds"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	scenario, err := getScenario(ctx, id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "scenario not found"})
+		return
+	}
+
+	// Resolve the list of target test case IDs based on the request
+	var targetTestCaseIDs []string
+	
+	if len(req.TestCaseIDs) > 0 {
+		targetTestCaseIDs = req.TestCaseIDs
+	} else if len(req.SectionIDs) > 0 {
+		for _, sId := range req.SectionIDs {
+			for _, sec := range scenario.Sections {
+				if sec.ID == sId {
+					for _, tc := range sec.TestCases {
+						targetTestCaseIDs = append(targetTestCaseIDs, tc.ID)
+					}
+				}
+			}
+		}
+	} else if len(req.SheetNames) > 0 {
+		// Mapping sheets to sections (fallback)
+		for _, sName := range req.SheetNames {
+			for _, sec := range scenario.Sections {
+				if sec.Title == sName {
+					for _, tc := range sec.TestCases {
+						targetTestCaseIDs = append(targetTestCaseIDs, tc.ID)
+					}
+				}
+			}
+		}
+	}
+
+	if len(targetTestCaseIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no matching test cases found"})
+		return
+	}
+
+	scenario.Status = models.ScenarioStatusGenerating
+	saveScenario(ctx, &scenario)
+
+	token, ok := c.MustGet("token").(*oauth2.Token)
+	if !ok {
+		scenario.Status = models.ScenarioStatusFailed
+		scenario.Error = "unauthorized: missing GitLab token"
+		saveScenario(ctx, &scenario)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	gitlabClient, err := client.GetClient(ctx, token, nil)
+	if err != nil {
+		scenario.Status = models.ScenarioStatusFailed
+		scenario.Error = fmt.Sprintf("failed to get gitlab client: %v", err)
+		saveScenario(ctx, &scenario)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": scenario.Error})
+		return
+	}
+
+	c.JSON(http.StatusAccepted, gin.H{"message": "generation started", "id": id})
+
+	go func(scenario *models.TestScenario, targetIDs []string, gitlabClient interface{}) {
+		bgCtx := context.Background()
+		events := agent.NewGenerationEmitter(bgCtx, id)
+		
+		clientObj, _ := client.GetClient(bgCtx, token, nil)
+		if clientObj == nil {
+			clientObj = gitlabClient.(*gitlab.Client)
+		}
+
+		projectName := scenario.ProjectName
+		if projectName == "" {
+			projectName = scenario.ProjectID
+		}
+
+		// Update target test cases to running state
+		setTestCasesAutomationStatus(bgCtx, id, targetIDs, models.AutomationStatusRunning)
+
+		events.SetTotalSteps(len(targetIDs))
+		events.Start("Generating %d test recording%s for '%s'...",
+			len(targetIDs), pluralize(len(targetIDs)), projectName)
+		events.Progressf("Generating test recordings using QA Agent...")
+
+		// Use agent 
+		// We map target test cases to sheet names since the agent still works with sheets internally
+		// (We should refactor agent input eventually)
+		var sheetNames []string
+		for _, s := range scenario.Sheets {
+			sheetNames = append(sheetNames, s.Name)
+		}
+
+		result, err := agent.RunAgentForTestGenerationWithLLM(bgCtx, agent.TestRecordingAgentInput{
+			ScenarioID: id,
+			SheetNames: sheetNames, // Provide all sheet names, the agent will filter to the specific cases
+		}, token)
+		
+		if err != nil {
+			events.Error(fmt.Sprintf("Agent generation failed: %v", err))
+			
+			// Mark all running as failed
+			setTestCasesAutomationStatus(bgCtx, id, targetIDs, models.AutomationStatusFail)
+			
+			s, _ := getScenario(bgCtx, id)
+			s.Status = models.ScenarioStatusFailed
+			s.Error = fmt.Sprintf("failed to generate tests: %v", err)
+			saveScenario(bgCtx, &s)
+			return
+		}
+
+		recordings := result.Recordings
+
+		if len(result.FailedIDs) > 0 {
+			log.Printf("[Agent] Failed to generate %d test cases: %v", len(result.FailedIDs), result.FailedIDs)
+		}
+
+		events.Progressf("Saving %d generated test recording%s to database...", len(recordings), pluralize(len(recordings)))
+
+		// Reload scenario to get latest state
+		s, _ := getScenario(bgCtx, id)
+
+		for _, rec := range recordings {
+			rec.ProjectID = s.ProjectID
+			rec.CreatorID = s.CreatorID
+			rec.CreatedAt = time.Now()
+			rec.SourceType = "test_scenario"
+			rec.SourceID = id
+
+			recKey := fmt.Sprintf("recording:%s", rec.ID)
+			recVal, _ := json.Marshal(rec)
+
+			database.RedisClient.Set(bgCtx, recKey, recVal, 0)
+			database.RedisClient.SAdd(bgCtx, "recordings", rec.ID)
+			if rec.CreatorID != 0 {
+				database.RedisClient.SAdd(bgCtx, fmt.Sprintf("recordings:user:%d", rec.CreatorID), rec.ID)
+			} else {
+				database.RedisClient.SAdd(bgCtx, "recordings:legacy", rec.ID)
+			}
+			if rec.ProjectID != "" {
+				database.RedisClient.SAdd(bgCtx, fmt.Sprintf("recordings:project:%s", rec.ProjectID), rec.ID)
+			}
+
+			// Link recording to test case
+			services.LinkRecordingByName(&s, rec.ID, rec.Name)
+		}
+
+		// Update any that were running but didn't get a recording to failed
+		for i := range s.Sections {
+			for j := range s.Sections[i].TestCases {
+				tc := &s.Sections[i].TestCases[j]
+				if tc.AutomationTest != nil && tc.AutomationTest.Status == models.AutomationStatusRunning {
+					tc.AutomationTest.Status = models.AutomationStatusFail
+					tc.AutomationTest.ErrorMessage = "Failed to generate recording for this test case."
+				}
+			}
+		}
+
+		s.Status = models.ScenarioStatusReady
+		s.Error = ""
+		s.ComputeStats()
+		saveScenario(bgCtx, &s)
+
+		events.Done("Successfully generated %d test recording%s for '%s'",
+			len(recordings), pluralize(len(recordings)), projectName)
+	}(&scenario, targetTestCaseIDs, gitlabClient)
+}
+
+// ─────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────
+
+func getScenario(ctx context.Context, id string) (models.TestScenario, error) {
+	var scenario models.TestScenario
+	val, err := database.RedisClient.Get(ctx, fmt.Sprintf("scenario:%s", id)).Result()
+	if err != nil {
+		return scenario, err
+	}
+	err = json.Unmarshal([]byte(val), &scenario)
+	return scenario, err
+}
+
+func saveScenario(ctx context.Context, scenario *models.TestScenario) error {
+	val, err := json.Marshal(scenario)
+	if err != nil {
+		return err
+	}
+	return database.RedisClient.Set(ctx, fmt.Sprintf("scenario:%s", scenario.ID), val, 0).Err()
+}
+
+func setTestCasesAutomationStatus(ctx context.Context, scenarioID string, targetTestCaseIDs []string, status models.AutomationRunStatus) {
+	scenario, err := getScenario(ctx, scenarioID)
+	if err != nil {
+		return
+	}
+
+	idMap := make(map[string]bool)
+	for _, id := range targetTestCaseIDs {
+		idMap[id] = true
+	}
+
+	for i := range scenario.Sections {
+		for j := range scenario.Sections[i].TestCases {
+			tc := &scenario.Sections[i].TestCases[j]
+			if idMap[tc.ID] {
+				if tc.AutomationTest == nil {
+					tc.AutomationTest = &models.AutomationTest{
+						ID:     fmt.Sprintf("auto-pending-%d", time.Now().UnixNano()),
+						Name:   fmt.Sprintf("%s_Automation", tc.Code),
+						Status: status,
+					}
+				} else {
+					tc.AutomationTest.Status = status
+				}
+			}
+		}
+	}
+
+	scenario.ComputeStats()
+	saveScenario(ctx, &scenario)
 }
