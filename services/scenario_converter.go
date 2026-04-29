@@ -203,13 +203,32 @@ func LinkRecordingToTestCase(scenario *models.TestScenario, recordingID, recordi
 	return false
 }
 
-// LinkRecordingByName tries to link a recording to a matching test case by name similarity.
-func LinkRecordingByName(scenario *models.TestScenario, recordingID, recordingName string) bool {
-	recLower := strings.ToLower(recordingName)
+// LinkRecording tries to link a recording to a matching test case using TestCaseID, then name fallback.
+func LinkRecording(scenario *models.TestScenario, rec *models.TestRecording) bool {
+	// First try exact ID match
+	if rec.TestCaseID != "" {
+		for i := range scenario.Sections {
+			for j := range scenario.Sections[i].TestCases {
+				tc := &scenario.Sections[i].TestCases[j]
+				if tc.ID == rec.TestCaseID {
+					tc.AutomationTest = &models.AutomationTest{
+						ID:          fmt.Sprintf("auto-%s", rec.ID),
+						Name:        rec.Name,
+						Status:      models.AutomationStatusIdle,
+						RecordingID: rec.ID,
+					}
+					return true
+				}
+			}
+		}
+	}
+
+	// Fallback to name similarity
+	recLower := strings.ToLower(rec.Name)
 	for i := range scenario.Sections {
 		for j := range scenario.Sections[i].TestCases {
 			tc := &scenario.Sections[i].TestCases[j]
-			if tc.AutomationTest != nil {
+			if tc.AutomationTest != nil && tc.AutomationTest.RecordingID != "" {
 				continue // already linked
 			}
 			tcLower := strings.ToLower(tc.Title)
@@ -217,10 +236,10 @@ func LinkRecordingByName(scenario *models.TestScenario, recordingID, recordingNa
 			if strings.Contains(recLower, codeLower) ||
 				strings.Contains(recLower, strings.ReplaceAll(tcLower, " ", "_")) {
 				tc.AutomationTest = &models.AutomationTest{
-					ID:          fmt.Sprintf("auto-%s", recordingID),
-					Name:        recordingName,
+					ID:          fmt.Sprintf("auto-%s", rec.ID),
+					Name:        rec.Name,
 					Status:      models.AutomationStatusIdle,
-					RecordingID: recordingID,
+					RecordingID: rec.ID,
 				}
 				return true
 			}
@@ -230,12 +249,12 @@ func LinkRecordingByName(scenario *models.TestScenario, recordingID, recordingNa
 	for i := range scenario.Sections {
 		for j := range scenario.Sections[i].TestCases {
 			tc := &scenario.Sections[i].TestCases[j]
-			if tc.AutomationTest == nil {
+			if tc.AutomationTest == nil || tc.AutomationTest.RecordingID == "" {
 				tc.AutomationTest = &models.AutomationTest{
-					ID:          fmt.Sprintf("auto-%s", recordingID),
-					Name:        recordingName,
+					ID:          fmt.Sprintf("auto-%s", rec.ID),
+					Name:        rec.Name,
 					Status:      models.AutomationStatusIdle,
-					RecordingID: recordingID,
+					RecordingID: rec.ID,
 				}
 				return true
 			}

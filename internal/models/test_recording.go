@@ -108,6 +108,7 @@ type TestRecording struct {
 	ProjectName     string           `json:"project_name,omitempty"`
 	ProjectDetails  *ProjectDetails  `json:"projectDetails,omitempty"`
 	IssueID         string           `json:"issue_id,omitempty"`
+	TestCaseID      string           `json:"test_case_id,omitempty"`
 	CreatorID       int              `json:"creator_id,omitempty"`
 	VideoURL        string           `json:"video_url,omitempty"`
 	Steps           []RecordingStep  `json:"steps"`
@@ -129,6 +130,7 @@ type RecordingSummary struct {
 	ProjectName    string          `json:"project_name,omitempty"`
 	ProjectDetails *ProjectDetails `json:"projectDetails,omitempty"`
 	IssueID        string          `json:"issue_id,omitempty"`
+	TestCaseID     string          `json:"test_case_id,omitempty"`
 	CreatorID      int             `json:"creator_id,omitempty"`
 	VideoURL       string          `json:"video_url,omitempty"`
 	StepCount      int             `json:"stepCount"`

@@ -42,48 +42,6 @@ func GetTestRecordingTools() []tool.Tool {
 	}, saveTestRecording)
 	tools = append(tools, t1)
 
-	t2, _ := functiontool.New(functiontool.Config{
-		Name:        "analyze_test_case",
-		Description: "Analyze a test case to understand its requirements. Returns: target routes, action types, module name, and confidence score.",
-	}, analyzeTestCase)
-	tools = append(tools, t2)
-
-	t3, _ := functiontool.New(functiontool.Config{
-		Name:        "decide_files_to_fetch",
-		Description: "Decide which source files need to be fetched based on the target routes.",
-	}, decideFilesToFetch)
-	tools = append(tools, t3)
-
-	t4, _ := functiontool.New(functiontool.Config{
-		Name:        "fetch_source_files",
-		Description: "Fetch actual source file content from GitLab.",
-	}, fetchSourceFiles)
-	tools = append(tools, t4)
-
-	t5, _ := functiontool.New(functiontool.Config{
-		Name:        "extract_selectors_from_files",
-		Description: "Extract UI selectors from source files.",
-	}, extractSelectorsFromFiles)
-	tools = append(tools, t5)
-
-	t6, _ := functiontool.New(functiontool.Config{
-		Name:        "build_recording_steps",
-		Description: "Build recording steps by mapping test case actions to extracted selectors.",
-	}, buildRecordingSteps)
-	tools = append(tools, t6)
-
-	t7, _ := functiontool.New(functiontool.Config{
-		Name:        "generate_recording_for_test_case",
-		Description: "Complete pipeline: analyze → decide files → fetch → extract → build. One-shot generation for a single test case.",
-	}, generateRecordingForTestCase)
-	tools = append(tools, t7)
-
-	t8, _ := functiontool.New(functiontool.Config{
-		Name:        "generate_recordings_for_scenario",
-		Description: "Generate recordings for ALL test cases in a scenario. Handles batching.",
-	}, generateRecordingsForScenario)
-	tools = append(tools, t8)
-
 	return tools
 }
 
@@ -135,6 +93,7 @@ func saveTestRecording(ctx tool.Context, input SaveTestRecordingInput) (*SaveTes
 		SourceID:    input.ScenarioID,
 		ProjectID:   input.ProjectID,
 		CreatorID:   input.CreatorID,
+		TestCaseID:  input.TestCaseID,
 		Name:        input.Name,
 		Description: input.Description,
 		CreatedAt:   time.Now(),
@@ -1307,8 +1266,9 @@ type GenerateRecordingsOutput struct {
 
 // TestRecordingAgentInput is the prompt/input for the agent to generate recordings
 type TestRecordingAgentInput struct {
-	ScenarioID string   `json:"scenarioID"`
-	SheetNames []string `json:"sheetNames,omitempty"`
+	ScenarioID  string   `json:"scenarioID"`
+	SheetNames  []string `json:"sheetNames,omitempty"`
+	TestCaseIDs []string `json:"testCaseIds,omitempty"`
 }
 
 // RunAgentForTestGeneration runs the QA agent to generate recordings

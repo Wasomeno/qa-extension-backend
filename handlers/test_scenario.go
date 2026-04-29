@@ -782,16 +782,9 @@ func GenerateTests(c *gin.Context) {
 		events.Progressf("Generating test recordings using QA Agent...")
 
 		// Use agent 
-		// We map target test cases to sheet names since the agent still works with sheets internally
-		// (We should refactor agent input eventually)
-		var sheetNames []string
-		for _, s := range scenario.Sheets {
-			sheetNames = append(sheetNames, s.Name)
-		}
-
 		result, err := agent.RunAgentForTestGenerationWithLLM(bgCtx, agent.TestRecordingAgentInput{
-			ScenarioID: id,
-			SheetNames: sheetNames, // Provide all sheet names, the agent will filter to the specific cases
+			ScenarioID:  id,
+			TestCaseIDs: targetIDs,
 		}, token)
 		
 		if err != nil {
@@ -840,7 +833,7 @@ func GenerateTests(c *gin.Context) {
 			}
 
 			// Link recording to test case
-			services.LinkRecordingByName(&s, rec.ID, rec.Name)
+			services.LinkRecording(&s, &rec)
 		}
 
 		// Update any that were running but didn't get a recording to failed

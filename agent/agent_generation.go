@@ -28,7 +28,7 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input TestRecordingAg
 	}
 
 	// Build the prompt with all test case data
-	prompt := buildAgentGenerationPrompt(scenario, input.ScenarioID, input.SheetNames)
+	prompt := buildAgentGenerationPrompt(scenario, input.ScenarioID, input.TestCaseIDs)
 	
 	// Create a unique session ID for this generation task
 	scenarioShortID := input.ScenarioID
@@ -108,19 +108,21 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input TestRecordingAg
 	// Count total test cases
 	totalCases := 0
 	for _, section := range scenario.Sections {
-		if len(input.SheetNames) > 0 {
-			found := false
-			for _, sn := range input.SheetNames {
-				if section.Title == sn {
-					found = true
-					break
+		for _, tc := range section.TestCases {
+			if len(input.TestCaseIDs) > 0 {
+				found := false
+				for _, tid := range input.TestCaseIDs {
+					if tc.ID == tid {
+						found = true
+						break
+					}
+				}
+				if !found {
+					continue
 				}
 			}
-			if !found {
-				continue
-			}
+			totalCases++
 		}
-		totalCases += len(section.TestCases)
 	}
 
 	// Collect generated recordings from Redis
@@ -143,7 +145,7 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input TestRecordingAg
 }
 
 // buildAgentGenerationPrompt creates the prompt for the agent to generate recordings
-func buildAgentGenerationPrompt(scenario *models.TestScenario, scenarioID string, sheetNames []string) string {
+func buildAgentGenerationPrompt(scenario *models.TestScenario, scenarioID string, targetTestCaseIDs []string) string {
 	var prompt strings.Builder
 
 	prompt.WriteString(`You are tasked with generating test recordings from a test scenario. 
@@ -175,16 +177,21 @@ For EACH test case in the scenario below:
 
 	// Add each section and test case
 	for _, section := range scenario.Sections {
-		// Filter by section titles if provided
-		if len(sheetNames) > 0 {
-			found := false
-			for _, sn := range sheetNames {
-				if section.Title == sn {
-					found = true
+		// If we only want specific test cases, see if this section contains any of them
+		hasTargetCases := false
+		if len(targetTestCaseIDs) > 0 {
+			for _, tc := range section.TestCases {
+				for _, tid := range targetTestCaseIDs {
+					if tc.ID == tid {
+						hasTargetCases = true
+						break
+					}
+				}
+				if hasTargetCases {
 					break
 				}
 			}
-			if !found {
+			if !hasTargetCases {
 				continue
 			}
 		}
@@ -192,6 +199,19 @@ For EACH test case in the scenario below:
 		prompt.WriteString(fmt.Sprintf("### Section: %s\n\n", section.Title))
 
 		for _, tc := range section.TestCases {
+			// Skip if this isn't a target test case
+			if len(targetTestCaseIDs) > 0 {
+				isTarget := false
+				for _, tid := range targetTestCaseIDs {
+					if tc.ID == tid {
+						isTarget = true
+						break
+					}
+				}
+				if !isTarget {
+					continue
+				}
+			}
 			prompt.WriteString(fmt.Sprintf("#### Test Case: %s - %s\n", tc.ID, tc.Title))
 			
 			if tc.Description != "" {
@@ -221,27 +241,28 @@ For EACH test case in the scenario below:
 1. First, use listGitLabRepositoryTree to explore the project structure
 2. For each test case, identify which pages/components are relevant
 3. Use getGitLabFileContent to fetch the source files
-4. Extract selectors from the source code
+4. Extract Playwright-compatible selectors (CSS and XPath) from the source code
 5. Use save_test_recording to save each generated recording
 
 NOTE: When generating tests, the system will execute them in parallel (up to 10 at a time). Since each test runs in a completely isolated browser context, you MUST ensure that EVERY SINGLE recording includes the full setup steps (e.g. navigation and login) if required by the test case's precondition.
 
-## Recording Format
+## Recording Format & Playwright Locators
 Each recording must have:
 {
   "scenarioID": "` + scenarioID + `",
   "projectID": "` + scenario.ProjectID + `",
   "creatorID": ` + fmt.Sprintf("%d", scenario.CreatorID) + `,
+  "testCaseID": "the exact ID of the test case, e.g. tc-123456",
   "name": "[TC-ID] Test Case Name",
   "description": "Pre-condition text",
   "steps": [
     {
       "action": "navigate|type|click|assert",
       "description": "Clear description",
-      "selector": "#actual-selector",
-      "selectorCandidates": ["#selector1", "#selector2", "[data-testid='foo']"],
-      "xpath": "//xpath/expression",
-      "xpathCandidates": ["//xpath1", "//xpath2"],
+      "selector": "CSS selector (e.g. [data-testid='login-btn'], .submit, #email)",
+      "selectorCandidates": ["CSS selector fallback 1", "CSS selector fallback 2"],
+      "xpath": "XPath expression (e.g. //button[contains(text(), 'Login')])",
+      "xpathCandidates": ["//input[@name='email']"],
       "elementHints": {
         "attributes": {"id": "foo", "type": "button"},
         "tagName": "button"
@@ -250,6 +271,8 @@ Each recording must have:
     }
   ]
 }
+
+CRITICAL: The automation framework runs on Playwright. You MUST extract real CSS and XPath selectors from the source files. DO NOT invent fake selectors. DO NOT leave 'selector' or 'xpath' blank. If you cannot find a file, use semantic locators like "button:has-text('Login')" as fallback.
 
 Generate recordings for ALL test cases now. Use the save_test_recording tool for each one.
 `)
