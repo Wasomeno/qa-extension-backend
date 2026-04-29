@@ -63,9 +63,9 @@ type CommitDiff struct {
 
 // FileAction represents a single file change for batch commits.
 type FileAction struct {
-	Action   string `json:"action"`   // "create", "update", "delete", "move"
-	FilePath string `json:"filePath"`
-	Content  string `json:"content,omitempty"`
+	Action       string `json:"action"` // "create", "update", "delete", "move"
+	FilePath     string `json:"filePath"`
+	Content      string `json:"content,omitempty"`
 	PreviousPath string `json:"previousPath,omitempty"` // for "move" action
 }
 
@@ -142,6 +142,27 @@ func buildNestedTree(nodes []*gitlab.TreeNode, basePath string) []*FileTreeNode 
 		pathToNode[n.Path] = treeNode
 	}
 
+	// Ensure all ancestor directories exist in the map.
+	// GitLab's recursive ListTree may omit intermediate directory entries,
+	// which would cause their descendants to be silently dropped.
+	for _, n := range nodes {
+		if n.Type == "tree" {
+			continue
+		}
+		dir := getParentPath(n.Path)
+		for dir != "" && dir != basePath {
+			if _, ok := pathToNode[dir]; !ok {
+				pathToNode[dir] = &FileTreeNode{
+					Path:     dir,
+					Name:     getLastSegment(dir),
+					Type:     "tree",
+					Children: []*FileTreeNode{},
+				}
+			}
+			dir = getParentPath(dir)
+		}
+	}
+
 	// Attach children to parents
 	for _, n := range nodes {
 		child := pathToNode[n.Path]
@@ -160,6 +181,14 @@ func getParentPath(path string) string {
 		return ""
 	}
 	return path[:idx]
+}
+
+func getLastSegment(path string) string {
+	idx := strings.LastIndex(path, "/")
+	if idx < 0 {
+		return path
+	}
+	return path[idx+1:]
 }
 
 // --- File CRUD ---
@@ -437,8 +466,36 @@ func (s *SpecsService) GetCommitDetail(client *gitlab.Client, projectID string, 
 	return result, nil
 }
 
+// --- Search ---
+
+// SearchTree searches for files matching a query in the tree.
+func (s *SpecsService) SearchTree(client *gitlab.Client, projectID string, path string, ref string, query string) ([]*FileTreeNode, error) {
+	nodes, err := s.GetFileTree(client, projectID, path, ref, true)
+	if err != nil {
+		return nil, err
+	}
+	return filterTree(nodes, query), nil
+}
+
+func filterTree(nodes []*FileTreeNode, query string) []*FileTreeNode {
+	lower := strings.ToLower(query)
+	var result []*FileTreeNode
+	for _, n := range nodes {
+		if strings.Contains(strings.ToLower(n.Name), lower) || strings.Contains(strings.ToLower(n.Path), lower) {
+			result = append(result, n)
+		}
+		if n.Type == "tree" && n.Children != nil {
+			matches := filterTree(n.Children, query)
+			result = append(result, matches...)
+		}
+	}
+	return result
+}
+
+// --- Blame ---
+
 // GetFileBlame returns blame information for a file.
-func (s *SpecsService) GetFileBlame(client *gitlab.Client, projectID string, filePath string, ref string) ([]*gitlab.FileBlameRange, error) {
+func (s *SpecsService) GetFileBlame(client *gitlab.Client, projectID string, filePath string, ref string) (interface{}, error) {
 	if ref == "" {
 		ref = "main"
 	}
@@ -454,38 +511,4 @@ func (s *SpecsService) GetFileBlame(client *gitlab.Client, projectID string, fil
 	}
 
 	return blame, nil
-}
-
-// --- Search ---
-
-// SearchTree performs a recursive tree listing and filters by name/content match.
-// This is a simple client-side search. For large repos, consider using GitLab's search API.
-func (s *SpecsService) SearchTree(client *gitlab.Client, projectID string, path string, ref string, query string) ([]*FileTreeNode, error) {
-	allNodes, err := s.GetFileTree(client, projectID, path, ref, true)
-	if err != nil {
-		return nil, err
-	}
-
-	query = strings.ToLower(query)
-	return filterTree(allNodes, query), nil
-}
-
-func filterTree(nodes []*FileTreeNode, query string) []*FileTreeNode {
-	var result []*FileTreeNode
-	for _, node := range nodes {
-		nameMatch := strings.Contains(strings.ToLower(node.Name), query)
-		pathMatch := strings.Contains(strings.ToLower(node.Path), query)
-
-		if node.Type == "tree" {
-			filteredChildren := filterTree(node.Children, query)
-			if nameMatch || len(filteredChildren) > 0 {
-				copy := *node
-				copy.Children = filteredChildren
-				result = append(result, &copy)
-			}
-		} else if nameMatch || pathMatch {
-			result = append(result, node)
-		}
-	}
-	return result
 }
