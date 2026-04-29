@@ -550,7 +550,14 @@ func GetProjectBranches(ginContext *gin.Context) {
 	}
 
 	projectID := ginContext.Param("id")
-	branches, _, err := gitlabClient.Branches.ListBranches(projectID, &gitlab.ListBranchesOptions{})
+	search := ginContext.Query("search")
+
+	listOpts := &gitlab.ListBranchesOptions{}
+	if search != "" {
+		listOpts.Search = gitlab.Ptr(search)
+	}
+
+	branches, _, err := gitlabClient.Branches.ListBranches(projectID, listOpts)
 	if err != nil {
 		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		ginContext.Abort()
