@@ -147,6 +147,7 @@ func GetSessionEndpoint(ginContext *gin.Context) {
 
 	ginContext.JSON(http.StatusOK, gin.H{
 		"session": token,
+		"session_id": sessionID,
 	})
 }
 
