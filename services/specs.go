@@ -72,16 +72,49 @@ type FileAction struct {
 // --- Tree ---
 
 // GetFileTree returns the file tree for a given path in the repository.
-// If recursive is true, it fetches the full subtree.
+// When recursive is true, it fetches every directory level individually
+// to avoid missing entries that GitLab's recursive ListTree can drop.
 func (s *SpecsService) GetFileTree(client *gitlab.Client, projectID string, path string, ref string, recursive bool) ([]*FileTreeNode, error) {
 	if ref == "" {
 		ref = "main"
 	}
 
+	if recursive {
+		return s.getFullTree(client, projectID, path, ref)
+	}
+
+	// Non-recursive: single-level listing
+	return s.listDirectory(client, projectID, path, ref)
+}
+
+// getFullTree recursively walks every subdirectory and builds the complete tree.
+func (s *SpecsService) getFullTree(client *gitlab.Client, projectID string, path string, ref string) ([]*FileTreeNode, error) {
+	children, err := s.listDirectory(client, projectID, path, ref)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, node := range children {
+		if node.Type == "tree" {
+			subChildren, err := s.getFullTree(client, projectID, node.Path, ref)
+			if err != nil {
+				log.Printf("[specs] skipping subtree %s: %v", node.Path, err)
+				node.Children = []*FileTreeNode{}
+				continue
+			}
+			node.Children = subChildren
+		}
+	}
+
+	return children, nil
+}
+
+// listDirectory returns the immediate children of a single directory (non-recursive, paginated).
+func (s *SpecsService) listDirectory(client *gitlab.Client, projectID string, path string, ref string) ([]*FileTreeNode, error) {
 	opts := &gitlab.ListTreeOptions{
 		Path:      gitlab.Ptr(path),
 		Ref:       gitlab.Ptr(ref),
-		Recursive: gitlab.Ptr(recursive),
+		Recursive: gitlab.Ptr(false),
 		ListOptions: gitlab.ListOptions{
 			PerPage: 100,
 		},
@@ -91,8 +124,8 @@ func (s *SpecsService) GetFileTree(client *gitlab.Client, projectID string, path
 	for {
 		nodes, resp, err := client.Repositories.ListTree(projectID, opts)
 		if err != nil {
-			log.Printf("[specs] ListTree error for project %s path %s: %v", projectID, path, err)
-			return nil, fmt.Errorf("failed to list tree: %w", err)
+			log.Printf("[specs] ListTree error for project %s path %s ref %s: %v", projectID, path, ref, err)
+			return nil, fmt.Errorf("failed to list tree at %q: %w", path, err)
 		}
 		allNodes = append(allNodes, nodes...)
 		if resp.NextPage == 0 {
@@ -101,11 +134,6 @@ func (s *SpecsService) GetFileTree(client *gitlab.Client, projectID string, path
 		opts.Page = resp.NextPage
 	}
 
-	if recursive {
-		return buildNestedTree(allNodes, path), nil
-	}
-
-	// Non-recursive: return flat list
 	result := make([]*FileTreeNode, len(allNodes))
 	for i, node := range allNodes {
 		result[i] = &FileTreeNode{
@@ -115,80 +143,6 @@ func (s *SpecsService) GetFileTree(client *gitlab.Client, projectID string, path
 		}
 	}
 	return result, nil
-}
-
-// buildNestedTree converts a flat list of recursive tree nodes into a nested tree structure.
-func buildNestedTree(nodes []*gitlab.TreeNode, basePath string) []*FileTreeNode {
-	type nodeMap = map[string]*FileTreeNode
-	root := &FileTreeNode{
-		Path:     basePath,
-		Name:     basePath,
-		Type:     "tree",
-		Children: []*FileTreeNode{},
-	}
-
-	pathToNode := nodeMap{}
-	pathToNode[basePath] = root
-
-	for _, n := range nodes {
-		treeNode := &FileTreeNode{
-			Path: n.Path,
-			Name: n.Name,
-			Type: n.Type,
-		}
-		if n.Type == "tree" {
-			treeNode.Children = []*FileTreeNode{}
-		}
-		pathToNode[n.Path] = treeNode
-	}
-
-	// Ensure all ancestor directories exist in the map.
-	// GitLab's recursive ListTree may omit intermediate directory entries,
-	// which would cause their descendants to be silently dropped.
-	for _, n := range nodes {
-		if n.Type == "tree" {
-			continue
-		}
-		dir := getParentPath(n.Path)
-		for dir != "" && dir != basePath {
-			if _, ok := pathToNode[dir]; !ok {
-				pathToNode[dir] = &FileTreeNode{
-					Path:     dir,
-					Name:     getLastSegment(dir),
-					Type:     "tree",
-					Children: []*FileTreeNode{},
-				}
-			}
-			dir = getParentPath(dir)
-		}
-	}
-
-	// Attach children to parents
-	for _, n := range nodes {
-		child := pathToNode[n.Path]
-		parentPath := getParentPath(n.Path)
-		if parent, ok := pathToNode[parentPath]; ok {
-			parent.Children = append(parent.Children, child)
-		}
-	}
-
-	return root.Children
-}
-
-func getParentPath(path string) string {
-	idx := strings.LastIndex(path, "/")
-	if idx <= 0 {
-		return ""
-	}
-	return path[:idx]
-}
-
-func getLastSegment(path string) string {
-	idx := strings.LastIndex(path, "/")
-	if idx < 0 {
-		return path
-	}
-	return path[idx+1:]
 }
 
 // --- File CRUD ---
