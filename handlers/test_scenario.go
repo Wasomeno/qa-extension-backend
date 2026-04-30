@@ -883,3 +883,133 @@ func setTestCasesAutomationStatus(ctx context.Context, scenarioID string, target
 	scenario.ComputeStats()
 	saveScenario(ctx, &scenario)
 }
+
+// RunScenarioTestCase runs a single test case's automation from a scenario.
+func RunScenarioTestCase(c *gin.Context) {
+	scenarioID := c.Param("id")
+	sectionID := c.Param("sectionId")
+	tcID := c.Param("tcId")
+
+	if scenarioID == "" || sectionID == "" || tcID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "scenario id, section id, and test case id are required"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	scenario, err := getScenario(ctx, scenarioID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "scenario not found"})
+		return
+	}
+
+	// Find the test case
+	var targetCase *models.TestCase
+	var targetSectionIdx, targetCaseIdx int
+	for si := range scenario.Sections {
+		if scenario.Sections[si].ID != sectionID {
+			continue
+		}
+		for ti := range scenario.Sections[si].TestCases {
+			if scenario.Sections[si].TestCases[ti].ID == tcID {
+				targetCase = &scenario.Sections[si].TestCases[ti]
+				targetSectionIdx = si
+				targetCaseIdx = ti
+				break
+			}
+		}
+		if targetCase != nil {
+			break
+		}
+	}
+
+	if targetCase == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "test case not found"})
+		return
+	}
+
+	if targetCase.AutomationTest == nil || len(targetCase.AutomationTest.Steps) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "this test case has not been generated yet"})
+		return
+	}
+
+	// Mark as running and save
+	scenario.Sections[targetSectionIdx].TestCases[targetCaseIdx].AutomationTest.Status = models.AutomationStatusRunning
+	scenario.Sections[targetSectionIdx].TestCases[targetCaseIdx].AutomationTest.LastRunAt = time.Now().Format(time.RFC3339)
+	scenario.ComputeStats()
+	_ = saveScenario(ctx, &scenario)
+
+	// Run in goroutine so HTTP doesn't block
+	go func() {
+		bgCtx := context.Background()
+		run := &models.TestRun{
+			ID:    targetCase.AutomationTest.ID,
+			Name:  targetCase.AutomationTest.Name,
+			Steps: targetCase.AutomationTest.Steps,
+		}
+
+		timeoutCtx, cancel := context.WithTimeout(bgCtx, 5*time.Minute)
+		defer cancel()
+
+		result, err := agent.RunTest(timeoutCtx, run)
+
+		// Re-fetch scenario to avoid overwriting concurrent changes
+		scenario, fetchErr := getScenario(bgCtx, scenarioID)
+		if fetchErr != nil {
+			log.Printf("[RunScenarioTestCase] failed to re-fetch scenario after run: %v", fetchErr)
+			return
+		}
+
+		// Find the test case again in the refreshed scenario
+		for si := range scenario.Sections {
+			if scenario.Sections[si].ID != sectionID {
+				continue
+			}
+			for ti := range scenario.Sections[si].TestCases {
+				at := scenario.Sections[si].TestCases[ti].AutomationTest
+				if at != nil && at.ID == targetCase.AutomationTest.ID {
+					if err != nil {
+						scenario.Sections[si].TestCases[ti].AutomationTest.Status = models.AutomationStatusFail
+						scenario.Sections[si].TestCases[ti].AutomationTest.ErrorMessage = err.Error()
+					} else {
+						scenario.Sections[si].TestCases[ti].AutomationTest.Status = mapResultStatus(result.Status)
+						scenario.Sections[si].TestCases[ti].AutomationTest.RunDurationMs = result.RunDurationMs
+						scenario.Sections[si].TestCases[ti].AutomationTest.VideoURL = result.VideoURL
+						scenario.Sections[si].TestCases[ti].AutomationTest.StepResults = result.StepResults
+						scenario.Sections[si].TestCases[ti].AutomationTest.Log = result.Log
+						scenario.Sections[si].TestCases[ti].AutomationTest.ErrorMessage = ""
+						scenario.Sections[si].TestCases[ti].AutomationTest.FailedStepIndex = nil
+						if result.Status == "failed" && len(result.StepResults) > 0 {
+							for _, sr := range result.StepResults {
+								if sr.Status == "failure" {
+									scenario.Sections[si].TestCases[ti].AutomationTest.FailedStepIndex = &sr.StepIndex
+									scenario.Sections[si].TestCases[ti].AutomationTest.ErrorMessage = sr.Error
+									break
+								}
+							}
+						}
+					}
+					break
+				}
+			}
+		}
+
+		scenario.ComputeStats()
+		_ = saveScenario(bgCtx, &scenario)
+	}()
+
+	c.JSON(http.StatusAccepted, gin.H{
+		"message": "test execution started",
+		"id":      tcID,
+	})
+}
+
+func mapResultStatus(s string) models.AutomationRunStatus {
+	switch s {
+	case "passed":
+		return models.AutomationStatusPass
+	case "failed":
+		return models.AutomationStatusFail
+	default:
+		return models.AutomationStatusIdle
+	}
+}

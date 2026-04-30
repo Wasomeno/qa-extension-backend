@@ -86,7 +86,7 @@ func main() {
 		protected.POST("/test-scenarios/:id/sections/:sectionId/test-cases", handlers.AddTestCase)
 		protected.PATCH("/test-scenarios/:id/sections/:sectionId/test-cases/reorder", handlers.ReorderTestCases)
 		protected.PATCH("/test-scenarios/:id/sections/:sectionId/test-cases/:tcId", handlers.UpdateTestCase)
-		protected.DELETE("/test-scenarios/:id/sections/:sectionId/test-cases/:tcId", handlers.DeleteTestCase)
+		protected.POST("/test-scenarios/:id/sections/:sectionId/test-cases/:tcId/run", handlers.RunScenarioTestCase)
 
 		protected.POST("/recordings/:id/run", handlers.RunRecording)
 
