@@ -62,7 +62,14 @@ func StopPlaywright() {
 	}
 }
 
-func RunTest(ctx context.Context, run *models.TestRun) (*models.TestResult, error) {
+func RunTest(ctx context.Context, run *models.TestRun) (result *models.TestResult, err error) {
+	start := time.Now()
+	defer func() {
+		if result != nil {
+			result.RunDurationMs = time.Since(start).Milliseconds()
+		}
+	}()
+
 	log.Printf("[Runner] Running test: %s", run.Name)
 
 	// Create event emitter for consistent event publishing
@@ -198,7 +205,7 @@ func RunTest(ctx context.Context, run *models.TestRun) (*models.TestResult, erro
 		}
 	})
 
-	result := &models.TestResult{
+	result = &models.TestResult{
 		TestID:      run.ID,
 		Status:      "passed",
 		StepResults: make([]models.TestStepResult, 0),

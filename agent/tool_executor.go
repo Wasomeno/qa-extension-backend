@@ -800,7 +800,35 @@ func runTestScenarioDirect(ctx context.Context, args map[string]any) (*RunTestSc
 		for i := range res.StepResults {
 			res.StepResults[i].Screenshot = ""
 		}
+		// Update the scenario's AutomationTest inline with the run result
+		for si := range scenario.Sections {
+			for ti := range scenario.Sections[si].TestCases {
+				at := scenario.Sections[si].TestCases[ti].AutomationTest
+				if at != nil && at.ID == res.TestID {
+					scenario.Sections[si].TestCases[ti].AutomationTest.Status = mapResultStatus(res.Status)
+					scenario.Sections[si].TestCases[ti].AutomationTest.LastRunAt = time.Now().Format(time.RFC3339)
+					scenario.Sections[si].TestCases[ti].AutomationTest.RunDurationMs = res.RunDurationMs
+					scenario.Sections[si].TestCases[ti].AutomationTest.VideoURL = res.VideoURL
+					scenario.Sections[si].TestCases[ti].AutomationTest.StepResults = res.StepResults
+					scenario.Sections[si].TestCases[ti].AutomationTest.Log = res.Log
+					scenario.Sections[si].TestCases[ti].AutomationTest.ErrorMessage = ""
+					scenario.Sections[si].TestCases[ti].AutomationTest.FailedStepIndex = nil
+					if res.Status == "failed" && len(res.StepResults) > 0 {
+						for _, sr := range res.StepResults {
+							if sr.Status == "failure" {
+								scenario.Sections[si].TestCases[ti].AutomationTest.FailedStepIndex = &sr.StepIndex
+								scenario.Sections[si].TestCases[ti].AutomationTest.ErrorMessage = sr.Error
+								break
+							}
+						}
+					}
+				}
+			}
+		}
 	}
+
+	scenario.ComputeStats()
+	_ = saveScenarioToRedis(ctx, &scenario)
 
 	summary := fmt.Sprintf("Execution completed. Passed: %d, Failed: %d", passed, failed)
 	return &RunTestScenarioResponse{Summary: summary, Results: results}, nil
@@ -860,6 +888,35 @@ func runScenarioTestCaseDirect(ctx context.Context, args map[string]any) (*model
 	for i := range result.StepResults {
 		result.StepResults[i].Screenshot = ""
 	}
+
+	// Update the scenario's AutomationTest inline with the run result
+	for si := range scenario.Sections {
+		for ti := range scenario.Sections[si].TestCases {
+			at := scenario.Sections[si].TestCases[ti].AutomationTest
+			if at != nil && at.ID == result.TestID {
+				scenario.Sections[si].TestCases[ti].AutomationTest.Status = mapResultStatus(result.Status)
+				scenario.Sections[si].TestCases[ti].AutomationTest.LastRunAt = time.Now().Format(time.RFC3339)
+				scenario.Sections[si].TestCases[ti].AutomationTest.RunDurationMs = result.RunDurationMs
+				scenario.Sections[si].TestCases[ti].AutomationTest.VideoURL = result.VideoURL
+				scenario.Sections[si].TestCases[ti].AutomationTest.StepResults = result.StepResults
+				scenario.Sections[si].TestCases[ti].AutomationTest.Log = result.Log
+				scenario.Sections[si].TestCases[ti].AutomationTest.ErrorMessage = ""
+				scenario.Sections[si].TestCases[ti].AutomationTest.FailedStepIndex = nil
+				if result.Status == "failed" && len(result.StepResults) > 0 {
+					for _, sr := range result.StepResults {
+						if sr.Status == "failure" {
+							scenario.Sections[si].TestCases[ti].AutomationTest.FailedStepIndex = &sr.StepIndex
+							scenario.Sections[si].TestCases[ti].AutomationTest.ErrorMessage = sr.Error
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+
+	scenario.ComputeStats()
+	_ = saveScenarioToRedis(ctx, &scenario)
 
 	return result, nil
 }

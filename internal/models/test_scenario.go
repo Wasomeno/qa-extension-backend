@@ -92,6 +92,7 @@ const (
 
 // AutomationTest represents the automation linked to a test case.
 // The generated steps are stored inline in the Steps field.
+// After each run, VideoURL, StepResults, and Log are populated with the latest result.
 type AutomationTest struct {
 	ID              string              `json:"id"`
 	Name            string              `json:"name"`
@@ -99,7 +100,10 @@ type AutomationTest struct {
 	LastRunAt       string              `json:"lastRunAt,omitempty"`
 	RunDurationMs   int64               `json:"runDurationMs,omitempty"`
 	Steps           []RecordingStep     `json:"steps,omitempty"`
+	VideoURL        string              `json:"videoUrl,omitempty"`
 	ScreenshotURL   string              `json:"screenshotUrl,omitempty"`
+	StepResults     []TestStepResult    `json:"stepResults,omitempty"`
+	Log             string              `json:"log,omitempty"`
 	ErrorMessage    string              `json:"errorMessage,omitempty"`
 	FailedStepIndex *int                `json:"failedStepIndex,omitempty"`
 }

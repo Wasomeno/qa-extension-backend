@@ -143,11 +143,12 @@ type TestStepResult struct {
 }
 
 type TestResult struct {
-	TestID      string           `json:"testId"`
-	Status      string           `json:"status"` // "passed", "failed"
-	StepResults []TestStepResult `json:"stepResults"`
-	Log         string           `json:"log,omitempty"`
-	VideoURL    string           `json:"videoUrl,omitempty"`
+	TestID        string           `json:"testId"`
+	Status        string           `json:"status"` // "passed", "failed"
+	StepResults   []TestStepResult `json:"stepResults"`
+	Log           string           `json:"log,omitempty"`
+	VideoURL      string           `json:"videoUrl,omitempty"`
+	RunDurationMs int64            `json:"runDurationMs,omitempty"`
 }
 
 // TestRun is a runtime execution unit used by the Playwright runner.
