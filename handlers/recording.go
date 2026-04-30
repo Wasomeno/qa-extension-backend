@@ -21,6 +21,47 @@ import (
 	"golang.org/x/oauth2"
 )
 
+// deleteRecordingByID deletes a recording by ID and removes it from all index sets.
+// Returns true if the recording was found and deleted, false otherwise.
+func deleteRecordingByID(ctx context.Context, id string) (bool, error) {
+	key := fmt.Sprintf("recording:%s", id)
+
+	// Fetch to get metadata for index cleanup
+	val, err := database.RedisClient.Get(ctx, key).Result()
+	if err != nil {
+		return false, nil // recording not found
+	}
+
+	var recording models.TestRecording
+	if err := json.Unmarshal([]byte(val), &recording); err != nil {
+		return false, err
+	}
+
+	// Delete from Redis
+	if err := database.RedisClient.Del(ctx, key).Err(); err != nil {
+		return false, err
+	}
+
+	// Remove from all index sets
+	database.RedisClient.SRem(ctx, "recordings", id)
+	database.RedisClient.SRem(ctx, "recordings:legacy", id)
+	
+	if recording.CreatorID != 0 {
+		database.RedisClient.SRem(ctx, fmt.Sprintf("recordings:user:%d", recording.CreatorID), id)
+	}
+	if recording.ProjectID != "" {
+		database.RedisClient.SRem(ctx, fmt.Sprintf("recordings:project:%s", recording.ProjectID), id)
+	}
+	if recording.IssueID != "" {
+		database.RedisClient.SRem(ctx, fmt.Sprintf("recordings:issue:%s", recording.IssueID), id)
+	}
+	if recording.SourceID != "" {
+		database.RedisClient.SRem(ctx, fmt.Sprintf("recordings:scenario:%s", recording.SourceID), id)
+	}
+
+	return true, nil
+}
+
 // getProjectName fetches the project name from GitLab API
 func getProjectName(c *gin.Context, projectID string) string {
 	if projectID == "" {

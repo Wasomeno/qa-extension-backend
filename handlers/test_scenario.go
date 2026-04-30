@@ -586,24 +586,26 @@ func DeleteScenario(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	scenario, err := getScenario(ctx, id)
-	if err == nil {
-		// Clean up generated recordings linked to test cases
-		for _, section := range scenario.Sections {
-			for _, tc := range section.TestCases {
-				if tc.AutomationTest != nil && tc.AutomationTest.RecordingID != "" {
-					recID := tc.AutomationTest.RecordingID
-					database.RedisClient.Del(ctx, fmt.Sprintf("recording:%s", recID))
-					database.RedisClient.SRem(ctx, "recordings", recID)
-					if scenario.ProjectID != "" {
-						database.RedisClient.SRem(ctx, fmt.Sprintf("recordings:project:%s", scenario.ProjectID), recID)
-					}
-				}
-			}
+
+	// Delete all child recordings associated with this scenario
+	recordingsKey := fmt.Sprintf("recordings:scenario:%s", id)
+	recordingIDs, _ := database.RedisClient.SMembers(ctx, recordingsKey).Result()
+	deletedRecordingCount := 0
+
+	for _, recID := range recordingIDs {
+		deleted, err := deleteRecordingByID(ctx, recID)
+		if err != nil {
+			log.Printf("Failed to delete recording %s: %v", recID, err)
+		}
+		if deleted {
+			deletedRecordingCount++
 		}
 	}
 
-	err = database.RedisClient.Del(ctx, fmt.Sprintf("scenario:%s", id)).Err()
+	// Clean up the scenario's recordings set
+	database.RedisClient.Del(ctx, recordingsKey)
+
+	err := database.RedisClient.Del(ctx, fmt.Sprintf("scenario:%s", id)).Err()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete scenario from redis"})
 		return
@@ -611,7 +613,11 @@ func DeleteScenario(c *gin.Context) {
 
 	database.RedisClient.SRem(ctx, "scenarios", id)
 
-	c.JSON(http.StatusOK, gin.H{"message": "scenario deleted successfully", "id": id})
+	c.JSON(http.StatusOK, gin.H{
+		"message":              "scenario deleted successfully",
+		"id":                   id,
+		"deletedRecordings":    deletedRecordingCount,
+	})
 }
 
 // BulkDeleteScenarios deletes multiple test scenarios by their IDs
@@ -630,29 +636,34 @@ func BulkDeleteScenarios(c *gin.Context) {
 
 	ctx := c.Request.Context()
 	deletedCount := 0
+	totalRecordingsDeleted := 0
 	var notFound []string
 	var errors []string
 
 	for _, id := range req.IDs {
-		scenario, err := getScenario(ctx, id)
+		// Check if scenario exists
+		_, err := getScenario(ctx, id)
 		if err != nil {
 			notFound = append(notFound, id)
 			continue
 		}
 
-		// Clean up generated recordings
-		for _, section := range scenario.Sections {
-			for _, tc := range section.TestCases {
-				if tc.AutomationTest != nil && tc.AutomationTest.RecordingID != "" {
-					recID := tc.AutomationTest.RecordingID
-					database.RedisClient.Del(ctx, fmt.Sprintf("recording:%s", recID))
-					database.RedisClient.SRem(ctx, "recordings", recID)
-					if scenario.ProjectID != "" {
-						database.RedisClient.SRem(ctx, fmt.Sprintf("recordings:project:%s", scenario.ProjectID), recID)
-					}
-				}
+		// Delete all child recordings associated with this scenario
+		recordingsKey := fmt.Sprintf("recordings:scenario:%s", id)
+		recordingIDs, _ := database.RedisClient.SMembers(ctx, recordingsKey).Result()
+
+		for _, recID := range recordingIDs {
+			deleted, err := deleteRecordingByID(ctx, recID)
+			if err != nil {
+				log.Printf("Failed to delete recording %s: %v", recID, err)
+			}
+			if deleted {
+				totalRecordingsDeleted++
 			}
 		}
+
+		// Clean up the scenario's recordings set
+		database.RedisClient.Del(ctx, recordingsKey)
 
 		err = database.RedisClient.Del(ctx, fmt.Sprintf("scenario:%s", id)).Err()
 		if err != nil {
@@ -665,10 +676,11 @@ func BulkDeleteScenarios(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message":      fmt.Sprintf("deleted %d scenarios", deletedCount),
-		"deletedCount": deletedCount,
-		"notFound":     notFound,
-		"errors":       errors,
+		"message":              fmt.Sprintf("deleted %d scenarios", deletedCount),
+		"deletedCount":         deletedCount,
+		"deletedRecordings":    totalRecordingsDeleted,
+		"notFound":             notFound,
+		"errors":               errors,
 	})
 }
 
@@ -857,13 +869,12 @@ func GenerateTests(c *gin.Context) {
 			if rec.ProjectID != "" {
 				database.RedisClient.SAdd(bgCtx, fmt.Sprintf("recordings:project:%s", rec.ProjectID), rec.ID)
 			}
+			// Also track by scenario for cascade delete
+			database.RedisClient.SAdd(bgCtx, fmt.Sprintf("recordings:scenario:%s", id), rec.ID)
 
 			// Link recording to test case
 			services.LinkRecording(&s, &rec)
 		}
-
-		// Clear the scenario tracking set now that we've collected all batches
-		database.RedisClient.Del(bgCtx, fmt.Sprintf("recordings:scenario:%s", id))
 
 		// Update any that were running but didn't get a recording to failed
 		for i := range s.Sections {
