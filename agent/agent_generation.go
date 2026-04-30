@@ -16,9 +16,9 @@ import (
 	"google.golang.org/adk/session"
 )
 
-// RunAgentForTestGenerationWithLLM runs the actual QA LLM agent to generate recordings
+// RunAgentForTestGenerationWithLLM runs the actual QA LLM agent to generate automations
 // The agent will use GitLab tools to navigate the repo and find relevant files
-func RunAgentForTestGenerationWithLLM(ctx context.Context, input TestRecordingAgentInput, token *oauth2.Token) (*GenerateRecordingsOutput, error) {
+func RunAgentForTestGenerationWithLLM(ctx context.Context, input AutomationAgentInput, token *oauth2.Token) (*GenerateAutomationsOutput, error) {
 	log.Printf("[AgentGeneration] RunAgentForTestGenerationWithLLM: %s", input.ScenarioID)
 
 	// Get scenario from Redis
@@ -125,52 +125,52 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input TestRecordingAg
 		}
 	}
 
-	// Collect generated recordings from Redis
-	output := &GenerateRecordingsOutput{
-		Recordings:   []models.TestRecording{},
+	// Collect generated automation tests from the scenario
+	output := &GenerateAutomationsOutput{
+		Automations:   []models.GeneratedAutomation{},
 		FailedIDs:    []string{},
 		Warnings:     []string{},
 		TotalCount:   totalCases,
 		SuccessCount: 0,
 	}
 
-	// Find recordings saved by the agent for this scenario
+	// Find automation tests saved by the agent for this scenario
 	// Wait a moment for Redis replication/persistence just in case
-	time.Sleep(500 * time.Millisecond)
-	allRecordings := collectGeneratedRecordings(input.ScenarioID)
-	
-	// Because the agent might save a recording but get the ID slightly wrong in its output,
-	// let's do a loose match or track newly created recordings during this session if needed.
+	time.Sleep(1 * time.Second)
+	allAutomations := collectGeneratedAutomations(input.ScenarioID)
+
+	// Because the agent might save an automation but get the ID slightly wrong in its output,
+	// let's do a loose match or track newly created automations during this session if needed.
 	// For now, doing a strict ID match:
-	var currentBatchRecordings []models.TestRecording
-	for _, r := range allRecordings {
+	var currentBatchAutomations []models.GeneratedAutomation
+	for _, r := range allAutomations {
 		for _, targetID := range input.TestCaseIDs {
 			// Looser match in case AI outputs "MED05-07-success" instead of "MED05-07"
 			if r.TestCaseID == targetID || strings.HasPrefix(r.TestCaseID, targetID) || strings.Contains(r.TestCaseID, targetID) || strings.Contains(targetID, r.TestCaseID) {
 				// Prevent duplicates
 				alreadyAdded := false
-				for _, existing := range currentBatchRecordings {
+				for _, existing := range currentBatchAutomations {
 					if existing.ID == r.ID {
 						alreadyAdded = true
 						break
 					}
 				}
 				if !alreadyAdded {
-					currentBatchRecordings = append(currentBatchRecordings, r)
+					currentBatchAutomations = append(currentBatchAutomations, r)
 				}
 				break
 			}
 		}
 	}
 
-	output.Recordings = currentBatchRecordings
-	output.SuccessCount = len(currentBatchRecordings)
+	output.Automations = currentBatchAutomations
+	output.SuccessCount = len(currentBatchAutomations)
 
 	// Determine failed IDs in this batch
 	var failedIDs []string
 	for _, targetID := range input.TestCaseIDs {
 		found := false
-		for _, r := range currentBatchRecordings {
+		for _, r := range currentBatchAutomations {
 			if r.TestCaseID == targetID || strings.HasPrefix(r.TestCaseID, targetID) || strings.Contains(r.TestCaseID, targetID) || strings.Contains(targetID, r.TestCaseID) {
 				found = true
 				break
@@ -182,26 +182,26 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input TestRecordingAg
 	}
 	output.FailedIDs = failedIDs
 
-	log.Printf("[AgentGeneration] Collected %d recordings for this batch (Failed: %d)", len(currentBatchRecordings), len(failedIDs))
+	log.Printf("[AgentGeneration] Collected %d automations for this batch (Failed: %d)", len(currentBatchAutomations), len(failedIDs))
 
 	return output, nil
 }
 
-// buildAgentGenerationPrompt creates the prompt for the agent to generate recordings
+// buildAgentGenerationPrompt creates the prompt for the agent to generate automations
 func buildAgentGenerationPrompt(scenario *models.TestScenario, scenarioID string, targetTestCaseIDs []string) string {
 	var prompt strings.Builder
 
-	prompt.WriteString(`You are tasked with generating test recordings from a test scenario. 
+	prompt.WriteString(`You are tasked with generating automation tests from a test scenario. 
 
 ## Your Task
 For EACH test case in the scenario below:
 1. Use the GitLab tools to explore the project repository
 2. Find the relevant source files (pages, components) for each test case
 3. Extract selectors from the source code
-4. Generate a complete test recording with proper steps
+4. Generate a complete automation test with proper steps
 
 ## Critical Requirements
-- Each numbered step in the test case becomes ONE recording step
+- Each numbered step in the test case becomes ONE automation step
 - Always include selector, elementHints, selectorCandidates, xpath, xpathCandidates for each step
 - Use actual selectors from the source code (data-testid, id, aria-label, etc.)
 - NEVER use vague selectors like "button" or ".item"
@@ -285,12 +285,12 @@ For EACH test case in the scenario below:
 2. For each test case, identify which pages/components are relevant
 3. Use getGitLabFileContent to fetch the source files
 4. Extract Playwright-compatible selectors (CSS and XPath) from the source code
-5. Use save_test_recording to save each generated recording
+5. Use save_automation_test to save each generated automation
 
-NOTE: When generating tests, the system will execute them in parallel (up to 10 at a time). Since each test runs in a completely isolated browser context, you MUST ensure that EVERY SINGLE recording includes the full setup steps (e.g. navigation and login) if required by the test case's precondition.
+NOTE: When generating tests, the system will execute them in parallel (up to 10 at a time). Since each test runs in a completely isolated browser context, you MUST ensure that EVERY SINGLE automation includes the full setup steps (e.g. navigation and login) if required by the test case's precondition.
 
-## Recording Format & Playwright Locators
-Each recording must have:
+## Automation Format & Playwright Locators
+Each automation must have:
 {
   "scenarioID": "` + scenarioID + `",
   "projectID": "` + scenario.ProjectID + `",
@@ -319,61 +319,43 @@ CRITICAL: The automation framework runs on Playwright. You MUST extract real CSS
 
 CRITICAL BRANCH POLICY: When using listGitLabRepositoryTree or getGitLabFileContent, you MUST leave the 'ref' argument empty so the tool automatically uses the default branch. DO NOT use random branch names like 'Prod/25-06-2025'. Always leave 'ref' empty to analyze the default branch.
 
-Generate recordings for ALL test cases now. Use the save_test_recording tool for each one.
+Generate automations for ALL test cases now. Use the save_automation_test tool for each one.
 `)
 
 	return prompt.String()
 }
 
-// collectGeneratedRecordings finds recordings that were saved by the agent for a specific scenario
-func collectGeneratedRecordings(scenarioID string) []models.TestRecording {
+// collectGeneratedAutomations finds automation tests that were saved by the agent for a specific scenario
+func collectGeneratedAutomations(scenarioID string) []models.GeneratedAutomation {
 	ctx := context.Background()
-	var recordings []models.TestRecording
+	var automations []models.GeneratedAutomation
 
-	// Get recording IDs from the scenario-specific set
-	setKey := fmt.Sprintf("recordings:scenario:%s", scenarioID)
-	ids, err := database.RedisClient.SMembers(ctx, setKey).Result()
+	val, err := database.RedisClient.Get(ctx, fmt.Sprintf("scenario:%s", scenarioID)).Result()
 	if err != nil {
-		log.Printf("[AgentGeneration] Failed to get recording IDs for scenario %s: %v", scenarioID, err)
-		return recordings
+		log.Printf("[AgentGeneration] Failed to get scenario %s: %v", scenarioID, err)
+		return automations
 	}
 
-	// Sort IDs so newer recordings come last (assuming rec_timestamp format)
-	// We do this to ensure we process the most recent ones if there are duplicates for a test case
-	// Redis SMembers returns in random order
-	
-	for _, id := range ids {
-		key := fmt.Sprintf("recording:%s", id)
-		val, err := database.RedisClient.Get(ctx, key).Result()
-		if err != nil {
-			log.Printf("[AgentGeneration] Failed to get recording %s: %v", id, err)
-			continue
-		}
-
-		var recording models.TestRecording
-		if err := json.Unmarshal([]byte(val), &recording); err != nil {
-			log.Printf("[AgentGeneration] Failed to unmarshal recording %s: %v", id, err)
-			continue
-		}
-
-		recordings = append(recordings, recording)
+	var scenario models.TestScenario
+	if err := json.Unmarshal([]byte(val), &scenario); err != nil {
+		log.Printf("[AgentGeneration] Failed to unmarshal scenario %s: %v", scenarioID, err)
+		return automations
 	}
 
-	// Sort recordings by CreatedAt so newest ones come last
-	for i := 0; i < len(recordings); i++ {
-		for j := i + 1; j < len(recordings); j++ {
-			if recordings[i].CreatedAt.After(recordings[j].CreatedAt) {
-				recordings[i], recordings[j] = recordings[j], recordings[i]
+	for _, section := range scenario.Sections {
+		for _, tc := range section.TestCases {
+			if tc.AutomationTest != nil && len(tc.AutomationTest.Steps) > 0 {
+				automations = append(automations, models.GeneratedAutomation{
+					ID:         tc.AutomationTest.ID,
+					Name:       tc.AutomationTest.Name,
+					TestCaseID: tc.ID,
+					Steps:      tc.AutomationTest.Steps,
+				})
 			}
 		}
 	}
 
-	// We DO NOT clear the set here anymore because batching requires
-	// multiple queries to this set, and deleting it early breaks the subsequent batches
-	// We'll let normal Redis TTL or manual cleanup handle it
-	// database.RedisClient.Del(ctx, setKey)
+	log.Printf("[AgentGeneration] Found %d automation tests for scenario %s", len(automations), scenarioID)
 
-	log.Printf("[AgentGeneration] Found %d recordings for scenario %s", len(recordings), scenarioID)
-
-	return recordings
+	return automations
 }

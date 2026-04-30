@@ -548,11 +548,6 @@ func DeleteTestCase(c *gin.Context) {
 			for j := range scenario.Sections[i].TestCases {
 				tc := &scenario.Sections[i].TestCases[j]
 				if tc.ID == tcID {
-					// Clean up automation recording if exists
-					if tc.AutomationTest != nil && tc.AutomationTest.RecordingID != "" {
-						database.RedisClient.Del(ctx, fmt.Sprintf("recording:%s", tc.AutomationTest.RecordingID))
-						database.RedisClient.SRem(ctx, "recordings", tc.AutomationTest.RecordingID)
-					}
 					updated = true
 				} else {
 					tc.Order = len(newCases) + 1
@@ -577,7 +572,7 @@ func DeleteTestCase(c *gin.Context) {
 	c.JSON(http.StatusOK, scenario)
 }
 
-// DeleteScenario deletes a scenario and its associated generated recordings
+// DeleteScenario deletes a scenario
 func DeleteScenario(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" {
@@ -586,24 +581,6 @@ func DeleteScenario(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-
-	// Delete all child recordings associated with this scenario
-	recordingsKey := fmt.Sprintf("recordings:scenario:%s", id)
-	recordingIDs, _ := database.RedisClient.SMembers(ctx, recordingsKey).Result()
-	deletedRecordingCount := 0
-
-	for _, recID := range recordingIDs {
-		deleted, err := deleteRecordingByID(ctx, recID)
-		if err != nil {
-			log.Printf("Failed to delete recording %s: %v", recID, err)
-		}
-		if deleted {
-			deletedRecordingCount++
-		}
-	}
-
-	// Clean up the scenario's recordings set
-	database.RedisClient.Del(ctx, recordingsKey)
 
 	err := database.RedisClient.Del(ctx, fmt.Sprintf("scenario:%s", id)).Err()
 	if err != nil {
@@ -614,9 +591,8 @@ func DeleteScenario(c *gin.Context) {
 	database.RedisClient.SRem(ctx, "scenarios", id)
 
 	c.JSON(http.StatusOK, gin.H{
-		"message":              "scenario deleted successfully",
-		"id":                   id,
-		"deletedRecordings":    deletedRecordingCount,
+		"message": "scenario deleted successfully",
+		"id":    id,
 	})
 }
 
@@ -636,7 +612,6 @@ func BulkDeleteScenarios(c *gin.Context) {
 
 	ctx := c.Request.Context()
 	deletedCount := 0
-	totalRecordingsDeleted := 0
 	var notFound []string
 	var errors []string
 
@@ -647,23 +622,6 @@ func BulkDeleteScenarios(c *gin.Context) {
 			notFound = append(notFound, id)
 			continue
 		}
-
-		// Delete all child recordings associated with this scenario
-		recordingsKey := fmt.Sprintf("recordings:scenario:%s", id)
-		recordingIDs, _ := database.RedisClient.SMembers(ctx, recordingsKey).Result()
-
-		for _, recID := range recordingIDs {
-			deleted, err := deleteRecordingByID(ctx, recID)
-			if err != nil {
-				log.Printf("Failed to delete recording %s: %v", recID, err)
-			}
-			if deleted {
-				totalRecordingsDeleted++
-			}
-		}
-
-		// Clean up the scenario's recordings set
-		database.RedisClient.Del(ctx, recordingsKey)
 
 		err = database.RedisClient.Del(ctx, fmt.Sprintf("scenario:%s", id)).Err()
 		if err != nil {
@@ -676,11 +634,10 @@ func BulkDeleteScenarios(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message":              fmt.Sprintf("deleted %d scenarios", deletedCount),
-		"deletedCount":         deletedCount,
-		"deletedRecordings":    totalRecordingsDeleted,
-		"notFound":             notFound,
-		"errors":               errors,
+		"message":      fmt.Sprintf("deleted %d scenarios", deletedCount),
+		"deletedCount": deletedCount,
+		"notFound":     notFound,
+		"errors":       errors,
 	})
 }
 
@@ -789,10 +746,10 @@ func GenerateTests(c *gin.Context) {
 		setTestCasesAutomationStatus(bgCtx, id, targetIDs, models.AutomationStatusRunning)
 
 		events.SetTotalSteps(len(targetIDs))
-		events.Start("Generating %d test recording%s for '%s'...",
+		events.Start("Generating %d automation test%s for '%s'...",
 			len(targetIDs), pluralize(len(targetIDs)), projectName)
 
-		var allRecordings []models.TestRecording
+		var allAutomations []models.GeneratedAutomation
 		var allFailedIDs []string
 
 		// Batch execution: 5 test cases at a time to prevent LLM token limits and hallucinations
@@ -803,15 +760,15 @@ func GenerateTests(c *gin.Context) {
 				end = len(targetIDs)
 			}
 			batchIDs := targetIDs[i:end]
-			
-			events.Progressf("Generating recordings for batch %d to %d (of %d)...", i+1, end, len(targetIDs))
+
+			events.Progressf("Generating automations for batch %d to %d (of %d)...", i+1, end, len(targetIDs))
 
 			// Use agent for this batch
-			result, err := agent.RunAgentForTestGenerationWithLLM(bgCtx, agent.TestRecordingAgentInput{
+			result, err := agent.RunAgentForTestGenerationWithLLM(bgCtx, agent.AutomationAgentInput{
 				ScenarioID:  id,
 				TestCaseIDs: batchIDs,
 			}, token)
-			
+
 			if err != nil {
 				log.Printf("[Agent] Batch generation failed: %v", err)
 				// Log but keep going with other batches
@@ -820,17 +777,17 @@ func GenerateTests(c *gin.Context) {
 			}
 
 			if result != nil {
-				allRecordings = append(allRecordings, result.Recordings...)
+				allAutomations = append(allAutomations, result.Automations...)
 				allFailedIDs = append(allFailedIDs, result.FailedIDs...)
 			}
 		}
 
-		if len(allRecordings) == 0 && len(allFailedIDs) == len(targetIDs) {
+		if len(allAutomations) == 0 && len(allFailedIDs) == len(targetIDs) {
 			events.Error(fmt.Sprintf("Agent generation completely failed for all test cases"))
-			
+
 			// Mark all running as failed
 			setTestCasesAutomationStatus(bgCtx, id, targetIDs, models.AutomationStatusFail)
-			
+
 			s, _ := getScenario(bgCtx, id)
 			s.Status = models.ScenarioStatusFailed
 			s.Error = "failed to generate tests: all batches failed"
@@ -838,51 +795,27 @@ func GenerateTests(c *gin.Context) {
 			return
 		}
 
-		recordings := allRecordings
-
 		if len(allFailedIDs) > 0 {
 			log.Printf("[Agent] Failed to generate %d test cases: %v", len(allFailedIDs), allFailedIDs)
 		}
 
-		events.Progressf("Saving %d generated test recording%s to database...", len(recordings), pluralize(len(recordings)))
+		events.Progressf("Saving %d generated automation test%s to scenario...", len(allAutomations), pluralize(len(allAutomations)))
 
 		// Reload scenario to get latest state
 		s, _ := getScenario(bgCtx, id)
 
-		for _, rec := range recordings {
-			rec.ProjectID = s.ProjectID
-			rec.CreatorID = s.CreatorID
-			rec.CreatedAt = time.Now()
-			rec.SourceType = "test_scenario"
-			rec.SourceID = id
-
-			recKey := fmt.Sprintf("recording:%s", rec.ID)
-			recVal, _ := json.Marshal(rec)
-
-			database.RedisClient.Set(bgCtx, recKey, recVal, 0)
-			database.RedisClient.SAdd(bgCtx, "recordings", rec.ID)
-			if rec.CreatorID != 0 {
-				database.RedisClient.SAdd(bgCtx, fmt.Sprintf("recordings:user:%d", rec.CreatorID), rec.ID)
-			} else {
-				database.RedisClient.SAdd(bgCtx, "recordings:legacy", rec.ID)
-			}
-			if rec.ProjectID != "" {
-				database.RedisClient.SAdd(bgCtx, fmt.Sprintf("recordings:project:%s", rec.ProjectID), rec.ID)
-			}
-			// Also track by scenario for cascade delete
-			database.RedisClient.SAdd(bgCtx, fmt.Sprintf("recordings:scenario:%s", id), rec.ID)
-
-			// Link recording to test case
-			services.LinkRecording(&s, &rec)
+		for _, auto := range allAutomations {
+			// Link automation steps to test case
+			services.LinkAutomation(&s, &auto)
 		}
 
-		// Update any that were running but didn't get a recording to failed
+		// Update any that were running but didn't get an automation to failed
 		for i := range s.Sections {
 			for j := range s.Sections[i].TestCases {
 				tc := &s.Sections[i].TestCases[j]
 				if tc.AutomationTest != nil && tc.AutomationTest.Status == models.AutomationStatusRunning {
 					tc.AutomationTest.Status = models.AutomationStatusFail
-					tc.AutomationTest.ErrorMessage = "Failed to generate recording for this test case."
+					tc.AutomationTest.ErrorMessage = "Failed to generate automation for this test case."
 				}
 			}
 		}
@@ -892,8 +825,8 @@ func GenerateTests(c *gin.Context) {
 		s.ComputeStats()
 		saveScenario(bgCtx, &s)
 
-		events.Done("Successfully generated %d test recording%s for '%s'",
-			len(recordings), pluralize(len(recordings)), projectName)
+		events.Done("Successfully generated %d automation test%s for '%s'",
+			len(allAutomations), pluralize(len(allAutomations)), projectName)
 	}(&scenario, targetTestCaseIDs, gitlabClient)
 }
 

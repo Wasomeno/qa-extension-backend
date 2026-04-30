@@ -147,7 +147,7 @@ func GetQARunner(ctx context.Context) (*runner.Runner, error) {
 	allTools := make([]tool.Tool, 0)
 	allTools = append(allTools, GetGitLabTools()...)
 	allTools = append(allTools, GetTestTools()...)
-	allTools = append(allTools, GetTestRecordingTools()...)
+	allTools = append(allTools, GetAutomationTools()...)
 
 	mainAgent, err := llmagent.New(llmagent.Config{
 		Name:        "qa_agent",

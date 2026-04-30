@@ -90,14 +90,15 @@ const (
 // Core domain types
 // ─────────────────────────────────────────────
 
-// AutomationTest represents the automation linked to a test case
+// AutomationTest represents the automation linked to a test case.
+// The generated steps are stored inline in the Steps field.
 type AutomationTest struct {
 	ID              string              `json:"id"`
 	Name            string              `json:"name"`
 	Status          AutomationRunStatus `json:"status"`
 	LastRunAt       string              `json:"lastRunAt,omitempty"`
 	RunDurationMs   int64               `json:"runDurationMs,omitempty"`
-	RecordingID     string              `json:"recordingId,omitempty"`
+	Steps           []RecordingStep     `json:"steps,omitempty"`
 	ScreenshotURL   string              `json:"screenshotUrl,omitempty"`
 	ErrorMessage    string              `json:"errorMessage,omitempty"`
 	FailedStepIndex *int                `json:"failedStepIndex,omitempty"`

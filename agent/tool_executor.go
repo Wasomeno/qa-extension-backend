@@ -656,31 +656,29 @@ func listRecordedTestsDirect(ctx context.Context, args map[string]any) (*ListRec
 	}
 
 	// Return summaries instead of full recordings to keep response size manageable
-	var summaries []models.RecordingSummary
+	var summaries []models.ManualRecordingSummary
 	for _, id := range ids {
 		val, err := database.RedisClient.Get(ctx, fmt.Sprintf("recording:%s", id)).Result()
 		if err != nil {
 			continue
 		}
 
-		var r models.TestRecording
+		var r models.ManualRecording
 		if err := json.Unmarshal([]byte(val), &r); err != nil {
 			continue
 		}
 
-		summaries = append(summaries, models.RecordingSummary{
-			ID:         r.ID,
-			Name:       r.Name,
+		summaries = append(summaries, models.ManualRecordingSummary{
+			ID:          r.ID,
+			Name:        r.Name,
 			Description: r.Description,
-			Status:     r.Status,
-			SourceType: r.SourceType,
-			SourceID:   r.SourceID,
-			ProjectID:  r.ProjectID,
-			IssueID:    r.IssueID,
-			CreatorID:  r.CreatorID,
-			VideoURL:   r.VideoURL,
-			StepCount:  len(r.Steps),
-			CreatedAt:  r.CreatedAt,
+			Status:      r.Status,
+			ProjectID:   r.ProjectID,
+			IssueID:     r.IssueID,
+			CreatorID:   r.CreatorID,
+			VideoURL:    r.VideoURL,
+			StepCount:   len(r.Steps),
+			CreatedAt:   r.CreatedAt,
 		})
 	}
 
@@ -696,7 +694,7 @@ func runRecordedTestDirect(ctx context.Context, args map[string]any) (*models.Te
 		return nil, fmt.Errorf("recording not found: %s", testID)
 	}
 
-	var recording models.TestRecording
+	var recording models.ManualRecording
 	if err := json.Unmarshal([]byte(val), &recording); err != nil {
 		return nil, fmt.Errorf("failed to parse recording: %w", err)
 	}
@@ -724,7 +722,8 @@ func runRecordedTestDirect(ctx context.Context, args map[string]any) (*models.Te
 	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	return RunTest(timeoutCtx, &recording)
+	run := &models.TestRun{ID: recording.ID, Name: recording.Name, Steps: recording.Steps}
+	return RunTest(timeoutCtx, run)
 }
 
 func listTestScenariosDirect(ctx context.Context) (*ListTestScenariosResponse, error) {
@@ -767,31 +766,27 @@ func runTestScenarioDirect(ctx context.Context, args map[string]any) (*RunTestSc
 		return nil, fmt.Errorf("no tests have been generated for this scenario yet")
 	}
 
-	var recordings []models.TestRecording
+	var runs []models.TestRun
 	for _, section := range scenario.Sections {
 		for _, tc := range section.TestCases {
-			if tc.AutomationTest != nil && tc.AutomationTest.RecordingID != "" {
-				rVal, err := database.RedisClient.Get(ctx, fmt.Sprintf("recording:%s", tc.AutomationTest.RecordingID)).Result()
-				if err != nil {
-					continue
-				}
-
-				var r models.TestRecording
-				if err := json.Unmarshal([]byte(rVal), &r); err == nil {
-					recordings = append(recordings, r)
-				}
+			if tc.AutomationTest != nil && len(tc.AutomationTest.Steps) > 0 {
+				runs = append(runs, models.TestRun{
+					ID:    tc.AutomationTest.ID,
+					Name:  tc.AutomationTest.Name,
+					Steps: tc.AutomationTest.Steps,
+				})
 			}
 		}
 	}
 
-	if len(recordings) == 0 {
-		return nil, fmt.Errorf("failed to load any recordings for the scenario")
+	if len(runs) == 0 {
+		return nil, fmt.Errorf("failed to load any automation tests for the scenario")
 	}
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
-	results := RunTestsParallel(timeoutCtx, recordings)
+	results := RunTestsParallel(timeoutCtx, runs)
 
 	passed := 0
 	failed := 0
@@ -843,25 +838,20 @@ func runScenarioTestCaseDirect(ctx context.Context, args map[string]any) (*model
 		return nil, fmt.Errorf("test case %s not found in scenario %s", testCaseID, scenarioID)
 	}
 
-	var recording *models.TestRecording
-	if targetCase.AutomationTest != nil && targetCase.AutomationTest.RecordingID != "" {
-		rVal, err := database.RedisClient.Get(ctx, fmt.Sprintf("recording:%s", targetCase.AutomationTest.RecordingID)).Result()
-		if err == nil {
-			var r models.TestRecording
-			if err := json.Unmarshal([]byte(rVal), &r); err == nil {
-				recording = &r
-			}
-		}
+	if targetCase.AutomationTest == nil || len(targetCase.AutomationTest.Steps) == 0 {
+		return nil, fmt.Errorf("this test case has not been generated yet")
 	}
 
-	if recording == nil {
-		return nil, fmt.Errorf("this test case has not been generated yet")
+	run := &models.TestRun{
+		ID:    targetCase.AutomationTest.ID,
+		Name:  targetCase.AutomationTest.Name,
+		Steps: targetCase.AutomationTest.Steps,
 	}
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	result, err := RunTest(timeoutCtx, recording)
+	result, err := RunTest(timeoutCtx, run)
 	if err != nil {
 		return nil, err
 	}

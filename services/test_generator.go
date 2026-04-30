@@ -14,7 +14,7 @@ import (
 	"google.golang.org/genai"
 )
 
-// GenerateTestsForScenario uses Gemini to generate TestRecordings from parsed test cases and module catalog.
+// GenerateTestsForScenario uses Gemini to generate automation steps from parsed test cases and module catalog.
 // It uses the pre-extracted selectors to ensure all selectors exist in the codebase.
 func GenerateTestsForScenario(
 	ctx context.Context,
@@ -22,10 +22,10 @@ func GenerateTestsForScenario(
 	codebaseCtx *CodebaseContext,
 	catalog *ModuleCatalog,
 	authConfig models.AuthConfig,
-) ([]models.TestRecording, []string, error) {
+) ([]models.GeneratedAutomation, []string, error) {
 
 	// We batch test cases (e.g. 5 at a time) to prevent context limits/timeouts
-	var allRecordings []models.TestRecording
+	var allAutomations []models.GeneratedAutomation
 	var allMissingRoutes []string
 
 	batchSize := 5
@@ -36,41 +36,41 @@ func GenerateTestsForScenario(
 		}
 		batch := testCases[i:end]
 
-		recordings, missingRoutes, err := processBatchWithCatalog(ctx, batch, codebaseCtx, catalog, authConfig)
+		automations, missingRoutes, err := processBatchWithCatalog(ctx, batch, codebaseCtx, catalog, authConfig)
 		if err != nil {
-			return allRecordings, allMissingRoutes, fmt.Errorf("failed processing batch %d: %w", i/batchSize, err)
+			return allAutomations, allMissingRoutes, fmt.Errorf("failed processing batch %d: %w", i/batchSize, err)
 		}
 
 		allMissingRoutes = append(allMissingRoutes, missingRoutes...)
-		allRecordings = append(allRecordings, recordings...)
+		allAutomations = append(allAutomations, automations...)
 	}
 
-	return allRecordings, allMissingRoutes, nil
+	return allAutomations, allMissingRoutes, nil
 }
 
-// processBatchWithCatalog generates test recordings using the module catalog with pre-extracted selectors
+// processBatchWithCatalog generates automation steps using the module catalog with pre-extracted selectors
 func processBatchWithCatalog(
 	ctx context.Context,
 	batch []models.ParsedTestCase,
 	codebaseCtx *CodebaseContext,
 	catalog *ModuleCatalog,
 	authConfig models.AuthConfig,
-) ([]models.TestRecording, []string, error) {
+) ([]models.GeneratedAutomation, []string, error) {
 
 	prompt := buildCatalogAwarePrompt(batch, codebaseCtx, catalog, authConfig)
 
-	recordings, err := generateRecordings(ctx, batch, prompt)
+	automations, err := generateAutomations(ctx, batch, prompt)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	// Validate generated selectors against actual selectors in catalog
 	var missingRoutes []string
-	for i, rec := range recordings {
-		recordings[i].Steps = validateAndFixSelectors(rec.Steps, catalog)
+	for i, rec := range automations {
+		automations[i].Steps = validateAndFixSelectors(rec.Steps, catalog)
 	}
 
-	return recordings, missingRoutes, nil
+	return automations, missingRoutes, nil
 }
 
 // validateAndFixSelectors checks that each step's selector exists in the catalog
@@ -280,11 +280,11 @@ func findAlternativeSelector(description string, validSelectors map[string]strin
 	return ""
 }
 
-func generateRecordings(
+func generateAutomations(
 	ctx context.Context,
 	batch []models.ParsedTestCase,
 	prompt string,
-) ([]models.TestRecording, error) {
+) ([]models.GeneratedAutomation, error) {
 
 	projectID := os.Getenv("GOOGLE_CLOUD_PROJECT")
 	location := os.Getenv("VERTEX_LOCATION")
@@ -301,7 +301,7 @@ func generateRecordings(
 		return nil, fmt.Errorf("failed to create genai client: %w", err)
 	}
 
-	recordingSchema := &genai.Schema{
+	automationSchema := &genai.Schema{
 		Type: genai.TypeArray,
 		Items: &genai.Schema{
 			Type: genai.TypeObject,
@@ -337,7 +337,7 @@ func generateRecordings(
 	config := &genai.GenerateContentConfig{
 		Temperature:      genai.Ptr(float32(0.2)),
 		ResponseMIMEType: "application/json",
-		ResponseSchema:   recordingSchema,
+		ResponseSchema:   automationSchema,
 	}
 
 	resp, err := client.Models.GenerateContent(
@@ -356,30 +356,30 @@ func generateRecordings(
 		return nil, fmt.Errorf("empty response from gemini")
 	}
 
-	var generatedRecordings []models.TestRecording
-	err = json.Unmarshal([]byte(resStr), &generatedRecordings)
+	var generatedAutomations []models.GeneratedAutomation
+	err = json.Unmarshal([]byte(resStr), &generatedAutomations)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal gemini response: %w\nResponse was: %s", err, resStr)
 	}
 
 	// Link them back to the original parsed cases and add UUIDs/Defaults
 	for i, tCase := range batch {
-		if i < len(generatedRecordings) {
-			generatedRecordings[i].ID = uuid.NewString()
-			
+		if i < len(generatedAutomations) {
+			generatedAutomations[i].ID = uuid.NewString()
+			generatedAutomations[i].TestCaseID = tCase.ID
+
 			desc := fmt.Sprintf("[%s] %s", tCase.ID, tCase.Name)
 			if tCase.Route != "" {
 				desc = fmt.Sprintf("[%s] Route: %s — %s", tCase.ID, tCase.Route, tCase.Name)
 			}
-			if generatedRecordings[i].Description != "" {
-				desc += "\n" + generatedRecordings[i].Description
+			if generatedAutomations[i].Description != "" {
+				desc += "\n" + generatedAutomations[i].Description
 			}
-			generatedRecordings[i].Description = desc
-			generatedRecordings[i].Status = "generated"
+			generatedAutomations[i].Description = desc
 		}
 	}
 
-	return generatedRecordings, nil
+	return generatedAutomations, nil
 }
 
 // buildCatalogAwarePrompt builds a prompt using the module catalog with pre-extracted selectors
@@ -451,10 +451,10 @@ All Available Selectors in this file:
 	// Build selector summary for reference
 	selectorSummary := buildFullSelectorSummary(catalog)
 
-	return fmt.Sprintf(`You are a QA automation expert writing Playwright test recordings for a Next.js application.
+	return fmt.Sprintf(`You are a QA automation expert writing Playwright automation tests for a Next.js application.
 
 ### INSTRUCTIONS:
-1. Generate one TestRecording per Test Case, matching array order.
+1. Generate one automation test per Test Case, matching array order.
 2. The first steps MUST navigate to Login URL and authenticate using the provided credentials.
    - Base URL: %s
    - Login URL: %s
@@ -492,7 +492,7 @@ All Available Selectors in this file:
 %s
 
 ### RESPONSE FORMAT:
-Return ONLY a JSON array of TestRecording objects.`, 
+Return ONLY a JSON array of automation test objects.`, 
 		authConfig.BaseURL, authConfig.LoginURL, authConfig.Username, authConfig.Password,
 		strings.Join(routeContexts, "\n\n"),
 		selectorSummary,

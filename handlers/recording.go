@@ -32,7 +32,7 @@ func deleteRecordingByID(ctx context.Context, id string) (bool, error) {
 		return false, nil // recording not found
 	}
 
-	var recording models.TestRecording
+	var recording models.ManualRecording
 	if err := json.Unmarshal([]byte(val), &recording); err != nil {
 		return false, err
 	}
@@ -45,7 +45,7 @@ func deleteRecordingByID(ctx context.Context, id string) (bool, error) {
 	// Remove from all index sets
 	database.RedisClient.SRem(ctx, "recordings", id)
 	database.RedisClient.SRem(ctx, "recordings:legacy", id)
-	
+
 	if recording.CreatorID != 0 {
 		database.RedisClient.SRem(ctx, fmt.Sprintf("recordings:user:%d", recording.CreatorID), id)
 	}
@@ -54,9 +54,6 @@ func deleteRecordingByID(ctx context.Context, id string) (bool, error) {
 	}
 	if recording.IssueID != "" {
 		database.RedisClient.SRem(ctx, fmt.Sprintf("recordings:issue:%s", recording.IssueID), id)
-	}
-	if recording.SourceID != "" {
-		database.RedisClient.SRem(ctx, fmt.Sprintf("recordings:scenario:%s", recording.SourceID), id)
 	}
 
 	return true, nil
@@ -160,7 +157,7 @@ func getProjectDetails(c *gin.Context, projectID string) *models.ProjectDetails 
 }
 
 func SaveRecording(c *gin.Context) {
-	var recording models.TestRecording
+	var recording models.ManualRecording
 	if err := c.ShouldBindJSON(&recording); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -174,11 +171,6 @@ func SaveRecording(c *gin.Context) {
 	// Set CreatedAt if not provided (new recording)
 	if recording.CreatedAt.IsZero() {
 		recording.CreatedAt = time.Now()
-	}
-
-	// Set SourceType to "manual" if not provided (default for user recordings)
-	if recording.SourceType == "" {
-		recording.SourceType = "manual"
 	}
 
 	userID, err := identity.GetCurrentUserID(c)
@@ -239,8 +231,7 @@ func ListRecordings(c *gin.Context) {
 	issueID := c.Query("issue_id")
 	search := c.Query("search")
 	status := c.Query("status")
-	sourceType := c.Query("source_type") // "manual" | "test_scenario"
-	sortBy := c.Query("sort_by")         // "created_at", "name", "status"
+	sortBy := c.Query("sort_by") // "created_at", "name", "status"
 	order := c.Query("order")            // "asc", "desc"
 	page := 1
 	limit := 20
@@ -282,7 +273,7 @@ func ListRecordings(c *gin.Context) {
 	// This reduces Redis round-trips from N calls to 1 call
 	if len(ids) == 0 {
 		c.JSON(http.StatusOK, gin.H{
-			"data":       []models.TestRecording{},
+			"data":       []models.ManualRecording{},
 			"pagination": gin.H{"page": page, "limit": limit, "total": 0, "totalPages": 0},
 		})
 		return
@@ -300,7 +291,7 @@ func ListRecordings(c *gin.Context) {
 	}
 
 	// Step 3: Parse and filter recordings
-	var recordings []models.TestRecording
+	var recordings []models.ManualRecording
 	processedIDs := make(map[string]bool)
 
 	for i, val := range vals {
@@ -313,7 +304,7 @@ func ListRecordings(c *gin.Context) {
 			continue
 		}
 
-		var r models.TestRecording
+		var r models.ManualRecording
 		if err := json.Unmarshal([]byte(val.(string)), &r); err != nil {
 			continue
 		}
@@ -327,7 +318,7 @@ func ListRecordings(c *gin.Context) {
 
 	// Step 4: Apply status filter
 	if status != "" {
-		filtered := make([]models.TestRecording, 0, len(recordings))
+		filtered := make([]models.ManualRecording, 0, len(recordings))
 		for _, r := range recordings {
 			if r.Status == status {
 				filtered = append(filtered, r)
@@ -336,21 +327,10 @@ func ListRecordings(c *gin.Context) {
 		recordings = filtered
 	}
 
-	// Step 5: Apply source_type filter
-	if sourceType != "" {
-		filtered := make([]models.TestRecording, 0, len(recordings))
-		for _, r := range recordings {
-			if r.SourceType == sourceType {
-				filtered = append(filtered, r)
-			}
-		}
-		recordings = filtered
-	}
-
-	// Step 6: Apply search filter
+	// Step 5: Apply search filter
 	if search != "" {
 		searchLower := strings.ToLower(search)
-		filtered := make([]models.TestRecording, 0, len(recordings))
+		filtered := make([]models.ManualRecording, 0, len(recordings))
 		for _, r := range recordings {
 			if strings.Contains(strings.ToLower(r.Name), searchLower) ||
 				strings.Contains(strings.ToLower(r.Description), searchLower) {
@@ -401,7 +381,7 @@ func ListRecordings(c *gin.Context) {
 
 	if start >= total {
 		c.JSON(http.StatusOK, gin.H{
-			"data":       []models.TestRecording{},
+			"data":       []models.ManualRecording{},
 			"pagination": gin.H{"page": page, "limit": limit, "total": total, "totalPages": totalPages},
 		})
 		return
@@ -488,7 +468,7 @@ func UpdateRecording(c *gin.Context) {
 		return
 	}
 
-	var existing models.TestRecording
+	var existing models.ManualRecording
 	if err := json.Unmarshal([]byte(val), &existing); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to unmarshal existing recording"})
 		return
@@ -597,7 +577,7 @@ func DeleteRecording(c *gin.Context) {
 		return
 	}
 
-	var recording models.TestRecording
+	var recording models.ManualRecording
 	if err := json.Unmarshal([]byte(val), &recording); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to unmarshal recording"})
 		return
@@ -638,7 +618,7 @@ func GetRecording(c *gin.Context) {
 		return
 	}
 
-	var recording models.TestRecording
+	var recording models.ManualRecording
 	if err := json.Unmarshal([]byte(val), &recording); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to unmarshal recording"})
 		return
@@ -681,7 +661,7 @@ func BulkDeleteRecordings(c *gin.Context) {
 			continue
 		}
 
-		var recording models.TestRecording
+		var recording models.ManualRecording
 		if err := json.Unmarshal([]byte(val), &recording); err != nil {
 			errors = append(errors, fmt.Sprintf("%s: %v", id, err))
 			continue
@@ -737,7 +717,7 @@ func RunRecording(c *gin.Context) {
 		return
 	}
 
-	var recording models.TestRecording
+	var recording models.ManualRecording
 	if err := json.Unmarshal([]byte(val), &recording); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to unmarshal recording"})
 		return
@@ -750,7 +730,8 @@ func RunRecording(c *gin.Context) {
 	// Execute in goroutine to not block HTTP
 	go func() {
 		bgCtx := context.Background()
-		result, err := agent.RunTest(bgCtx, &recording)
+		run := &models.TestRun{ID: recording.ID, Name: recording.Name, Steps: recording.Steps}
+		result, err := agent.RunTest(bgCtx, run)
 		if err != nil {
 			events.Error(fmt.Sprintf("Recording '%s' failed: %v", recording.Name, err))
 		} else {

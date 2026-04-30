@@ -183,39 +183,19 @@ func mapTCStatus(status string) models.TestCaseStatus {
 	}
 }
 
-// LinkRecordingToTestCase links a generated recording to a test case as its automation test.
-// Returns true if linked successfully.
-func LinkRecordingToTestCase(scenario *models.TestScenario, recordingID, recordingName, testCaseID string) bool {
-	for i := range scenario.Sections {
-		for j := range scenario.Sections[i].TestCases {
-			tc := &scenario.Sections[i].TestCases[j]
-			if tc.ID == testCaseID {
-				tc.AutomationTest = &models.AutomationTest{
-					ID:          fmt.Sprintf("auto-%s", recordingID),
-					Name:        recordingName,
-					Status:      models.AutomationStatusIdle,
-					RecordingID: recordingID,
-				}
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// LinkRecording tries to link a recording to a matching test case using TestCaseID, then name fallback.
-func LinkRecording(scenario *models.TestScenario, rec *models.TestRecording) bool {
+// LinkAutomation links a generated automation to a matching test case using TestCaseID, then name fallback.
+func LinkAutomation(scenario *models.TestScenario, auto *models.GeneratedAutomation) bool {
 	// First try exact ID match
-	if rec.TestCaseID != "" {
+	if auto.TestCaseID != "" {
 		for i := range scenario.Sections {
 			for j := range scenario.Sections[i].TestCases {
 				tc := &scenario.Sections[i].TestCases[j]
-				if tc.ID == rec.TestCaseID || strings.HasPrefix(rec.TestCaseID, tc.ID) || strings.Contains(rec.TestCaseID, tc.ID) || strings.Contains(tc.ID, rec.TestCaseID) {
+				if tc.ID == auto.TestCaseID || strings.HasPrefix(auto.TestCaseID, tc.ID) || strings.Contains(auto.TestCaseID, tc.ID) || strings.Contains(tc.ID, auto.TestCaseID) {
 					tc.AutomationTest = &models.AutomationTest{
-						ID:          fmt.Sprintf("auto-%s", rec.ID),
-						Name:        rec.Name,
-						Status:      models.AutomationStatusIdle,
-						RecordingID: rec.ID,
+						ID:     fmt.Sprintf("auto-%s", auto.ID),
+						Name:   auto.Name,
+						Status: models.AutomationStatusIdle,
+						Steps:  auto.Steps,
 					}
 					return true
 				}
@@ -224,22 +204,22 @@ func LinkRecording(scenario *models.TestScenario, rec *models.TestRecording) boo
 	}
 
 	// Fallback to name similarity
-	recLower := strings.ToLower(rec.Name)
+	autoLower := strings.ToLower(auto.Name)
 	for i := range scenario.Sections {
 		for j := range scenario.Sections[i].TestCases {
 			tc := &scenario.Sections[i].TestCases[j]
-			if tc.AutomationTest != nil && tc.AutomationTest.RecordingID != "" {
+			if tc.AutomationTest != nil && len(tc.AutomationTest.Steps) > 0 {
 				continue // already linked
 			}
 			tcLower := strings.ToLower(tc.Title)
 			codeLower := strings.ToLower(tc.Code)
-			if strings.Contains(recLower, codeLower) ||
-				strings.Contains(recLower, strings.ReplaceAll(tcLower, " ", "_")) {
+			if strings.Contains(autoLower, codeLower) ||
+				strings.Contains(autoLower, strings.ReplaceAll(tcLower, " ", "_")) {
 				tc.AutomationTest = &models.AutomationTest{
-					ID:          fmt.Sprintf("auto-%s", rec.ID),
-					Name:        rec.Name,
-					Status:      models.AutomationStatusIdle,
-					RecordingID: rec.ID,
+					ID:     fmt.Sprintf("auto-%s", auto.ID),
+					Name:   auto.Name,
+					Status: models.AutomationStatusIdle,
+					Steps:  auto.Steps,
 				}
 				return true
 			}
@@ -249,12 +229,12 @@ func LinkRecording(scenario *models.TestScenario, rec *models.TestRecording) boo
 	for i := range scenario.Sections {
 		for j := range scenario.Sections[i].TestCases {
 			tc := &scenario.Sections[i].TestCases[j]
-			if tc.AutomationTest == nil || tc.AutomationTest.RecordingID == "" {
+			if tc.AutomationTest == nil || len(tc.AutomationTest.Steps) == 0 {
 				tc.AutomationTest = &models.AutomationTest{
-					ID:          fmt.Sprintf("auto-%s", rec.ID),
-					Name:        rec.Name,
-					Status:      models.AutomationStatusIdle,
-					RecordingID: rec.ID,
+					ID:     fmt.Sprintf("auto-%s", auto.ID),
+					Name:   auto.Name,
+					Status: models.AutomationStatusIdle,
+					Steps:  auto.Steps,
 				}
 				return true
 			}

@@ -19,8 +19,8 @@ func main() {
     }
     defer agent.StopPlaywright()
 
-    // Create a dummy recording that will timeout or hang
-    rec := &models.TestRecording{
+    // Create a dummy test run that will timeout or hang
+    rec := &models.TestRun{
         ID: "test-rec-1",
         Name: "Test 1",
         Steps: []models.RecordingStep{

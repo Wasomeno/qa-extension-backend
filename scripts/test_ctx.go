@@ -17,8 +17,8 @@ func main() {
     }
     defer agent.StopPlaywright()
 
-    // Create a dummy recording
-    rec := &models.TestRecording{
+    // Create a dummy test run
+    rec := &models.TestRun{
         ID: "test-rec-1",
         Name: "Test 1",
         Steps: []models.RecordingStep{

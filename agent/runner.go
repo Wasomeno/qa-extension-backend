@@ -62,12 +62,12 @@ func StopPlaywright() {
 	}
 }
 
-func RunTest(ctx context.Context, recording *models.TestRecording) (*models.TestResult, error) {
-	log.Printf("[Runner] Running test: %s", recording.Name)
+func RunTest(ctx context.Context, run *models.TestRun) (*models.TestResult, error) {
+	log.Printf("[Runner] Running test: %s", run.Name)
 
 	// Create event emitter for consistent event publishing
-	events := NewExecutionEmitter(ctx, recording.ID).SetTotalSteps(len(recording.Steps))
-	events.Start("Starting test '%s' (%d steps)...", recording.Name, len(recording.Steps))
+	events := NewExecutionEmitter(ctx, run.ID).SetTotalSteps(len(run.Steps))
+	events.Start("Starting test '%s' (%d steps)...", run.Name, len(run.Steps))
 
 	if globalBrowser == nil {
 		events.Progress("Initializing Playwright browser...")
@@ -199,13 +199,13 @@ func RunTest(ctx context.Context, recording *models.TestRecording) (*models.Test
 	})
 
 	result := &models.TestResult{
-		TestID:      recording.ID,
+		TestID:      run.ID,
 		Status:      "passed",
 		StepResults: make([]models.TestStepResult, 0),
 	}
 
-	totalSteps := len(recording.Steps)
-	for i, step := range recording.Steps {
+	totalSteps := len(run.Steps)
+	for i, step := range run.Steps {
 		// Create a per-step timeout context (60 seconds)
 		stepCtx, stepCancel := context.WithTimeout(ctx, 60*time.Second)
 
@@ -335,28 +335,28 @@ func RunTest(ctx context.Context, recording *models.TestRecording) (*models.Test
 		}
 	}
 
-	events.Done("Test '%s' completed: %s", recording.Name, result.Status)
+	events.Done("Test '%s' completed: %s", run.Name, result.Status)
 	return result, nil
 }
 
-func RunTestsParallel(ctx context.Context, recordings []models.TestRecording) []*models.TestResult {
-	log.Printf("[Runner] Running %d tests in parallel", len(recordings))
+func RunTestsParallel(ctx context.Context, runs []models.TestRun) []*models.TestResult {
+	log.Printf("[Runner] Running %d tests in parallel", len(runs))
 
 	// Create event emitter for parallel execution
-	events := NewAgentToolEmitter(ctx).SetTotalSteps(len(recordings))
-	events.Start("Starting parallel execution of %d tests...", len(recordings))
+	events := NewAgentToolEmitter(ctx).SetTotalSteps(len(runs))
+	events.Start("Starting parallel execution of %d tests...", len(runs))
 
-	total := len(recordings)
+	total := len(runs)
 
-	results := make([]*models.TestResult, len(recordings))
+	results := make([]*models.TestResult, len(runs))
 
-	// Determine dynamic concurrency: 
+	// Determine dynamic concurrency:
 	// Run as many as requested, BUT cap it at a maximum of 10 to prevent server crashes.
-	concurrency := len(recordings)
+	concurrency := len(runs)
 	if concurrency > 10 {
 		concurrency = 10
 	}
-	// Handle edge case if recordings is empty
+	// Handle edge case if runs is empty
 	if concurrency == 0 {
 		return results
 	}
@@ -364,14 +364,14 @@ func RunTestsParallel(ctx context.Context, recordings []models.TestRecording) []
 	// Use a worker pool with a dynamic concurrency limit
 	semaphore := make(chan struct{}, concurrency)
 
-	for i := range recordings {
+	for i := range runs {
 		semaphore <- struct{}{}
 		go func(idx int) {
 			defer func() {
 				<-semaphore
 			}()
 
-			rec := recordings[idx]
+			rec := runs[idx]
 			events.Step(idx+1, fmt.Sprintf("Running test '%s'...", rec.Name))
 			result, err := RunTest(ctx, &rec)
 			if err != nil {
@@ -410,14 +410,14 @@ func RunTestsParallel(ctx context.Context, recordings []models.TestRecording) []
 	return results
 }
 
-// RunTestsChained executes a list of test recordings in a single, continuous browser session.
+// RunTestsChained executes a list of test runs in a single, continuous browser session.
 // Test 2 will start on the exact page where Test 1 left off.
 // This is critical for sequential flows (e.g., Test 1 logs in, Test 2 navigates to list, Test 3 deletes an item).
-func RunTestsChained(ctx context.Context, recordings []models.TestRecording) []*models.TestResult {
-	log.Printf("[Runner] Running %d chained tests in a single browser session", len(recordings))
+func RunTestsChained(ctx context.Context, runs []models.TestRun) []*models.TestResult {
+	log.Printf("[Runner] Running %d chained tests in a single browser session", len(runs))
 
-	results := make([]*models.TestResult, len(recordings))
-	total := len(recordings)
+	results := make([]*models.TestResult, len(runs))
+	total := len(runs)
 
 	if total == 0 {
 		return results
@@ -535,7 +535,7 @@ func RunTestsChained(ctx context.Context, recordings []models.TestRecording) []*
 	})
 
 	// We run sequentially on the EXACT SAME page
-	for i, rec := range recordings {
+	for i, rec := range runs {
 		events.Step(i+1, fmt.Sprintf("Running test '%s'...", rec.Name))
 
 		result := &models.TestResult{
@@ -546,7 +546,7 @@ func RunTestsChained(ctx context.Context, recordings []models.TestRecording) []*
 
 		testFailed := false
 
-		// Execute steps of THIS recording
+		// Execute steps of THIS run
 		for stepIdx, step := range rec.Steps {
 			events.Progressf("Step %d: %s", stepIdx+1, step.Action)
 
@@ -578,16 +578,16 @@ func RunTestsChained(ctx context.Context, recordings []models.TestRecording) []*
 			events.Progressf("Test '%s' passed", rec.Name)
 		} else {
 			events.Progressf("Test '%s' failed", rec.Name)
-			
+
 			// Optional: If a test in the chain fails, do you want to break the entire chain?
 			// Usually yes, because if Login fails, tests 2 and 3 are guaranteed to fail.
 			results[i] = result
 			events.Done("Chained execution aborted due to failure at test '%s'", rec.Name)
-			
+
 			// Fill remaining tests as failed/skipped
-			for j := i + 1; j < len(recordings); j++ {
+			for j := i + 1; j < len(runs); j++ {
 				results[j] = &models.TestResult{
-					TestID: recordings[j].ID,
+					TestID: runs[j].ID,
 					Status: "failed", // or skipped
 					Log:    fmt.Sprintf("Skipped because previous test in chain '%s' failed", rec.Name),
 				}
