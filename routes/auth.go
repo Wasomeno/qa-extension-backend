@@ -117,6 +117,11 @@ func isValidRedirectURL(target string) bool {
 	if u.Host == "playground-qa-extension.online" || strings.HasSuffix(u.Host, ".playground-qa-extension.online") {
 		return true
 	}
+
+	// Allow arndev domains
+	if u.Host == "flowg.arndev.nl" || strings.HasSuffix(u.Host, ".arndev.nl") {
+		return true
+	}
 	
 	return false
 }
