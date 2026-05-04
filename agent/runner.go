@@ -194,24 +194,39 @@ func RunTest(ctx context.Context, run *models.TestRun) (result *models.TestResul
 	})
 
 	page.OnRequest(func(request playwright.Request) {
-		headers, _ := json.Marshal(request.Headers())
-		log.Printf("[Browser Network REQ] %s %s | Headers: %s", request.Method(), request.URL(), string(headers))
+		headersMap := request.Headers()
+		cfRay := headersMap["cf-ray"]
+		if cfRay == "" {
+			cfRay = headersMap["Cf-Ray"]
+		}
+		headers, _ := json.Marshal(headersMap)
+		log.Printf("[Browser Network REQ] %s %s | Cf-Ray: %s | Headers: %s", request.Method(), request.URL(), cfRay, string(headers))
 	})
 
 	// Capture failed requests (network errors, 4xx, 5xx)
 	page.OnRequestFailed(func(request playwright.Request) {
-		headers, _ := json.Marshal(request.Headers())
-		log.Printf("[Browser Network FAILED] %s %s | Headers: %s", request.Method(), request.URL(), string(headers))
+		headersMap := request.Headers()
+		cfRay := headersMap["cf-ray"]
+		if cfRay == "" {
+			cfRay = headersMap["Cf-Ray"]
+		}
+		headers, _ := json.Marshal(headersMap)
+		log.Printf("[Browser Network FAILED] %s %s | Cf-Ray: %s | Headers: %s", request.Method(), request.URL(), cfRay, string(headers))
 	})
 
 	// Capture responses with error status codes
 	page.OnResponse(func(response playwright.Response) {
 		status := response.Status()
-		resHeaders, _ := json.Marshal(response.Headers())
-		log.Printf("[Browser Network RES] %d %s %s | Headers: %s", status, response.Request().Method(), response.URL(), string(resHeaders))
+		headersMap := response.Headers()
+		cfRay := headersMap["cf-ray"]
+		if cfRay == "" {
+			cfRay = headersMap["Cf-Ray"]
+		}
+		resHeaders, _ := json.Marshal(headersMap)
+		log.Printf("[Browser Network RES] %d %s %s | Cf-Ray: %s | Headers: %s", status, response.Request().Method(), response.URL(), cfRay, string(resHeaders))
 		if status >= 400 {
 			reqHeaders, _ := json.Marshal(response.Request().Headers())
-			log.Printf("[Browser Network ERROR] %d %s %s | Req Headers: %s | Res Headers: %s", status, response.Request().Method(), response.URL(), string(reqHeaders), string(resHeaders))
+			log.Printf("[Browser Network ERROR] %d %s %s | Cf-Ray: %s | Req Headers: %s | Res Headers: %s", status, response.Request().Method(), response.URL(), cfRay, string(reqHeaders), string(resHeaders))
 		}
 	})
 
@@ -541,17 +556,27 @@ func RunTestsChained(ctx context.Context, runs []models.TestRun) []*models.TestR
 	})
 
 	page.OnRequestFailed(func(request playwright.Request) {
-		headers, _ := json.Marshal(request.Headers())
-		log.Printf("[Browser Network FAILED] %s %s | Headers: %s", request.Method(), request.URL(), string(headers))
+		headersMap := request.Headers()
+		cfRay := headersMap["cf-ray"]
+		if cfRay == "" {
+			cfRay = headersMap["Cf-Ray"]
+		}
+		headers, _ := json.Marshal(headersMap)
+		log.Printf("[Browser Network FAILED] %s %s | Cf-Ray: %s | Headers: %s", request.Method(), request.URL(), cfRay, string(headers))
 	})
 
 	page.OnResponse(func(response playwright.Response) {
 		status := response.Status()
-		resHeaders, _ := json.Marshal(response.Headers())
-		log.Printf("[Browser Network RES] %d %s %s | Headers: %s", status, response.Request().Method(), response.URL(), string(resHeaders))
+		headersMap := response.Headers()
+		cfRay := headersMap["cf-ray"]
+		if cfRay == "" {
+			cfRay = headersMap["Cf-Ray"]
+		}
+		resHeaders, _ := json.Marshal(headersMap)
+		log.Printf("[Browser Network RES] %d %s %s | Cf-Ray: %s | Headers: %s", status, response.Request().Method(), response.URL(), cfRay, string(resHeaders))
 		if status >= 400 {
 			reqHeaders, _ := json.Marshal(response.Request().Headers())
-			log.Printf("[Browser Network ERROR] %d %s %s | Req Headers: %s | Res Headers: %s", status, response.Request().Method(), response.URL(), string(reqHeaders), string(resHeaders))
+			log.Printf("[Browser Network ERROR] %d %s %s | Cf-Ray: %s | Req Headers: %s | Res Headers: %s", status, response.Request().Method(), response.URL(), cfRay, string(reqHeaders), string(resHeaders))
 		}
 	})
 
