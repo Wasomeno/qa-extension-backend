@@ -10,10 +10,11 @@ import (
 // ─────────────────────────────────────────────
 
 type AuthConfig struct {
-	BaseURL  string `json:"baseUrl"`
-	LoginURL string `json:"loginUrl"`
-	Username string `json:"username"`
-	Password string `json:"password"`
+	BaseURL    string `json:"baseUrl"`
+	ApiBaseURL string `json:"apiBaseUrl,omitempty"`
+	LoginURL   string `json:"loginUrl"`
+	Username   string `json:"username"`
+	Password   string `json:"password"`
 }
 
 // ─────────────────────────────────────────────

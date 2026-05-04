@@ -26,7 +26,7 @@ const MaxFilesToFetch = 30
 const MaxTokensApprox = 80000 // Very rough estimate (1 token ~ 4 chars)
 
 // FetchCodebaseContext fetches relevant source code from a GitLab project
-func FetchCodebaseContext(client *gitlab.Client, projectID string) (*CodebaseContext, error) {
+func FetchCodebaseContext(client *gitlab.Client, projectID string, targetKeyword string) (*CodebaseContext, error) {
 	// First, fetch project details
 	project, _, err := client.Projects.GetProject(projectID, nil)
 	if err != nil {
@@ -37,11 +37,16 @@ func FetchCodebaseContext(client *gitlab.Client, projectID string) (*CodebaseCon
 	var allFiles []*gitlab.TreeNode
 
 	// We only care about specific directories to save time
-	searchDirs := []string{"src", "pages", "components", "app", "views", "routes"}
+	searchDirs := []string{"", "src", "pages", "components", "app", "views", "routes", "api", "commons", "modules"}
 	
 	for _, dir := range searchDirs {
+		var pathPtr *string
+		if dir != "" {
+			pathPtr = gitlab.Ptr(dir)
+		}
+		
 		opt := &gitlab.ListTreeOptions{
-			Path:      gitlab.Ptr(dir),
+			Path:      pathPtr,
 			Recursive: gitlab.Ptr(true),
 			ListOptions: gitlab.ListOptions{
 				PerPage: 100,
@@ -95,7 +100,18 @@ func FetchCodebaseContext(client *gitlab.Client, projectID string) (*CodebaseCon
 	}
 
 	// Sort files by relevance (heuristic: pages and routes are more important than utils)
-	allFiles = sortFilesByRelevance(allFiles)
+	// Deduplicate files by path before sorting (since root "" search might overlap with "src")
+	uniqueFiles := make(map[string]*gitlab.TreeNode)
+	for _, node := range allFiles {
+		uniqueFiles[node.Path] = node
+	}
+	
+	var deduplicated []*gitlab.TreeNode
+	for _, node := range uniqueFiles {
+		deduplicated = append(deduplicated, node)
+	}
+
+	allFiles = sortFilesByTargetedRelevance(deduplicated, targetKeyword)
 
 	// Fetch file contents up to budget
 	var fetchedFiles []SourceFile
@@ -143,9 +159,13 @@ func isRelevantFile(path string) bool {
 	lowerPath := strings.ToLower(path)
 	
 	// Skip tests, distinct from what we want the AI to read to generate scenarios
-	// But as per user request, we might want to include them later if needed. For now, focus on source.
 	if strings.Contains(lowerPath, ".test.") || strings.Contains(lowerPath, ".spec.") {
 		return false
+	}
+
+	// Always allow framework config files for LLM detection
+	if strings.Contains(lowerPath, "vite.config") || strings.Contains(lowerPath, "next.config") {
+		return true
 	}
 
 	// Extensions
@@ -159,24 +179,64 @@ func isRelevantFile(path string) bool {
 	return false
 }
 
-func sortFilesByRelevance(files []*gitlab.TreeNode) []*gitlab.TreeNode {
-	// A simple heuristic sorting: files in "pages" or "routes" first, then "components", then the rest
-	var pages, components, others []*gitlab.TreeNode
+func sortFilesByTargetedRelevance(files []*gitlab.TreeNode, targetKeyword string) []*gitlab.TreeNode {
+	targetKeyword = strings.ToLower(targetKeyword)
+
+	var configs []*gitlab.TreeNode
+	var constantsMatch []*gitlab.TreeNode
+	var exactApiMatch []*gitlab.TreeNode
+	var exactUiMatch []*gitlab.TreeNode
+	var others []*gitlab.TreeNode
 
 	for _, f := range files {
 		lowerPath := strings.ToLower(f.Path)
-		if strings.Contains(lowerPath, "/pages/") || strings.Contains(lowerPath, "/routes/") || strings.Contains(lowerPath, "page.") || strings.Contains(lowerPath, "route.") {
-			pages = append(pages, f)
-		} else if strings.Contains(lowerPath, "/components/") || strings.Contains(lowerPath, "/views/") {
-			components = append(components, f)
-		} else {
-			others = append(others, f)
+
+		// 1. Framework configs (needed for framework detection)
+		if strings.Contains(lowerPath, "vite.config") || strings.Contains(lowerPath, "next.config") {
+			configs = append(configs, f)
+			continue
 		}
+
+		// 2. Constants (always needed for routing and endpoints)
+		if strings.Contains(lowerPath, "constants/route") || strings.Contains(lowerPath, "endpoint") {
+			constantsMatch = append(constantsMatch, f)
+			continue
+		}
+
+		// If no target keyword provided, fallback to basic UI sorting
+		if targetKeyword == "" {
+			if strings.Contains(lowerPath, "/pages/") || strings.Contains(lowerPath, "/routes/") || strings.Contains(lowerPath, "page.") {
+				exactUiMatch = append(exactUiMatch, f)
+			} else if strings.Contains(lowerPath, "/components/") || strings.Contains(lowerPath, "/views/") {
+				constantsMatch = append(constantsMatch, f) // hack to put components high
+			} else {
+				others = append(others, f)
+			}
+			continue
+		}
+
+		// 3. Exact match on API folder (e.g., src/api/auth/api.ts)
+		if strings.Contains(lowerPath, "/api/") && strings.Contains(lowerPath, targetKeyword) {
+			exactApiMatch = append(exactApiMatch, f)
+			continue
+		}
+
+		// 4. Exact match on UI folder
+		if (strings.Contains(lowerPath, "/pages/") || strings.Contains(lowerPath, "/components/") || strings.Contains(lowerPath, "/modules/")) && 
+			strings.Contains(lowerPath, targetKeyword) {
+			exactUiMatch = append(exactUiMatch, f)
+			continue
+		}
+
+		// 5. Everything else
+		others = append(others, f)
 	}
 
 	var result []*gitlab.TreeNode
-	result = append(result, pages...)
-	result = append(result, components...)
+	result = append(result, configs...)
+	result = append(result, constantsMatch...)
+	result = append(result, exactApiMatch...)
+	result = append(result, exactUiMatch...)
 	result = append(result, others...)
 
 	return result

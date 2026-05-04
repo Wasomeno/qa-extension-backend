@@ -338,6 +338,13 @@ func decideFilesToFetch(ctx tool.Context, input DecideFilesInput) (*DecideFilesO
 			fmt.Sprintf("components/%sForm.tsx", entityName),
 			fmt.Sprintf("components/%sTable.tsx", entityName),
 			fmt.Sprintf("components/%s.tsx", entityName),
+			fmt.Sprintf("src/api/%s/api.ts", entityName),
+			fmt.Sprintf("src/api/%s/type.ts", entityName),
+			"src/commons/constants/routes.ts",
+			"src/commons/constants/endpoints.ts",
+			"vite.config.ts",
+			"next.config.js",
+			"next.config.mjs",
 		}
 		for _, comp := range relatedComponents {
 			output.FilesToFetch = append(output.FilesToFetch, comp)
