@@ -316,7 +316,7 @@ func generateAutomations(
 						Properties: map[string]*genai.Schema{
 							"action": {
 								Type:     genai.TypeString,
-								Enum:     []string{"navigate", "click", "type", "press", "assert", "wait"},
+								Enum:     []string{"navigate", "click", "type", "press", "assert", "wait", "api_request"},
 							},
 							"description": {Type: genai.TypeString},
 							"selector":    {Type: genai.TypeString},
@@ -324,6 +324,10 @@ func generateAutomations(
 								Type:  genai.TypeArray,
 								Items: &genai.Schema{Type: genai.TypeString},
 							},
+							"apiMethod":     {Type: genai.TypeString, Enum: []string{"GET", "POST", "PUT", "DELETE", "PATCH"}},
+							"apiEndpoint":   {Type: genai.TypeString},
+							"apiPayload":    {Type: genai.TypeString},
+							"apiHeaders":    {Type: genai.TypeString},
 							"value":         {Type: genai.TypeString},
 							"assertionType": {Type: genai.TypeString},
 							"expectedValue": {Type: genai.TypeString},

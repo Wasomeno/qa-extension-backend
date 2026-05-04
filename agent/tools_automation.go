@@ -50,23 +50,31 @@ func GetAutomationTools() []tool.Tool {
 // =============================================================================
 
 type SaveAutomationInput struct {
-	ScenarioID  string                   `json:"scenarioID"`
-	ProjectID   string                   `json:"projectID"`
-	CreatorID   int                      `json:"creatorID"`
-	TestCaseID  string                   `json:"testCaseID"`
-	Name        string                   `json:"name"`
-	Description string                   `json:"description"`
+	ScenarioID  string               `json:"scenarioID"`
+	ProjectID   string               `json:"projectID"`
+	CreatorID   int                  `json:"creatorID"`
+	TestCaseID  string               `json:"testCaseID"`
+	Name        string               `json:"name"`
+	Description string               `json:"description"`
+	Framework   string               `json:"framework,omitempty"` // nextjs or vite
 	Steps       []SaveAutomationStep `json:"steps"`
 }
 
 type SaveAutomationStep struct {
-	Action             string            `json:"action"`
+	Action             string            `json:"action"` // Can be navigate, click, type, press, assert, wait, api_request
 	Description        string            `json:"description"`
 	ElementHints       ElementHintsInput `json:"elementHints"`
 	Selector           string            `json:"selector"`
 	SelectorCandidates []string          `json:"selectorCandidates"`
 	XPath              string            `json:"xpath"`
 	XPathCandidates    []string          `json:"xpathCandidates"`
+	
+	// API specific fields
+	ApiMethod          string            `json:"apiMethod,omitempty"`
+	ApiEndpoint        string            `json:"apiEndpoint,omitempty"`
+	ApiPayload         string            `json:"apiPayload,omitempty"`
+	ApiHeaders         string            `json:"apiHeaders,omitempty"`
+	
 	Value              string            `json:"value"`
 	AssertionType      string            `json:"assertionType,omitempty"`
 	ExpectedValue      string            `json:"expectedValue,omitempty"`
@@ -94,6 +102,10 @@ func saveAutomation(ctx tool.Context, input SaveAutomationInput) (*SaveAutomatio
 			SelectorCandidates: step.SelectorCandidates,
 			XPath:              step.XPath,
 			XPathCandidates:    step.XPathCandidates,
+			ApiMethod:          step.ApiMethod,
+			ApiEndpoint:        step.ApiEndpoint,
+			ApiPayload:         step.ApiPayload,
+			ApiHeaders:         step.ApiHeaders,
 			Value:              step.Value,
 			AssertionType:      step.AssertionType,
 			ExpectedValue:      step.ExpectedValue,
@@ -126,10 +138,11 @@ func saveAutomation(ctx tool.Context, input SaveAutomationInput) (*SaveAutomatio
 			tc := &scenario.Sections[i].TestCases[j]
 			if tc.ID == input.TestCaseID {
 				tc.AutomationTest = &models.AutomationTest{
-					ID:     fmt.Sprintf("auto-%s", input.TestCaseID),
-					Name:   input.Name,
-					Status: models.AutomationStatusIdle,
-					Steps:  steps,
+					ID:        fmt.Sprintf("auto-%s", input.TestCaseID),
+					Name:      input.Name,
+					Framework: input.Framework,
+					Status:    models.AutomationStatusIdle,
+					Steps:     steps,
 				}
 				found = true
 				break

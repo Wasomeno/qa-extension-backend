@@ -195,16 +195,25 @@ func buildAgentGenerationPrompt(scenario *models.TestScenario, scenarioID string
 
 ## Your Task
 For EACH test case in the scenario below:
-1. Use the GitLab tools to explore the project repository
-2. Find the relevant source files (pages, components) for each test case
-3. Extract selectors from the source code
-4. Generate a complete automation test with proper steps
+1. Use the GitLab tools to explore the project repository.
+2. Find the relevant source files (pages, components) for UI steps.
+3. Look for "src/api" or "src/commons/constants" to find API endpoint definitions if needed.
+4. Extract selectors from the UI source code.
+5. Generate a complete automation test utilizing the "save_automation_test" tool.
 
 ## Critical Requirements
-- Each numbered step in the test case becomes ONE automation step
-- Always include selector, elementHints, selectorCandidates, xpath, xpathCandidates for each step
-- Use actual selectors from the source code (data-testid, id, aria-label, etc.)
-- NEVER use vague selectors like "button" or ".item"
+- Always include selector, elementHints, selectorCandidates, xpath, xpathCandidates for UI steps.
+- Use actual selectors from the source code (data-testid, id, aria-label, etc.).
+- NEVER use vague selectors like "button" or ".item".
+
+## Fast-Track Setup via API Data Seeding (CRITICAL)
+- **PreConditions**: When evaluating the test case 'preCondition' (e.g. "User is logged in", "Invoice exists"), do NOT generate slow UI navigation steps to set this up.
+- **Generate API Steps**: Instead, generate "api_request" actions (with apiMethod, apiEndpoint, apiPayload, apiHeaders) directly mapped to the frontend API definitions to fulfill the prerequisite state.
+- **Auth Token Extraction**: The test runner will automatically extract the authentication token from the login API response. Use the exact variable placeholder ` + "`{{AUTH_TOKEN}}`" + ` in subsequent "api_request" headers/payloads.
+- **Dynamic API Chaining**: For "Full Flow" data seeding where Step 2 creates a resource and Step 3 needs it, use the ` + "`{{STEP_X_RESPONSE.path.to.field}}`" + ` placeholder. The runner will substitute this dynamically.
+- **Dropdown Lookup Emulation**: If the UI code shows a payload requires a lookup ID (e.g. tax_id from a dropdown), generate a GET request first to fetch it from the staging API, and extract it via ` + "`{{STEP_X_RESPONSE.data[0].id}}`" + `.
+- **Mock Data Inference**: For string/number fields not requiring exact references, invent realistic mock data matching the TypeScript interfaces.
+- **Framework Detection**: Detect if the project uses Vite ("vite.config.ts") or Next.js ("next.config.js") and pass "vite" or "nextjs" to the Framework argument of "save_automation_test".
 
 ## Project Information
 `)
@@ -348,6 +357,7 @@ func collectGeneratedAutomations(scenarioID string) []models.GeneratedAutomation
 				automations = append(automations, models.GeneratedAutomation{
 					ID:         tc.AutomationTest.ID,
 					Name:       tc.AutomationTest.Name,
+					Framework:  tc.AutomationTest.Framework,
 					TestCaseID: tc.ID,
 					Steps:      tc.AutomationTest.Steps,
 				})

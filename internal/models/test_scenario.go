@@ -96,6 +96,7 @@ const (
 type AutomationTest struct {
 	ID              string              `json:"id"`
 	Name            string              `json:"name"`
+	Framework       string              `json:"framework,omitempty"` // nextjs or vite
 	Status          AutomationRunStatus `json:"status"`
 	LastRunAt       string              `json:"lastRunAt,omitempty"`
 	RunDurationMs   int64               `json:"runDurationMs,omitempty"`

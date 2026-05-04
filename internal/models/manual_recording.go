@@ -15,6 +15,13 @@ type RecordingStep struct {
 	SelectorCandidates []string     `json:"selectorCandidates"`
 	XPath              string       `json:"xpath,omitempty"`
 	XPathCandidates    []string     `json:"xpathCandidates,omitempty"`
+	
+	// API specific fields
+	ApiMethod          string       `json:"apiMethod,omitempty"`
+	ApiEndpoint        string       `json:"apiEndpoint,omitempty"`
+	ApiPayload         string       `json:"apiPayload,omitempty"`
+	ApiHeaders         string       `json:"apiHeaders,omitempty"`
+	
 	Value              string       `json:"value,omitempty"`
 	AssertionType      string       `json:"assertionType,omitempty"`
 	ExpectedValue      string       `json:"expectedValue,omitempty"`
@@ -165,6 +172,7 @@ type GeneratedAutomation struct {
 	ID          string          `json:"id"`
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
+	Framework   string          `json:"framework,omitempty"` // nextjs or vite
 	TestCaseID  string          `json:"testCaseID"`
 	Steps       []RecordingStep `json:"steps"`
 	Parameters  []any           `json:"parameters"`
