@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -192,16 +193,25 @@ func RunTest(ctx context.Context, run *models.TestRun) (result *models.TestResul
 		log.Printf("[Browser Page ERROR] %v", err)
 	})
 
+	page.OnRequest(func(request playwright.Request) {
+		headers, _ := json.Marshal(request.Headers())
+		log.Printf("[Browser Network REQ] %s %s | Headers: %s", request.Method(), request.URL(), string(headers))
+	})
+
 	// Capture failed requests (network errors, 4xx, 5xx)
 	page.OnRequestFailed(func(request playwright.Request) {
-		log.Printf("[Browser Network FAILED] %s %s", request.Method(), request.URL())
+		headers, _ := json.Marshal(request.Headers())
+		log.Printf("[Browser Network FAILED] %s %s | Headers: %s", request.Method(), request.URL(), string(headers))
 	})
 
 	// Capture responses with error status codes
 	page.OnResponse(func(response playwright.Response) {
 		status := response.Status()
+		resHeaders, _ := json.Marshal(response.Headers())
+		log.Printf("[Browser Network RES] %d %s %s | Headers: %s", status, response.Request().Method(), response.URL(), string(resHeaders))
 		if status >= 400 {
-			log.Printf("[Browser Network ERROR] %d %s %s", status, response.Request().Method(), response.URL())
+			reqHeaders, _ := json.Marshal(response.Request().Headers())
+			log.Printf("[Browser Network ERROR] %d %s %s | Req Headers: %s | Res Headers: %s", status, response.Request().Method(), response.URL(), string(reqHeaders), string(resHeaders))
 		}
 	})
 
@@ -531,13 +541,17 @@ func RunTestsChained(ctx context.Context, runs []models.TestRun) []*models.TestR
 	})
 
 	page.OnRequestFailed(func(request playwright.Request) {
-		log.Printf("[Browser Network FAILED] %s %s", request.Method(), request.URL())
+		headers, _ := json.Marshal(request.Headers())
+		log.Printf("[Browser Network FAILED] %s %s | Headers: %s", request.Method(), request.URL(), string(headers))
 	})
 
 	page.OnResponse(func(response playwright.Response) {
 		status := response.Status()
+		resHeaders, _ := json.Marshal(response.Headers())
+		log.Printf("[Browser Network RES] %d %s %s | Headers: %s", status, response.Request().Method(), response.URL(), string(resHeaders))
 		if status >= 400 {
-			log.Printf("[Browser Network ERROR] %d %s %s", status, response.Request().Method(), response.URL())
+			reqHeaders, _ := json.Marshal(response.Request().Headers())
+			log.Printf("[Browser Network ERROR] %d %s %s | Req Headers: %s | Res Headers: %s", status, response.Request().Method(), response.URL(), string(reqHeaders), string(resHeaders))
 		}
 	})
 
