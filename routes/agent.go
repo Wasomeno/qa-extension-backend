@@ -211,8 +211,11 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 				return false
 			case <-heartbeatTicker.C:
 				// Send a heartbeat to keep the connection alive
-				c.SSEvent("heartbeat", gin.H{
-					"status": "alive",
+				c.SSEvent("message", gin.H{
+					"event": "heartbeat",
+					"data": gin.H{
+						"status": "alive",
+					},
 				})
 				if flusher, ok := w.(http.Flusher); ok {
 					flusher.Flush()
@@ -227,7 +230,12 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 						return false
 					}
 					log.Printf("[ChatWithAgent] Agent execution error: %v", res.err)
-					c.SSEvent("error", res.err.Error())
+					c.SSEvent("message", gin.H{
+						"event": "error",
+						"data": gin.H{
+							"message": res.err.Error(),
+						},
+					})
 					if flusher, ok := w.(http.Flusher); ok {
 						flusher.Flush()
 					}
@@ -241,9 +249,12 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 							finalResponse += part.Text
 						}
 					}
-					c.SSEvent("final", gin.H{
-						"content":    finalResponse,
-						"session_id": req.SessionID,
+					c.SSEvent("message", gin.H{
+						"event": "final",
+						"data": gin.H{
+							"content":    finalResponse,
+							"session_id": req.SessionID,
+						},
 					})
 					// Publish final event to Redis for unified stream consumers
 					agent.NewAgentEmitter(agentCtx, req.SessionID).Done("Agent completed")
@@ -260,9 +271,12 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 					if progressText == "" {
 						progressText = "Agent is processing..."
 					}
-					c.SSEvent("progress", gin.H{
-						"status":  "processing",
-						"message": progressText,
+					c.SSEvent("message", gin.H{
+						"event": "progress",
+						"data": gin.H{
+							"status":  "processing",
+							"message": progressText,
+						},
 					})
 					// Publish progress event to Redis
 					agent.NewAgentEmitter(agentCtx, req.SessionID).Progress(progressText)
