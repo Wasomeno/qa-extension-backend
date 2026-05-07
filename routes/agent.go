@@ -55,12 +55,21 @@ func ListSessions(c *gin.Context) {
 		if len(events) > 0 {
 			// Find the first user message for preview
 			for _, ev := range events {
-				if ev.Type == session.EventTypeUserMessage {
-					preview = ev.Content
-					if len(preview) > 100 {
-						preview = preview[:97] + "..."
+				// Check if this is a user message by checking the Author field
+				if ev.Author == "user" && ev.Content != nil {
+					// Extract text from Content.Parts
+					for _, part := range ev.Content.Parts {
+						if part.Text != "" {
+							preview = part.Text
+							if len(preview) > 100 {
+								preview = preview[:97] + "..."
+							}
+							break
+						}
 					}
-					break
+					if preview != "" {
+						break
+					}
 				}
 			}
 		}
@@ -330,4 +339,29 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 			agent.NewAgentEmitter(agentCtx, req.SessionID).Progress(progressText)
 		}
 	}
+}
+
+// DeleteSession deletes a chat session
+func DeleteSession(c *gin.Context) {
+	sessionID := c.Param("session_id")
+	if sessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "session_id is required"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	sessionService := agent.GetSessionService()
+
+	err := sessionService.Delete(ctx, &session.DeleteRequest{
+		AppName:   "qa_extension",
+		UserID:    "user",
+		SessionID: sessionID,
+	})
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete session: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Session deleted successfully"})
 }
