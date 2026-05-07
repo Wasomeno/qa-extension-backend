@@ -203,6 +203,8 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 	heartbeatTicker := time.NewTicker(15 * time.Second)
 	defer heartbeatTicker.Stop()
 
+	var accumulatedResponse strings.Builder
+
 	c.Stream(func(w io.Writer) bool {
 		for {
 			select {
@@ -242,13 +244,24 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 					return false
 				}
 
-				if res.event.IsFinalResponse() {
-					var finalResponse string
+				// Accumulate text from ALL events that contain content parts
+				var chunkText string
+				if res.event.Content != nil {
 					for _, part := range res.event.Content.Parts {
 						if part.Text != "" {
-							finalResponse += part.Text
+							chunkText += part.Text
 						}
 					}
+				}
+				if chunkText != "" {
+					accumulatedResponse.WriteString(chunkText)
+					log.Printf("[ChatWithAgent] Accumulated %d bytes of text", len(chunkText))
+				}
+
+				if res.event.IsFinalResponse() {
+					finalResponse := accumulatedResponse.String()
+					log.Printf("[ChatWithAgent] Sending final response (total %d bytes)", len(finalResponse))
+					
 					c.SSEvent("message", gin.H{
 						"event": "final",
 						"data": gin.H{
@@ -259,18 +272,12 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 					// Publish final event to Redis for unified stream consumers
 					agent.NewAgentEmitter(agentCtx, req.SessionID).Done("Agent completed")
 				} else {
-					// Extract text from partial response for progress update
-					var progressText string
-					for _, part := range res.event.Content.Parts {
-						if part.Text != "" {
-							progressText = part.Text
-							break
-						}
-					}
-					// Use extracted text or default message
+					// Extract text for progress update if no chunk was found, or use chunk as progress
+					progressText := chunkText
 					if progressText == "" {
 						progressText = "Agent is processing..."
 					}
+					
 					c.SSEvent("message", gin.H{
 						"event": "progress",
 						"data": gin.H{
