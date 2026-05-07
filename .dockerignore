@@ -9,6 +9,8 @@
 main
 /main
 qa-extension-backend
+server
+test_headers
 server.log
 
 # Vendor directory
