@@ -19,7 +19,7 @@ func NewRedisSessionService(appName string) *RedisSessionService {
 	return &RedisSessionService{AppName: appName}
 }
 
-type sessionData struct {
+type SessionData struct {
 	ID             string           `json:"id"`
 	AppName        string           `json:"appName"`
 	UserID         string           `json:"userId"`
@@ -34,7 +34,7 @@ func (s *RedisSessionService) Create(ctx context.Context, req *session.CreateReq
 		return nil, fmt.Errorf("session_id is required for stateful sessions")
 	}
 
-	data := &sessionData{
+	data := &SessionData{
 		ID:             sessionID,
 		AppName:        req.AppName,
 		UserID:         req.UserID,
@@ -52,7 +52,7 @@ func (s *RedisSessionService) Create(ctx context.Context, req *session.CreateReq
 	}
 
 	return &session.CreateResponse{
-		Session: &redisSession{data: data, service: s},
+		Session: &RedisSession{Data: data, Service: s},
 	}, nil
 }
 
@@ -63,12 +63,42 @@ func (s *RedisSessionService) Get(ctx context.Context, req *session.GetRequest) 
 	}
 
 	return &session.GetResponse{
-		Session: &redisSession{data: data, service: s},
+		Session: &RedisSession{Data: data, Service: s},
 	}, nil
 }
 
 func (s *RedisSessionService) List(ctx context.Context, req *session.ListRequest) (*session.ListResponse, error) {
-	return &session.ListResponse{}, nil
+	prefix := "agent:session:*"
+	iter := database.RedisClient.Scan(ctx, 0, prefix, 0).Iterator()
+
+	var sessions []session.Session
+	for iter.Next(ctx) {
+		key := iter.Val()
+		sessionID := key[len("agent:session:"):]
+
+		data, err := s.load(ctx, sessionID)
+		if err != nil {
+			continue
+		}
+
+		// Filter by AppName and UserID if provided
+		if req.AppName != "" && data.AppName != req.AppName {
+			continue
+		}
+		if req.UserID != "" && data.UserID != req.UserID {
+			continue
+		}
+
+		sessions = append(sessions, &RedisSession{Data: data, Service: s})
+	}
+
+	if err := iter.Err(); err != nil {
+		return nil, err
+	}
+
+	return &session.ListResponse{
+		Sessions: sessions,
+	}, nil
 }
 
 func (s *RedisSessionService) Delete(ctx context.Context, req *session.DeleteRequest) error {
@@ -77,40 +107,40 @@ func (s *RedisSessionService) Delete(ctx context.Context, req *session.DeleteReq
 }
 
 func (s *RedisSessionService) AppendEvent(ctx context.Context, sess session.Session, event *session.Event) error {
-	rs, ok := sess.(*redisSession)
+	rs, ok := sess.(*RedisSession)
 	if !ok {
 		return fmt.Errorf("invalid session type")
 	}
 
-	rs.data.Events = append(rs.data.Events, event)
-	rs.data.LastUpdateTime = event.Timestamp
+	rs.Data.Events = append(rs.Data.Events, event)
+	rs.Data.LastUpdateTime = event.Timestamp
 
 	if event.Actions.StateDelta != nil {
 		for k, v := range event.Actions.StateDelta {
-			rs.data.State[k] = v
+			rs.Data.State[k] = v
 		}
 	}
 
-	return s.save(ctx, rs.data)
+	return s.save(ctx, rs.Data)
 }
 
-func (s *RedisSessionService) save(ctx context.Context, data *sessionData) error {
+func (s *RedisSessionService) save(ctx context.Context, data *SessionData) error {
 	key := fmt.Sprintf("agent:session:%s", data.ID)
 	val, err := json.Marshal(data)
 	if err != nil {
 		return err
 	}
-	return database.RedisClient.Set(ctx, key, val, 24*time.Hour).Err()
+	return database.RedisClient.Set(ctx, key, val, 0).Err()
 }
 
-func (s *RedisSessionService) load(ctx context.Context, sessionID string) (*sessionData, error) {
+func (s *RedisSessionService) load(ctx context.Context, sessionID string) (*SessionData, error) {
 	key := fmt.Sprintf("agent:session:%s", sessionID)
 	val, err := database.RedisClient.Get(ctx, key).Result()
 	if err != nil {
 		return nil, err
 	}
 
-	var data sessionData
+	var data SessionData
 	err = json.Unmarshal([]byte(val), &data)
 	if err != nil {
 		return nil, err
@@ -118,20 +148,20 @@ func (s *RedisSessionService) load(ctx context.Context, sessionID string) (*sess
 	return &data, nil
 }
 
-type redisSession struct {
-	data    *sessionData
-	service *RedisSessionService
+type RedisSession struct {
+	Data    *SessionData
+	Service *RedisSessionService
 }
 
-func (s *redisSession) ID() string             { return s.data.ID }
-func (s *redisSession) AppName() string        { return s.data.AppName }
-func (s *redisSession) UserID() string         { return s.data.UserID }
-func (s *redisSession) State() session.State   { return &redisState{data: s.data} }
-func (s *redisSession) Events() session.Events { return redisEvents(s.data.Events) }
-func (s *redisSession) LastUpdateTime() time.Time { return s.data.LastUpdateTime }
+func (s *RedisSession) ID() string             { return s.Data.ID }
+func (s *RedisSession) AppName() string        { return s.Data.AppName }
+func (s *RedisSession) UserID() string         { return s.Data.UserID }
+func (s *RedisSession) State() session.State   { return &redisState{data: s.Data} }
+func (s *RedisSession) Events() session.Events { return redisEvents(s.Data.Events) }
+func (s *RedisSession) LastUpdateTime() time.Time { return s.Data.LastUpdateTime }
 
 type redisState struct {
-	data *sessionData
+	data *SessionData
 }
 
 func (s *redisState) Get(key string) (any, error) {

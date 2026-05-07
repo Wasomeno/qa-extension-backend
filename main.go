@@ -136,6 +136,7 @@ func main() {
 		protected.GET("/issues", routes.GetIssues)
 		protected.GET("/issues/:id", routes.GetIssue)
 		protected.GET("/issues/open-ai-test", routes.SmartAutoCompleteIssueDescription)
+		protected.GET("/agent/chat-sessions", routes.ListSessions)
 		protected.POST("/agent/chat", routes.ChatWithAgent)
 		protected.POST("/agent/fix-issue", routes.FixIssueWithAgent)
 		protected.GET("/agent/fix-sessions", routes.ListFixSessions)

@@ -20,6 +20,61 @@ import (
 	"google.golang.org/genai"
 )
 
+func ListSessions(c *gin.Context) {
+	ctx := c.Request.Context()
+	sessionService := agent.GetSessionService()
+
+	// For now, we use "user" as default userID or we can try to get it from token/context if available
+	userID := "user"
+
+	resp, err := sessionService.List(ctx, &session.ListRequest{
+		AppName: "qa_extension",
+		UserID:  userID,
+	})
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list sessions: " + err.Error()})
+		return
+	}
+
+	type sessionInfo struct {
+		SessionID      string    `json:"session_id"`
+		LastUpdateTime time.Time `json:"last_update_time"`
+		Preview        string    `json:"preview"`
+	}
+
+	sessions := make([]sessionInfo, 0)
+	for _, sess := range resp.Sessions {
+		rs, ok := sess.(*agent.RedisSession)
+		if !ok {
+			continue
+		}
+
+		preview := ""
+		events := rs.Data.Events
+		if len(events) > 0 {
+			// Find the first user message for preview
+			for _, ev := range events {
+				if ev.Type == session.EventTypeUserMessage {
+					preview = ev.Content
+					if len(preview) > 100 {
+						preview = preview[:97] + "..."
+					}
+					break
+				}
+			}
+		}
+
+		sessions = append(sessions, sessionInfo{
+			SessionID:      rs.Data.ID,
+			LastUpdateTime: rs.Data.LastUpdateTime,
+			Preview:        preview,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{"sessions": sessions})
+}
+
 func ChatWithAgent(c *gin.Context) {
 	var req struct {
 		SessionID   string `json:"session_id"`
