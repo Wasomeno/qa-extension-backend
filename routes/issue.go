@@ -529,12 +529,35 @@ func GetIssues(ginContext *gin.Context) {
 			projectIDs[issue.ProjectID] = true
 		}
 
-		// Fetch all project names from Redis cache (very fast)
+		// Fetch all project names from Redis cache or GitLab fallback
 		projectNameCache := make(map[int64]string)
+		var missingProjectIDs []int64
 		for projID := range projectIDs {
 			if name, ok := database.GetCachedProjectName(ctx, projID); ok {
 				projectNameCache[projID] = name
+			} else {
+				missingProjectIDs = append(missingProjectIDs, projID)
 			}
+		}
+
+		// Fetch missing project names from GitLab and cache them
+		if len(missingProjectIDs) > 0 {
+			var mu sync.Mutex
+			var wg sync.WaitGroup
+			for _, pid := range missingProjectIDs {
+				wg.Add(1)
+				go func(id int64) {
+					defer wg.Done()
+					p, _, err := gitlabClient.Projects.GetProject(id, nil)
+					if err == nil {
+						mu.Lock()
+						projectNameCache[id] = p.NameWithNamespace
+						mu.Unlock()
+						database.SetCachedProjectName(ctx, id, p.NameWithNamespace)
+					}
+				}(pid)
+			}
+			wg.Wait()
 		}
 
 		// Build lightweight response
@@ -619,6 +642,9 @@ func GetIssues(ginContext *gin.Context) {
 				queryBuilder.WriteString(fmt.Sprintf(`
 				%s: workItem(id: "%s") {
 					id
+					project {
+						nameWithNamespace
+					}
 					widgets {
 						... on WorkItemWidgetHierarchy {
 							children {
@@ -756,6 +782,8 @@ func GetIssues(ginContext *gin.Context) {
 						project, _, err := gitlabClient.Projects.GetProject(projID, nil)
 						if err == nil {
 							projectCache.Store(projID, project.NameWithNamespace)
+							// Also update Redis cache for future requests
+							database.SetCachedProjectName(ctx, projID, project.NameWithNamespace)
 						}
 					}(issue.ProjectID)
 				}
