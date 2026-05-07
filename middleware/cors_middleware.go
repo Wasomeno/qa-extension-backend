@@ -23,6 +23,7 @@ func CORSMiddleware() gin.HandlerFunc {
 		c.Header("Access-Control-Expose-Headers", "Content-Length, Content-Type, X-Session-ID")
 
 		if c.Request.Method == "OPTIONS" {
+			log.Printf("[CORSMiddleware] Handling preflight request for %s from %s", c.Request.URL.Path, origin)
 			c.AbortWithStatus(http.StatusNoContent)
 			return
 		}

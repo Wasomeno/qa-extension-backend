@@ -14,9 +14,16 @@ func AuthMiddleware() gin.HandlerFunc {
 		sessionID, err := c.Cookie("session_id")
 		if err != nil || sessionID == "" {
 			sessionID = c.GetHeader("X-Session-ID")
+		} else {
+			log.Printf("[AuthMiddleware] Found session_id in cookie")
+		}
+
+		if sessionID != "" && err != nil {
+			log.Printf("[AuthMiddleware] Found session_id in header: %s", sessionID)
 		}
 
 		if sessionID == "" {
+			log.Printf("[AuthMiddleware] No session ID found in cookie or X-Session-ID header")
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"error": "Unauthorized: No session found",
 				"code": "MISSING_SESSION",
@@ -26,6 +33,7 @@ func AuthMiddleware() gin.HandlerFunc {
 
 		token, err := auth.GetSession(c, sessionID)
 		if err != nil {
+			log.Printf("[AuthMiddleware] Invalid session %s: %v", sessionID, err)
 			// If session is invalid in Redis (expired or doesn't exist), return 401
 			// and attempt to clear the invalid cookie
 			isSecure := config.GetEnvOrDefault("APP_ENV", "development") == "production"
