@@ -3,6 +3,7 @@ package middleware
 import (
 	"net/http"
 	"qa-extension-backend/auth"
+	"qa-extension-backend/config"
 
 	"github.com/gin-gonic/gin"
 )
