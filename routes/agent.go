@@ -169,6 +169,7 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("Transfer-Encoding", "chunked")
+	c.Header("X-Accel-Buffering", "no") // Disable nginx buffering
 
 	// Create a background-ish context that inherits values but isn't canceled when the request ends.
 	// This ensures the agent finishes its work (like uploading video) even if the client disconnects.

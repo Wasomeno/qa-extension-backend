@@ -53,6 +53,7 @@ func main() {
 	}()
 
 	router := gin.Default()
+	router.Use(middleware.CORSMiddleware())
 	router.Static("/static", "./static")
 
 	api := router.Group("/api")
