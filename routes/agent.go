@@ -177,12 +177,14 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 
 	// Preserve context values from the original context (including GitLab token)
 	// Note: context.WithoutCancel doesn't inherit context values, so we need to copy them
-	if val := ctx.Value("token"); val != nil {
+	if val := c.Value("token"); val != nil {
 		agentCtx = context.WithValue(agentCtx, "token", val)
 	}
-	if val := ctx.Value("session_id"); val != nil {
-		agentCtx = context.WithValue(agentCtx, "session_id", val)
+	if val := c.Value("session_id"); val != nil {
+		agentCtx = context.WithValue(agentCtx, "auth_session_id", val)
 	}
+	// Also pass the agent session ID explicitly if needed
+	agentCtx = context.WithValue(agentCtx, "agent_session_id", req.SessionID)
 
 	// Create a wrapper to consume the iterator and send to a channel
 	type resultEvent struct {

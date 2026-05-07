@@ -63,7 +63,7 @@ func main() {
 	api.GET("/auth/gitlab/callback", routes.AuthCallbackEndpoint)
 	api.GET("/auth/session", routes.GetSessionEndpoint)
 
-	protected := api.Group("/")
+	protected := api.Group("")
 	protected.Use(middleware.AuthMiddleware())
 	{
 		protected.POST("/recordings", handlers.SaveRecording)

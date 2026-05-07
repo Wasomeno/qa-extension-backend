@@ -16,14 +16,26 @@ func AuthMiddleware() gin.HandlerFunc {
 		}
 
 		if sessionID == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: No session found"})
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error": "Unauthorized: No session found",
+				"code": "MISSING_SESSION",
+			})
 			return
 		}
 
 		token, err := auth.GetSession(c, sessionID)
 		if err != nil {
 			// If session is invalid in Redis (expired or doesn't exist), return 401
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: Invalid session"})
+			// and attempt to clear the invalid cookie
+			isSecure := config.GetEnvOrDefault("APP_ENV", "development") == "production"
+			cookieDomain := config.GetEnv("COOKIE_DOMAIN")
+			c.SetCookie("session_id", "", -1, "/", cookieDomain, isSecure, true)
+			
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error": "Unauthorized: Invalid or expired session",
+				"details": err.Error(),
+				"code": "INVALID_SESSION",
+			})
 			return
 		}
 
