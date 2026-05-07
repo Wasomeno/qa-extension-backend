@@ -11,10 +11,24 @@ import (
 
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Try cookie first, then fallback to X-Session-ID header (for web app)
+		// Try cookie first, then fallback to headers or query params
 		sessionID, err := c.Cookie("session_id")
 		if err != nil || sessionID == "" {
+			// Fallback 1: Custom Header
 			sessionID = c.GetHeader("X-Session-ID")
+			
+			// Fallback 2: Standard Authorization Header (Bearer <session_id>)
+			if sessionID == "" {
+				authHeader := c.GetHeader("Authorization")
+				if len(authHeader) > 7 && authHeader[:7] == "Bearer " {
+					sessionID = authHeader[7:]
+				}
+			}
+			
+			// Fallback 3: Query Parameter (useful for SSE/Streams)
+			if sessionID == "" {
+				sessionID = c.Query("session_id")
+			}
 		} else {
 			log.Printf("[AuthMiddleware] Found session_id in cookie")
 		}
