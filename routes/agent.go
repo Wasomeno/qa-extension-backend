@@ -168,130 +168,112 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
-	c.Header("Transfer-Encoding", "chunked")
 	c.Header("X-Accel-Buffering", "no") // Disable nginx buffering
 
+	// Write headers immediately
+	c.Writer.WriteHeaderNow()
+
 	// Create a background-ish context that inherits values but isn't canceled when the request ends.
-	// This ensures the agent finishes its work (like uploading video) even if the client disconnects.
 	agentCtx := context.WithoutCancel(c.Request.Context())
 
 	// Preserve context values from the original context (including GitLab token)
-	// Note: context.WithoutCancel doesn't inherit context values, so we need to copy them
 	if val := c.Value("token"); val != nil {
 		agentCtx = context.WithValue(agentCtx, "token", val)
 	}
 	if val := c.Value("session_id"); val != nil {
 		agentCtx = context.WithValue(agentCtx, "auth_session_id", val)
 	}
-	// Also pass the agent session ID explicitly if needed
 	agentCtx = context.WithValue(agentCtx, "agent_session_id", req.SessionID)
 
-	// Create a wrapper to consume the iterator and send to a channel
-	type resultEvent struct {
-		event *session.Event
-		err   error
-	}
-	resCh := make(chan resultEvent)
-	go func() {
-		defer close(resCh)
-		eventCh := r.Run(agentCtx, userID, req.SessionID, content, adkagent.RunConfig{})
-		for event, err := range eventCh {
-			resCh <- resultEvent{event, err}
+	// Helper to send SSE events directly with guaranteed flush
+	sendEvent := func(eventType string, data interface{}) error {
+		payload, err := json.Marshal(gin.H{
+			"event": eventType,
+			"data":  data,
+		})
+		if err != nil {
+			return err
 		}
-	}()
+		_, err = fmt.Fprintf(c.Writer, "data: %s\n\n", payload)
+		if err != nil {
+			return err
+		}
+		if flusher, ok := c.Writer.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		return nil
+	}
 
-	heartbeatTicker := time.NewTicker(15 * time.Second)
-	defer heartbeatTicker.Stop()
-
-	var accumulatedResponse strings.Builder
-
-	c.Stream(func(w io.Writer) bool {
+	// Start heartbeat in background
+	heartbeatDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
 		for {
 			select {
-			case <-c.Request.Context().Done():
-				log.Printf("[ChatWithAgent] Client disconnected")
-				return false
-			case <-heartbeatTicker.C:
-				// Send a heartbeat to keep the connection alive
-				c.SSEvent("message", gin.H{
-					"event": "heartbeat",
-					"data": gin.H{
-						"status": "alive",
-					},
-				})
-				if flusher, ok := w.(http.Flusher); ok {
-					flusher.Flush()
-				}
-			case res, ok := <-resCh:
-				if !ok {
-					return false
-				}
-				if res.err != nil {
-					if errors.Is(res.err, context.Canceled) || strings.Contains(res.err.Error(), "context canceled") {
-						log.Printf("[ChatWithAgent] Request aborted by client, exiting gracefully: %v", res.err)
-						return false
-					}
-					log.Printf("[ChatWithAgent] Agent execution error: %v", res.err)
-					c.SSEvent("message", gin.H{
-						"event": "error",
-						"data": gin.H{
-							"message": res.err.Error(),
-						},
-					})
-					if flusher, ok := w.(http.Flusher); ok {
-						flusher.Flush()
-					}
-					return false
-				}
+			case <-heartbeatDone:
+				return
+			case <-ticker.C:
+				sendEvent("heartbeat", gin.H{"status": "alive"})
+			}
+		}
+	}()
+	defer close(heartbeatDone)
 
-				// Accumulate text from ALL events that contain content parts
-				var chunkText string
-				if res.event.Content != nil {
-					for _, part := range res.event.Content.Parts {
-						if part.Text != "" {
-							chunkText += part.Text
-						}
-					}
-				}
-				if chunkText != "" {
-					accumulatedResponse.WriteString(chunkText)
-					log.Printf("[ChatWithAgent] Accumulated %d bytes of text", len(chunkText))
-				}
+	// Run the agent
+	var accumulatedResponse strings.Builder
+	eventCh := r.Run(agentCtx, userID, req.SessionID, content, adkagent.RunConfig{})
+	
+	for event, err := range eventCh {
+		if err != nil {
+			if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "context canceled") {
+				log.Printf("[ChatWithAgent] Request aborted by client, exiting gracefully: %v", err)
+				return
+			}
+			log.Printf("[ChatWithAgent] Agent execution error: %v", err)
+			sendEvent("error", gin.H{"message": err.Error()})
+			return
+		}
 
-				if res.event.IsFinalResponse() {
-					finalResponse := accumulatedResponse.String()
-					log.Printf("[ChatWithAgent] Sending final response (total %d bytes)", len(finalResponse))
-					
-					c.SSEvent("message", gin.H{
-						"event": "final",
-						"data": gin.H{
-							"content":    finalResponse,
-							"session_id": req.SessionID,
-						},
-					})
-					// Publish final event to Redis for unified stream consumers
-					agent.NewAgentEmitter(agentCtx, req.SessionID).Done("Agent completed")
-				} else {
-					// Extract text for progress update if no chunk was found, or use chunk as progress
-					progressText := chunkText
-					if progressText == "" {
-						progressText = "Agent is processing..."
-					}
-					
-					c.SSEvent("message", gin.H{
-						"event": "progress",
-						"data": gin.H{
-							"status":  "processing",
-							"message": progressText,
-						},
-					})
-					// Publish progress event to Redis
-					agent.NewAgentEmitter(agentCtx, req.SessionID).Progress(progressText)
-				}
-				if flusher, ok := w.(http.Flusher); ok {
-					flusher.Flush()
+		// Accumulate text from ALL events that contain content parts
+		var chunkText string
+		if event.Content != nil {
+			for _, part := range event.Content.Parts {
+				if part.Text != "" {
+					chunkText += part.Text
 				}
 			}
 		}
-	})
+		if chunkText != "" {
+			accumulatedResponse.WriteString(chunkText)
+		}
+
+		if event.IsFinalResponse() {
+			finalResponse := accumulatedResponse.String()
+			log.Printf("[ChatWithAgent] Sending final response (total %d bytes)", len(finalResponse))
+			
+			sendEvent("final", gin.H{
+				"content":    finalResponse,
+				"session_id": req.SessionID,
+			})
+			
+			// Publish final event to Redis for unified stream consumers
+			agent.NewAgentEmitter(agentCtx, req.SessionID).Done("Agent completed")
+			return
+		} else {
+			// Extract text for progress update
+			progressText := chunkText
+			if progressText == "" {
+				progressText = "Agent is processing..."
+			}
+			
+			sendEvent("progress", gin.H{
+				"status":  "processing",
+				"message": progressText,
+			})
+			
+			// Publish progress event to Redis
+			agent.NewAgentEmitter(agentCtx, req.SessionID).Progress(progressText)
+		}
+	}
 }
