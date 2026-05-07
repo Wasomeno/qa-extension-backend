@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"log"
 	"net/http"
 	"qa-extension-backend/auth"
 	"qa-extension-backend/config"
