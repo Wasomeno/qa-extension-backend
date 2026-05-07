@@ -84,6 +84,114 @@ func ListSessions(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"sessions": sessions})
 }
 
+// ChatMessage represents a single message in the chat history
+type ChatMessage struct {
+	Role      string   `json:"role"`       // "user" or "assistant"
+	Content   string   `json:"content"`    // The text content
+	Timestamp string   `json:"timestamp"`  // ISO 8601 timestamp
+	Parts     []string `json:"parts,omitempty"` // Additional parts (for multimodal messages)
+}
+
+// GetSession retrieves a specific chat session by ID with full message history
+func GetSession(c *gin.Context) {
+	sessionID := c.Param("session_id")
+	if sessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "session_id is required"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	sessionService := agent.GetSessionService()
+
+	resp, err := sessionService.Get(ctx, &session.GetRequest{
+		AppName:   "qa_extension",
+		UserID:    "user",
+		SessionID: sessionID,
+	})
+
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Session not found"})
+		return
+	}
+
+	rs, ok := resp.Session.(*agent.RedisSession)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid session type"})
+		return
+	}
+
+	// Convert events to chat messages
+	messages := make([]ChatMessage, 0)
+	for _, ev := range rs.Data.Events {
+		if ev.Content == nil {
+			continue
+		}
+
+		// Determine role from Author
+		role := ev.Author
+		if role == "" {
+			role = "assistant"
+		}
+
+		// Extract text content from parts
+		var contentText string
+		var parts []string
+		for _, part := range ev.Content.Parts {
+			if part.Text != "" {
+				contentText += part.Text
+				parts = append(parts, part.Text)
+			}
+			// Note: For multimodal content (images), we could handle part.InlineData here
+		}
+
+		if contentText == "" {
+			continue
+		}
+
+		messages = append(messages, ChatMessage{
+			Role:      role,
+			Content:   contentText,
+			Timestamp: ev.Timestamp.Format(time.RFC3339),
+			Parts:     parts,
+		})
+	}
+
+	// Build response
+	response := gin.H{
+		"session_id":       rs.Data.ID,
+		"last_update_time": rs.Data.LastUpdateTime.Format(time.RFC3339),
+		"messages":         messages,
+		"message_count":    len(messages),
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// DeleteSession deletes a specific chat session
+func DeleteSession(c *gin.Context) {
+	sessionID := c.Param("session_id")
+	if sessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "session_id is required"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	sessionService := agent.GetSessionService()
+
+	err := sessionService.Delete(ctx, &session.DeleteRequest{
+		AppName:   "qa_extension",
+		UserID:    "user",
+		SessionID: sessionID,
+	})
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete session: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Session deleted successfully"})
+}
+
 func ChatWithAgent(c *gin.Context) {
 	var req struct {
 		SessionID   string `json:"session_id"`
@@ -339,29 +447,4 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 			agent.NewAgentEmitter(agentCtx, req.SessionID).Progress(progressText)
 		}
 	}
-}
-
-// DeleteSession deletes a chat session
-func DeleteSession(c *gin.Context) {
-	sessionID := c.Param("session_id")
-	if sessionID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "session_id is required"})
-		return
-	}
-
-	ctx := c.Request.Context()
-	sessionService := agent.GetSessionService()
-
-	err := sessionService.Delete(ctx, &session.DeleteRequest{
-		AppName:   "qa_extension",
-		UserID:    "user",
-		SessionID: sessionID,
-	})
-
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete session: " + err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Session deleted successfully"})
 }
