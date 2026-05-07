@@ -430,7 +430,7 @@ func listGitLabRepositoryTree(ctx tool.Context, args ListRepoTreeArgs) (*ListRep
 	var result []RepoTreeNode
 	for _, n := range nodes {
 		result = append(result, RepoTreeNode{
-			ID:   fmt.Sprintf("%d", n.ID),
+			ID:   n.ID,
 			Name: n.Name,
 			Type: n.Type,
 			Path: n.Path,

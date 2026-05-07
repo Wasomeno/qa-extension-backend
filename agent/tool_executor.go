@@ -360,7 +360,7 @@ func execListGitLabRepositoryTree(ctx context.Context, args map[string]any) (any
 	var result []RepoTreeNode
 	for _, n := range nodes {
 		result = append(result, RepoTreeNode{
-			ID:   fmt.Sprintf("%d", n.ID),
+			ID:   n.ID,
 			Name: n.Name,
 			Type: n.Type,
 			Path: n.Path,
