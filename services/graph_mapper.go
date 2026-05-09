@@ -14,6 +14,7 @@ import (
 
 	"qa-extension-backend/database"
 	"qa-extension-backend/internal/models"
+	"qa-extension-backend/tracker"
 
 	"github.com/redis/go-redis/v9"
 	gitlab "gitlab.com/gitlab-org/api/client-go"
@@ -884,7 +885,7 @@ func (m *GraphMapper) enrichWithLLM(
 			routeContexts := m.buildRouteContexts(batch, routeMap, moduleSelectors)
 			
 			// Call LLM for this batch
-			enrichedRoutes, err := m.enrichRoutesBatch(ctx, client, routeContexts, selectorSummary)
+			enrichedRoutes, err := m.enrichRoutesBatch(ctx, client, routeContexts, selectorSummary, i/batchSize)
 			if err != nil {
 				log.Printf("[GraphMapper] Warning: LLM batch failed for %s batch %d: %v", 
 					moduleKey, i/batchSize, err)
@@ -1083,7 +1084,7 @@ func (m *GraphMapper) buildRouteContexts(routes []string, routeMap map[string]st
 }
 
 // enrichRoutesBatch calls LLM to get enriched route entries
-func (m *GraphMapper) enrichRoutesBatch(ctx context.Context, client *genai.Client, routeContexts string, selectorSummary string) (map[string]RouteEntry, error) {
+func (m *GraphMapper) enrichRoutesBatch(ctx context.Context, client *genai.Client, routeContexts string, selectorSummary string, batchIndex int) (map[string]RouteEntry, error) {
 	prompt := fmt.Sprintf(`Analyze these routes and return JSON with route details.
 
 Routes:
@@ -1103,9 +1104,23 @@ Do NOT include trailing commas, do NOT wrap in code blocks, do NOT add extra tex
 		ResponseMIMEType: "application/json",
 	}
 
+	llmCallStart := time.Now()
 	resp, err := client.Models.GenerateContent(ctx, LLMModel, genai.Text(prompt), config)
 	if err != nil {
 		return nil, err
+	}
+
+	// Track token usage
+	if resp != nil && resp.UsageMetadata != nil {
+		tracker.Log(ctx, tracker.TokenUsage{
+			Feature:      "graph_mapper",
+			Model:        LLMModel,
+			InputTokens:  resp.UsageMetadata.PromptTokenCount,
+			OutputTokens: resp.UsageMetadata.CandidatesTokenCount,
+			TotalTokens:  resp.UsageMetadata.TotalTokenCount,
+			Duration:     time.Since(llmCallStart),
+			BatchIndex:   batchIndex,
+		})
 	}
 
 	responseText := extractResponseText(resp)

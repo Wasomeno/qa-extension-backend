@@ -18,6 +18,7 @@ import (
 	"qa-extension-backend/client"
 	"qa-extension-backend/auth"
 	"qa-extension-backend/database"
+	"qa-extension-backend/tracker"
 
 	"github.com/gin-gonic/gin"
 	goGenai "google.golang.org/genai"
@@ -146,11 +147,33 @@ Use the exact structure below:
 			Parts: []*goGenai.Part{{Text: "i got an issue in the login page, in /auth/login. the form in there supposed to have an email and password validations. the current condition is there are no validations"}},
 		},
 	}
+	llmStart := time.Now()
 	resp, err := client.Models.GenerateContent(ctx, model, contents, config)
+	llmDuration := time.Since(llmStart)
 	if err != nil {
 		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate content: " + err.Error()})
 		ginContext.Abort()
 		return
+	}
+
+	// Track token usage
+	if resp != nil && resp.UsageMetadata != nil {
+		// Extract user ID from context if available
+		userID := 0
+		if uid, exists := ginContext.Get("user_id"); exists {
+			if id, ok := uid.(int); ok {
+				userID = id
+			}
+		}
+		tracker.Log(ctx, tracker.TokenUsage{
+			Feature:      "issue_autocomplete",
+			Model:        model,
+			InputTokens:  resp.UsageMetadata.PromptTokenCount,
+			OutputTokens: resp.UsageMetadata.CandidatesTokenCount,
+			TotalTokens:  resp.UsageMetadata.TotalTokenCount,
+			UserID:       userID,
+			Duration:     llmDuration,
+		})
 	}
 
 	if len(resp.Candidates) == 0 {

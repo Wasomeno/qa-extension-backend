@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"time"
 
 	openai "github.com/sashabaranov/go-openai"
 	"golang.org/x/oauth2/google"
@@ -73,6 +74,7 @@ func (m *MaaSAdapter) GenerateContent(ctx context.Context, req *model.LLMRequest
 
 		if !stream {
 			// Non-streaming call
+			llmStart := time.Now()
 			resp, err := m.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
 				Model:    m.model,
 				Messages: messages,
@@ -90,16 +92,28 @@ func (m *MaaSAdapter) GenerateContent(ctx context.Context, req *model.LLMRequest
 					},
 				},
 				TurnComplete: true,
+				UsageMetadata: &genai.GenerateContentResponseUsageMetadata{
+					PromptTokenCount:     int32(resp.Usage.PromptTokens),
+					CandidatesTokenCount: int32(resp.Usage.CompletionTokens),
+					TotalTokenCount:      int32(resp.Usage.TotalTokens),
+				},
 			}
+
+			// Log call duration for observability
+			_ = time.Since(llmStart)
+
 			yield(adkResp, nil)
 			return
 		}
 
-		// Streaming call
+		// Streaming call — request usage in the final chunk
 		streamReq := openai.ChatCompletionRequest{
 			Model:    m.model,
 			Messages: messages,
 			Stream:   true,
+			StreamOptions: &openai.StreamOptions{
+				IncludeUsage: true,
+			},
 		}
 		
 		streamResp, err := m.client.CreateChatCompletionStream(ctx, streamReq)
@@ -109,6 +123,7 @@ func (m *MaaSAdapter) GenerateContent(ctx context.Context, req *model.LLMRequest
 		}
 		defer streamResp.Close()
 
+		var streamUsage *openai.Usage
 		for {
 			chunk, err := streamResp.Recv()
 			if err == io.EOF {
@@ -117,6 +132,11 @@ func (m *MaaSAdapter) GenerateContent(ctx context.Context, req *model.LLMRequest
 			if err != nil {
 				yield(nil, err)
 				return
+			}
+
+			// Capture usage from the final chunk (when IncludeUsage is set)
+			if chunk.Usage != nil && (chunk.Usage.TotalTokens > 0 || chunk.Usage.PromptTokens > 0) {
+				streamUsage = chunk.Usage
 			}
 
 			if len(chunk.Choices) > 0 {
@@ -130,6 +150,16 @@ func (m *MaaSAdapter) GenerateContent(ctx context.Context, req *model.LLMRequest
 					Partial:      true,
 					TurnComplete: chunk.Choices[0].FinishReason != "",
 				}
+
+				// Attach usage metadata on the final chunk
+				if adkResp.TurnComplete && streamUsage != nil {
+					adkResp.UsageMetadata = &genai.GenerateContentResponseUsageMetadata{
+						PromptTokenCount:     int32(streamUsage.PromptTokens),
+						CandidatesTokenCount: int32(streamUsage.CompletionTokens),
+						TotalTokenCount:      int32(streamUsage.TotalTokens),
+					}
+				}
+
 				if !yield(adkResp, nil) {
 					break
 				}

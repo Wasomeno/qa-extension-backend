@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"qa-extension-backend/agent"
+	"qa-extension-backend/tracker"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/oauth2"
@@ -392,7 +393,9 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 	defer close(heartbeatDone)
 
 	// Run the agent
+	agentStart := time.Now()
 	var accumulatedResponse strings.Builder
+	var lastUsageMetadata *genai.GenerateContentResponseUsageMetadata
 	eventCh := r.Run(agentCtx, userID, req.SessionID, content, adkagent.RunConfig{})
 	
 	for event, err := range eventCh {
@@ -404,6 +407,11 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 			log.Printf("[ChatWithAgent] Agent execution error: %v", err)
 			sendEvent("error", gin.H{"message": err.Error()})
 			return
+		}
+
+		// Capture cumulative usage metadata
+		if event.UsageMetadata != nil {
+			lastUsageMetadata = event.UsageMetadata
 		}
 
 		// Accumulate text from ALL events that contain content parts
@@ -422,7 +430,20 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 		if event.IsFinalResponse() {
 			finalResponse := accumulatedResponse.String()
 			log.Printf("[ChatWithAgent] Sending final response (total %d bytes)", len(finalResponse))
-			
+
+			// Track token usage from agent execution
+			if lastUsageMetadata != nil {
+				tracker.Log(agentCtx, tracker.TokenUsage{
+					Feature:      "qa_chat",
+					Model:        "gemini-3.1-flash-lite-preview",
+					InputTokens:  lastUsageMetadata.PromptTokenCount,
+					OutputTokens: lastUsageMetadata.CandidatesTokenCount,
+					TotalTokens:  lastUsageMetadata.TotalTokenCount,
+					SessionID:    req.SessionID,
+					Duration:     time.Since(agentStart),
+				})
+			}
+
 			sendEvent("final", gin.H{
 				"content":    finalResponse,
 				"session_id": req.SessionID,

@@ -8,7 +8,9 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 	"qa-extension-backend/internal/models"
+	"qa-extension-backend/tracker"
 
 	"github.com/google/uuid"
 	"google.golang.org/genai"
@@ -344,15 +346,29 @@ func generateAutomations(
 		ResponseSchema:   automationSchema,
 	}
 
+	llmStart := time.Now()
 	resp, err := client.Models.GenerateContent(
 		ctx,
 		LLMModel,
 		genai.Text(prompt),
 		config,
 	)
+	llmDuration := time.Since(llmStart)
 
 	if err != nil {
 		return nil, fmt.Errorf("gemini API call failed: %w", err)
+	}
+
+	// Track token usage
+	if resp != nil && resp.UsageMetadata != nil {
+		tracker.Log(ctx, tracker.TokenUsage{
+			Feature:      "test_generator",
+			Model:        LLMModel,
+			InputTokens:  resp.UsageMetadata.PromptTokenCount,
+			OutputTokens: resp.UsageMetadata.CandidatesTokenCount,
+			TotalTokens:  resp.UsageMetadata.TotalTokenCount,
+			Duration:     llmDuration,
+		})
 	}
 
 	resStr := getResponseString(resp)

@@ -7,6 +7,7 @@ import (
 	"log"
 	"qa-extension-backend/database"
 	"qa-extension-backend/internal/models"
+	"qa-extension-backend/tracker"
 	"strings"
 	"time"
 
@@ -68,10 +69,12 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input AutomationAgent
 	log.Printf("[AgentGeneration] Starting agent execution for scenario %s", input.ScenarioID)
 
 	// Run the agent
+	agentStart := time.Now()
 	eventCh := runner.Run(agentCtx, userID, sessionID, content, agent.RunConfig{})
 
 	// Process events
 	var finalResponse string
+	var lastUsageMetadata *genai.GenerateContentResponseUsageMetadata
 	for event, err := range eventCh {
 		if err != nil {
 			log.Printf("[AgentGeneration] Agent error: %v", err)
@@ -80,6 +83,11 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input AutomationAgent
 
 		if event == nil {
 			continue
+		}
+
+		// Capture cumulative usage metadata (ADK carries it through events)
+		if event.UsageMetadata != nil {
+			lastUsageMetadata = event.UsageMetadata
 		}
 
 		// Check for final response
@@ -102,8 +110,22 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input AutomationAgent
 		}
 	}
 
+	agentDuration := time.Since(agentStart)
 	log.Printf("[AgentGeneration] Agent execution completed")
 	log.Printf("[AgentGeneration] Final response length: %d", len(finalResponse))
+
+	// Track token usage from agent execution
+	if lastUsageMetadata != nil {
+		tracker.Log(agentCtx, tracker.TokenUsage{
+			Feature:      "test_generation_agent",
+			Model:        "gemini-3.1-flash-lite-preview",
+			InputTokens:  lastUsageMetadata.PromptTokenCount,
+			OutputTokens: lastUsageMetadata.CandidatesTokenCount,
+			TotalTokens:  lastUsageMetadata.TotalTokenCount,
+			SessionID:    sessionID,
+			Duration:     agentDuration,
+		})
+	}
 
 	// Count total test cases
 	totalCases := 0

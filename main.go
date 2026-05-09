@@ -147,6 +147,11 @@ func main() {
 		protected.POST("/agent/commands", routes.CreateCustomCommand)
 		protected.GET("/agent/commands", routes.ListCustomCommands)
 		protected.DELETE("/agent/commands/:id", routes.DeleteCustomCommand)
+
+		// Token Usage
+		protected.GET("/token-usage", routes.GetTokenUsage)
+		protected.GET("/token-usage/summary", routes.GetTokenUsageSummary)
+		protected.GET("/token-usage/call/:request_id", routes.GetTokenCallDetail)
 		protected.GET("/dashboard", routes.GetDashboardStats)
 		protected.GET("/debug/notes/:project_id/:issue_iid", routes.DebugIssueNotes)
 	}
