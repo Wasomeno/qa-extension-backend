@@ -32,7 +32,7 @@ type TokenUsage struct {
 
 	// What
 	Feature string // "qa_chat", "test_generation", "graph_mapper", "issue_autocomplete", "maas", "glm"
-	Model   string // "gemini-3-flash-preview", "gemini-3.1-flash-lite-preview", etc.
+	Model   string // "gemini-3-flash-preview", "gemini-3.1-flash-lite", etc.
 
 	// Tokens
 	InputTokens  int32
@@ -60,7 +60,7 @@ type ModelPrice struct {
 // Update this table when pricing changes.
 // Source: https://ai.google.dev/pricing (as of 2025)
 var ModelPricing = map[string]ModelPrice{
-	"gemini-3.1-flash-lite-preview": {
+	"gemini-3.1-flash-lite": {
 		InputPer1M:  0.075,
 		OutputPer1M: 0.30,
 	},

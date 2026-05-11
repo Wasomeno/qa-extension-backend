@@ -435,7 +435,7 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 			if lastUsageMetadata != nil {
 				tracker.Log(agentCtx, tracker.TokenUsage{
 					Feature:      "qa_chat",
-					Model:        "gemini-3.1-flash-lite-preview",
+					Model:        "gemini-3.1-flash-lite",
 					InputTokens:  lastUsageMetadata.PromptTokenCount,
 					OutputTokens: lastUsageMetadata.CandidatesTokenCount,
 					TotalTokens:  lastUsageMetadata.TotalTokenCount,

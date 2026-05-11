@@ -118,7 +118,7 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input AutomationAgent
 	if lastUsageMetadata != nil {
 		tracker.Log(agentCtx, tracker.TokenUsage{
 			Feature:      "test_generation_agent",
-			Model:        "gemini-3.1-flash-lite-preview",
+			Model:        "gemini-3.1-flash-lite",
 			InputTokens:  lastUsageMetadata.PromptTokenCount,
 			OutputTokens: lastUsageMetadata.CandidatesTokenCount,
 			TotalTokens:  lastUsageMetadata.TotalTokenCount,
