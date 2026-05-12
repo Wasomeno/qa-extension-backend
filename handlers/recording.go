@@ -59,6 +59,54 @@ func deleteRecordingByID(ctx context.Context, id string) (bool, error) {
 	return true, nil
 }
 
+func normalizeStringField(raw map[string]interface{}, key string) {
+	value, ok := raw[key]
+	if !ok || value == nil {
+		return
+	}
+
+	switch v := value.(type) {
+	case string:
+		return
+	case float64:
+		if v == float64(int64(v)) {
+			raw[key] = strconv.FormatInt(int64(v), 10)
+			return
+		}
+		raw[key] = strconv.FormatFloat(v, 'f', -1, 64)
+	case int:
+		raw[key] = strconv.Itoa(v)
+	case int64:
+		raw[key] = strconv.FormatInt(v, 10)
+	default:
+		raw[key] = fmt.Sprint(v)
+	}
+}
+
+func normalizeCreatedAt(raw map[string]interface{}) {
+	value, ok := raw["created_at"]
+	if !ok || value == nil {
+		return
+	}
+
+	switch v := value.(type) {
+	case float64:
+		raw["created_at"] = unixLikeToTime(v).Format(time.RFC3339Nano)
+	case int:
+		raw["created_at"] = unixLikeToTime(float64(v)).Format(time.RFC3339Nano)
+	case int64:
+		raw["created_at"] = unixLikeToTime(float64(v)).Format(time.RFC3339Nano)
+	}
+}
+
+func unixLikeToTime(value float64) time.Time {
+	// Date.now() style values are milliseconds. Unix timestamps are seconds.
+	if value > 1_000_000_000_000 {
+		return time.UnixMilli(int64(value))
+	}
+	return time.Unix(int64(value), 0)
+}
+
 // getProjectName fetches the project name from GitLab API
 func getProjectName(c *gin.Context, projectID string) string {
 	if projectID == "" {
@@ -157,8 +205,29 @@ func getProjectDetails(c *gin.Context, projectID string) *models.ProjectDetails 
 }
 
 func SaveRecording(c *gin.Context) {
+	var raw map[string]interface{}
+	if err := c.ShouldBindJSON(&raw); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Browser extension builds in the wild have sent a few fields with legacy
+	// shapes (for example numeric project_id and millisecond created_at). Normalize
+	// them before binding to the strongly typed model so an otherwise valid
+	// recording upload is not rejected with a 400.
+	normalizeStringField(raw, "project_id")
+	normalizeStringField(raw, "issue_id")
+	normalizeStringField(raw, "test_case_id")
+	normalizeCreatedAt(raw)
+
+	payload, err := json.Marshal(raw)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid recording payload"})
+		return
+	}
+
 	var recording models.ManualRecording
-	if err := c.ShouldBindJSON(&recording); err != nil {
+	if err := json.Unmarshal(payload, &recording); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -244,7 +313,7 @@ func ListRecordings(c *gin.Context) {
 	search := c.Query("search")
 	status := c.Query("status")
 	sortBy := c.Query("sort_by") // "created_at", "name", "status"
-	order := c.Query("order")            // "asc", "desc"
+	order := c.Query("order")    // "asc", "desc"
 	page := 1
 	limit := 20
 
