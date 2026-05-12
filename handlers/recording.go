@@ -207,16 +207,28 @@ func SaveRecording(c *gin.Context) {
 	}
 
 	if recording.CreatorID != 0 {
-		database.RedisClient.SAdd(ctx, fmt.Sprintf("recordings:user:%d", recording.CreatorID), recording.ID)
+		if err := database.RedisClient.SAdd(ctx, fmt.Sprintf("recordings:user:%d", recording.CreatorID), recording.ID).Err(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to index recording by user"})
+			return
+		}
 	} else {
-		database.RedisClient.SAdd(ctx, "recordings:legacy", recording.ID)
+		if err := database.RedisClient.SAdd(ctx, "recordings:legacy", recording.ID).Err(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to index legacy recording"})
+			return
+		}
 	}
 
 	if recording.ProjectID != "" {
-		database.RedisClient.SAdd(ctx, fmt.Sprintf("recordings:project:%s", recording.ProjectID), recording.ID)
+		if err := database.RedisClient.SAdd(ctx, fmt.Sprintf("recordings:project:%s", recording.ProjectID), recording.ID).Err(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to index recording by project"})
+			return
+		}
 	}
 	if recording.IssueID != "" {
-		database.RedisClient.SAdd(ctx, fmt.Sprintf("recordings:issue:%s", recording.IssueID), recording.ID)
+		if err := database.RedisClient.SAdd(ctx, fmt.Sprintf("recordings:issue:%s", recording.IssueID), recording.ID).Err(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to index recording by issue"})
+			return
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -257,10 +269,11 @@ func ListRecordings(c *gin.Context) {
 		ids, err = database.RedisClient.SMembers(ctx, fmt.Sprintf("recordings:issue:%s", issueID)).Result()
 	} else if projectID != "" {
 		ids, err = database.RedisClient.SMembers(ctx, fmt.Sprintf("recordings:project:%s", projectID)).Result()
-	} else if userID != 0 {
-		userKey := fmt.Sprintf("recordings:user:%d", userID)
-		ids, err = database.RedisClient.SUnion(ctx, "recordings:legacy", userKey).Result()
 	} else {
+		// For the unfiltered recordings page, read the authoritative all-recordings
+		// index and filter by creator after loading each record. This makes the
+		// page resilient to stale/missing per-user indexes and ensures unassigned
+		// recordings (no project_id) are still visible.
 		ids, err = database.RedisClient.SMembers(ctx, "recordings").Result()
 	}
 
