@@ -99,6 +99,43 @@ func normalizeCreatedAt(raw map[string]interface{}) {
 	}
 }
 
+func normalizeTelemetryIntegers(value interface{}) {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		for key, child := range v {
+			if shouldNormalizeIntegerField(key) {
+				v[key] = toNearestInt(child)
+				continue
+			}
+			normalizeTelemetryIntegers(child)
+		}
+	case []interface{}:
+		for _, child := range v {
+			normalizeTelemetryIntegers(child)
+		}
+	}
+}
+
+func shouldNormalizeIntegerField(key string) bool {
+	switch key {
+	case "timestamp", "startTime", "endTime", "durationMs", "line", "column", "width", "height", "stepIndex", "domMutationCount", "status":
+		return true
+	default:
+		return false
+	}
+}
+
+func toNearestInt(value interface{}) interface{} {
+	switch v := value.(type) {
+	case float64:
+		return int64(v + 0.5)
+	case float32:
+		return int64(v + 0.5)
+	default:
+		return value
+	}
+}
+
 func unixLikeToTime(value float64) time.Time {
 	// Date.now() style values are milliseconds. Unix timestamps are seconds.
 	if value > 1_000_000_000_000 {
@@ -219,6 +256,9 @@ func SaveRecording(c *gin.Context) {
 	normalizeStringField(raw, "issue_id")
 	normalizeStringField(raw, "test_case_id")
 	normalizeCreatedAt(raw)
+	if telemetry, ok := raw["telemetry"]; ok {
+		normalizeTelemetryIntegers(telemetry)
+	}
 
 	payload, err := json.Marshal(raw)
 	if err != nil {
