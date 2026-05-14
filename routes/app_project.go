@@ -1,7 +1,9 @@
 package routes
 
 import (
+	"context"
 	"net/http"
+	"qa-extension-backend/client"
 	"strconv"
 	"strings"
 
@@ -10,6 +12,8 @@ import (
 	"qa-extension-backend/services"
 
 	"github.com/gin-gonic/gin"
+	gitlab "gitlab.com/gitlab-org/api/client-go"
+	"golang.org/x/oauth2"
 )
 
 func CreateAppProject(c *gin.Context) {
@@ -36,7 +40,17 @@ func CreateAppProject(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, project)
+	importedCount := 0
+	if glClient, ok := gitLabClientFromContext(c); ok {
+		imported, syncErr := services.SyncMarkdownTestScenarios(c.Request.Context(), glClient, project, actorID)
+		if syncErr != nil {
+			c.JSON(http.StatusCreated, gin.H{"project": project, "scenariosImported": importedCount, "warning": syncErr.Error()})
+			return
+		}
+		importedCount = len(imported)
+	}
+
+	c.JSON(http.StatusCreated, gin.H{"project": project, "scenariosImported": importedCount})
 }
 
 func ListAppProjects(c *gin.Context) {
@@ -90,7 +104,52 @@ func UpdateAppProject(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
 		return
 	}
-	c.JSON(http.StatusOK, project)
+	importedCount := 0
+	if glClient, ok := gitLabClientFromContext(c); ok {
+		imported, syncErr := services.SyncMarkdownTestScenarios(c.Request.Context(), glClient, project, actorID)
+		if syncErr != nil {
+			c.JSON(http.StatusOK, gin.H{"project": project, "scenariosImported": importedCount, "warning": syncErr.Error()})
+			return
+		}
+		importedCount = len(imported)
+	}
+	c.JSON(http.StatusOK, gin.H{"project": project, "scenariosImported": importedCount})
+}
+
+func SyncAppProjectTestScenarios(c *gin.Context) {
+	project, err := services.GetAppProject(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+		return
+	}
+	glClient, ok := gitLabClientFromContext(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	actorID, _ := identity.GetCurrentUserID(c)
+	imported, err := services.SyncMarkdownTestScenarios(c.Request.Context(), glClient, project, actorID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"scenarios": imported, "count": len(imported)})
+}
+
+func gitLabClientFromContext(c *gin.Context) (*gitlab.Client, bool) {
+	token, ok := c.Get("token")
+	if !ok {
+		return nil, false
+	}
+	oauthToken, ok := token.(*oauth2.Token)
+	if !ok {
+		return nil, false
+	}
+	glClient, err := client.GetClient(context.Background(), oauthToken, nil)
+	if err != nil {
+		return nil, false
+	}
+	return glClient, true
 }
 
 func DeleteAppProject(c *gin.Context) {
