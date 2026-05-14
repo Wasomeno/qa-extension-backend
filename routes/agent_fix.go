@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"qa-extension-backend/agent"
 	"qa-extension-backend/database"
+	"qa-extension-backend/services"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -24,7 +26,11 @@ type FixSession struct {
 	// Session description
 	Runner string `json:"runner"` // "claude" or "pi"
 
-	// Project information
+	// Public QA project information
+	AppProjectID   string `json:"appProjectId,omitempty"`
+	AppProjectName string `json:"appProjectName,omitempty"`
+
+	// GitLab issue project information
 	ProjectID   int    `json:"projectId"`
 	ProjectName string `json:"projectName,omitempty"`
 
@@ -33,10 +39,10 @@ type FixSession struct {
 	RepoProjectName string `json:"repoProjectName,omitempty"`
 
 	// Issue information
-	IssueIID    int    `json:"issueIid"`
-	IssueTitle  string `json:"issueTitle,omitempty"`
-	IssueURL    string `json:"issueUrl,omitempty"`
-	IssueDesc   string `json:"issueDescription,omitempty"`
+	IssueIID   int    `json:"issueIid"`
+	IssueTitle string `json:"issueTitle,omitempty"`
+	IssueURL   string `json:"issueUrl,omitempty"`
+	IssueDesc  string `json:"issueDescription,omitempty"`
 
 	// Target branch
 	TargetBranch string `json:"targetBranch"`
@@ -66,7 +72,8 @@ type FixSession struct {
 // Frontend tracks progress via SSE stream at GET /api/stream and can poll status at GET /agent/fix-status/:session_id.
 func FixIssueWithAgent(c *gin.Context) {
 	var req struct {
-		ProjectID         int    `json:"project_id" binding:"required"`
+		AppProjectID      string `json:"app_project_id"`
+		ProjectID         int    `json:"project_id"`
 		IssueIID          int    `json:"issue_iid" binding:"required"`
 		RepoProjectID     *int   `json:"repo_project_id"`
 		TargetBranch      string `json:"target_branch"`
@@ -76,6 +83,27 @@ func FixIssueWithAgent(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	appProjectID := req.AppProjectID
+	appProjectName := ""
+	if c.FullPath() != "" && strings.Contains(c.FullPath(), "/projects/:id/") {
+		appProjectID = c.Param("id")
+	}
+	if appProjectID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "app_project_id is required"})
+		return
+	}
+	project, err := services.GetAppProject(c.Request.Context(), appProjectID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+		return
+	}
+	appProjectName = project.Name
+	req.ProjectID = int(project.IssueRepoID)
+	if req.RepoProjectID == nil {
+		repoID := int(project.SpecsRepoID)
+		req.RepoProjectID = &repoID
 	}
 
 	repoProjectID := req.ProjectID
@@ -128,6 +156,8 @@ func FixIssueWithAgent(c *gin.Context) {
 	session := FixSession{
 		SessionID:         sessionID,
 		Runner:            runner,
+		AppProjectID:      appProjectID,
+		AppProjectName:    appProjectName,
 		ProjectID:         req.ProjectID,
 		RepoProjectID:     repoProjectID,
 		IssueIID:          req.IssueIID,
@@ -226,6 +256,10 @@ func GetFixStatus(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
 	}
+	if c.FullPath() != "" && strings.Contains(c.FullPath(), "/projects/:id/") && session.AppProjectID != c.Param("id") {
+		c.JSON(http.StatusNotFound, gin.H{"error": "session not found in project"})
+		return
+	}
 
 	c.JSON(http.StatusOK, session)
 }
@@ -234,6 +268,14 @@ func GetFixStatus(c *gin.Context) {
 // Returns a list of all fix sessions, optionally filtered by status.
 func ListFixSessions(c *gin.Context) {
 	statusFilter := c.Query("status") // ?status=running, ?status=done, ?status=error
+	appProjectID := ""
+	if c.FullPath() != "" && strings.Contains(c.FullPath(), "/projects/:id/") {
+		appProjectID = c.Param("id")
+		if _, err := services.GetAppProject(c.Request.Context(), appProjectID); err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+			return
+		}
+	}
 
 	ctx := context.Background()
 	var sessions []FixSession
@@ -251,6 +293,9 @@ func ListFixSessions(c *gin.Context) {
 			continue
 		}
 		if statusFilter != "" && session.Status != statusFilter {
+			continue
+		}
+		if appProjectID != "" && session.AppProjectID != appProjectID {
 			continue
 		}
 		sessions = append(sessions, session)
@@ -276,6 +321,16 @@ func DeleteFixSession(c *gin.Context) {
 		return
 	}
 
+	session, err := getFixSession(sessionID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+		return
+	}
+	if c.FullPath() != "" && strings.Contains(c.FullPath(), "/projects/:id/") && session.AppProjectID != c.Param("id") {
+		c.JSON(http.StatusNotFound, gin.H{"error": "session not found in project"})
+		return
+	}
+
 	key := fmt.Sprintf("fix_session:%s", sessionID)
 	result, err := database.RedisClient.Del(context.Background(), key).Result()
 	if err != nil {
@@ -285,6 +340,9 @@ func DeleteFixSession(c *gin.Context) {
 	if result == 0 {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
+	}
+	if session.AppProjectID != "" {
+		database.RedisClient.SRem(context.Background(), fmt.Sprintf("fix_sessions:project:%s", session.AppProjectID), session.SessionID)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "session deleted"})
@@ -299,6 +357,9 @@ func saveFixSession(session FixSession) {
 	}
 	// Store with 24 hour TTL
 	database.RedisClient.Set(ctx, key, val, 24*time.Hour)
+	if session.AppProjectID != "" {
+		database.RedisClient.SAdd(ctx, fmt.Sprintf("fix_sessions:project:%s", session.AppProjectID), session.SessionID)
+	}
 }
 
 // getFixSession retrieves a FixSession from Redis
