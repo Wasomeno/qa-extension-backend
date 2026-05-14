@@ -95,6 +95,10 @@ const (
 	AutomationCategoryManual AutomationCategory = "manual"
 )
 
+func AutomationCategoryPtr(category AutomationCategory) *AutomationCategory {
+	return &category
+}
+
 // ─────────────────────────────────────────────
 // Core domain types
 // ─────────────────────────────────────────────
@@ -132,22 +136,22 @@ type TestStepV2 struct {
 
 // TestCase is a single test case
 type TestCase struct {
-	ID             string             `json:"id"`
-	Order          int                `json:"order"`
-	Code           string             `json:"code"`
-	Title          string             `json:"title"`
-	Description    string             `json:"description,omitempty"`
-	PreCondition   string             `json:"preCondition,omitempty"`
-	Steps          []TestStepV2       `json:"steps"`
-	Tags           []string           `json:"tags"`
-	Priority       Priority           `json:"priority"`
-	Type           string             `json:"type"`
-	Status         TestCaseStatus     `json:"status"`
-	AutomationType AutomationCategory `json:"automationType,omitempty"`
-	AutomationTest *AutomationTest    `json:"automationTest,omitempty"`
-	Note           string             `json:"note,omitempty"`
-	CreatedAt      string             `json:"createdAt"`
-	UpdatedAt      string             `json:"updatedAt"`
+	ID             string              `json:"id"`
+	Order          int                 `json:"order"`
+	Code           string              `json:"code"`
+	Title          string              `json:"title"`
+	Description    string              `json:"description,omitempty"`
+	PreCondition   string              `json:"preCondition,omitempty"`
+	Steps          []TestStepV2        `json:"steps"`
+	Tags           []string            `json:"tags"`
+	Priority       Priority            `json:"priority"`
+	Type           string              `json:"type"`
+	Status         TestCaseStatus      `json:"status"`
+	AutomationType *AutomationCategory `json:"automationType"`
+	AutomationTest *AutomationTest     `json:"automationTest,omitempty"`
+	Note           string              `json:"note,omitempty"`
+	CreatedAt      string              `json:"createdAt"`
+	UpdatedAt      string              `json:"updatedAt"`
 }
 
 // TestSection groups test cases by functional area

@@ -199,7 +199,7 @@ func LinkAutomation(scenario *models.TestScenario, auto *models.GeneratedAutomat
 						Status:    models.AutomationStatusIdle,
 						Steps:     auto.Steps,
 					}
-					tc.AutomationType = models.AutomationCategoryE2E
+					tc.AutomationType = models.AutomationCategoryPtr(models.AutomationCategoryE2E)
 					return true
 				}
 			}
@@ -226,7 +226,7 @@ func LinkAutomation(scenario *models.TestScenario, auto *models.GeneratedAutomat
 					Status:    models.AutomationStatusIdle,
 					Steps:     auto.Steps,
 				}
-				tc.AutomationType = models.AutomationCategoryE2E
+				tc.AutomationType = models.AutomationCategoryPtr(models.AutomationCategoryE2E)
 				return true
 			}
 		}
@@ -244,7 +244,7 @@ func LinkAutomation(scenario *models.TestScenario, auto *models.GeneratedAutomat
 					Status:    models.AutomationStatusIdle,
 					Steps:     auto.Steps,
 				}
-				tc.AutomationType = models.AutomationCategoryE2E
+				tc.AutomationType = models.AutomationCategoryPtr(models.AutomationCategoryE2E)
 				return true
 			}
 		}

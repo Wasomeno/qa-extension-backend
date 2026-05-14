@@ -1014,7 +1014,7 @@ func generateAPIAutomationPrompts(c *gin.Context, scenario *models.TestScenario,
 			}
 			found++
 			prompt := services.BuildAPITestPrompt(*scenario, *tc, req.BackendRepoID, backendRepoName)
-			tc.AutomationType = models.AutomationCategoryAPI
+			tc.AutomationType = models.AutomationCategoryPtr(models.AutomationCategoryAPI)
 			tc.AutomationTest = &models.AutomationTest{
 				ID:        fmt.Sprintf("api-prompt-%s", tc.ID),
 				Name:      fmt.Sprintf("%s API test prompt", tc.Code),
@@ -1053,7 +1053,7 @@ func markManualAutomation(c *gin.Context, scenario *models.TestScenario, testCas
 				continue
 			}
 			found++
-			tc.AutomationType = models.AutomationCategoryManual
+			tc.AutomationType = models.AutomationCategoryPtr(models.AutomationCategoryManual)
 			tc.AutomationTest = nil
 		}
 	}
@@ -1182,7 +1182,7 @@ func setAutomationCategory(scenario *models.TestScenario, targetIDs []string, ca
 			if !idMap[tc.ID] {
 				continue
 			}
-			tc.AutomationType = category
+			tc.AutomationType = models.AutomationCategoryPtr(category)
 			tc.AutomationTest = &models.AutomationTest{
 				ID:       fmt.Sprintf("auto-pending-%s-%d", tc.ID, time.Now().UnixNano()),
 				Name:     fmt.Sprintf("%s_%s", tc.Code, strings.ToUpper(string(category))),
@@ -1203,7 +1203,7 @@ func markMissingE2EFailed(scenario *models.TestScenario, failedIDs []string) {
 	for si := range scenario.Sections {
 		for ti := range scenario.Sections[si].TestCases {
 			tc := &scenario.Sections[si].TestCases[ti]
-			if tc.AutomationType != models.AutomationCategoryE2E || tc.AutomationTest == nil {
+			if tc.AutomationType == nil || *tc.AutomationType != models.AutomationCategoryE2E || tc.AutomationTest == nil {
 				continue
 			}
 			if tc.AutomationTest.Status == models.AutomationStatusRunning || failed[tc.ID] {
@@ -1225,7 +1225,7 @@ func setGeneratedE2ERepo(scenario *models.TestScenario, targetIDs []string, fron
 			if !targets[tc.ID] || tc.AutomationTest == nil {
 				continue
 			}
-			tc.AutomationType = models.AutomationCategoryE2E
+			tc.AutomationType = models.AutomationCategoryPtr(models.AutomationCategoryE2E)
 			tc.AutomationTest.Category = models.AutomationCategoryE2E
 			tc.AutomationTest.RepoID = frontendRepoID
 		}
@@ -1369,7 +1369,7 @@ func ensureManualTestCase(scenario *models.TestScenario, tcID string) (string, b
 				continue
 			}
 			tc := &scenario.Sections[si].TestCases[ti]
-			tc.AutomationType = models.AutomationCategoryManual
+			tc.AutomationType = models.AutomationCategoryPtr(models.AutomationCategoryManual)
 			tc.AutomationTest = nil
 			return scenario.Sections[si].ID, true
 		}

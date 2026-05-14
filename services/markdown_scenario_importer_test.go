@@ -1,8 +1,10 @@
 package services
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"qa-extension-backend/internal/models"
@@ -38,5 +40,15 @@ func TestBuildScenarioFromMarkdownExample(t *testing.T) {
 	}
 	if first.PreCondition == "" {
 		t.Fatal("expected preconditions")
+	}
+	if first.AutomationType != nil {
+		t.Fatalf("initial automation type = %q, want nil", *first.AutomationType)
+	}
+	data, err := json.Marshal(first)
+	if err != nil {
+		t.Fatalf("marshal first test case: %v", err)
+	}
+	if !strings.Contains(string(data), `"automationType":null`) {
+		t.Fatalf("initial automationType should be null in JSON, got %s", data)
 	}
 }
