@@ -10,6 +10,7 @@ import (
 	"qa-extension-backend/database"
 	"qa-extension-backend/identity"
 	"qa-extension-backend/internal/models"
+	"qa-extension-backend/services"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,6 +24,32 @@ import (
 
 // deleteRecordingByID deletes a recording by ID and removes it from all index sets.
 // Returns true if the recording was found and deleted, false otherwise.
+func routeRecordingProjectID(c *gin.Context) string {
+	if strings.Contains(c.FullPath(), "/projects/:id/") {
+		return c.Param("id")
+	}
+	return c.Param("project_id")
+}
+
+func routeRecordingID(c *gin.Context) string {
+	if id := c.Param("recording_id"); id != "" {
+		return id
+	}
+	return c.Param("id")
+}
+
+func ensureRecordingProject(c *gin.Context, recording models.ManualRecording) bool {
+	projectID := routeRecordingProjectID(c)
+	if projectID == "" {
+		return true
+	}
+	if recording.ProjectID != projectID {
+		c.JSON(http.StatusNotFound, gin.H{"error": "recording not found in project"})
+		return false
+	}
+	return true
+}
+
 func deleteRecordingByID(ctx context.Context, id string) (bool, error) {
 	key := fmt.Sprintf("recording:%s", id)
 
@@ -148,6 +175,10 @@ func unixLikeToTime(value float64) time.Time {
 func getProjectName(c *gin.Context, projectID string) string {
 	if projectID == "" {
 		return ""
+	}
+
+	if project, err := services.GetAppProject(c.Request.Context(), projectID); err == nil {
+		return project.Name
 	}
 
 	token, exists := c.Get("token")
@@ -277,6 +308,26 @@ func SaveRecording(c *gin.Context) {
 		return
 	}
 
+	if projectID := routeRecordingProjectID(c); projectID != "" {
+		project, err := services.GetAppProject(c.Request.Context(), projectID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "project not found"})
+			return
+		}
+		recording.ProjectID = project.ID
+		recording.ProjectName = project.Name
+	} else if recording.ProjectID != "" {
+		project, err := services.GetAppProject(c.Request.Context(), recording.ProjectID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "project not found"})
+			return
+		}
+		recording.ProjectName = project.Name
+	} else {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "project_id is required"})
+		return
+	}
+
 	// Set CreatedAt if not provided (new recording)
 	if recording.CreatedAt.IsZero() {
 		recording.CreatedAt = time.Now()
@@ -348,7 +399,10 @@ func SaveRecording(c *gin.Context) {
 
 func ListRecordings(c *gin.Context) {
 	ctx := context.Background()
-	projectID := c.Query("project_id")
+	projectID := routeRecordingProjectID(c)
+	if projectID == "" {
+		projectID = c.Query("project_id")
+	}
 	issueID := c.Query("issue_id")
 	search := c.Query("search")
 	status := c.Query("status")
@@ -367,8 +421,6 @@ func ListRecordings(c *gin.Context) {
 			limit = parsed
 		}
 	}
-
-	userID, _ := identity.GetCurrentUserID(c)
 
 	// Step 1: Get recording IDs from Redis sets
 	var ids []string
@@ -431,11 +483,11 @@ func ListRecordings(c *gin.Context) {
 			continue
 		}
 
-		// Filter for current user or legacy
-		if userID == 0 || r.CreatorID == 0 || r.CreatorID == userID {
-			recordings = append(recordings, r)
-			processedIDs[id] = true
+		if projectID != "" && r.ProjectID != projectID {
+			continue
 		}
+		recordings = append(recordings, r)
+		processedIDs[id] = true
 	}
 
 	// Step 4: Apply status filter
@@ -518,9 +570,14 @@ func ListRecordings(c *gin.Context) {
 	// Collect unique project IDs that need fetching
 	projectIDs := make(map[string]int) // projectID -> index in paginatedRecordings
 	for i, r := range paginatedRecordings {
-		if r.ProjectID != "" && r.ProjectDetails == nil {
-			projectIDs[r.ProjectID] = i
+		if r.ProjectID == "" || r.ProjectDetails != nil {
+			continue
 		}
+		if project, err := services.GetAppProject(ctx, r.ProjectID); err == nil {
+			paginatedRecordings[i].ProjectName = project.Name
+			continue
+		}
+		projectIDs[r.ProjectID] = i
 	}
 
 	if len(projectIDs) > 0 {
@@ -567,7 +624,7 @@ func ListRecordings(c *gin.Context) {
 }
 
 func UpdateRecording(c *gin.Context) {
-	id := c.Param("id")
+	id := routeRecordingID(c)
 	if id == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "recording id is required"})
 		return
@@ -593,6 +650,10 @@ func UpdateRecording(c *gin.Context) {
 	var existing models.ManualRecording
 	if err := json.Unmarshal([]byte(val), &existing); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to unmarshal existing recording"})
+		return
+	}
+
+	if !ensureRecordingProject(c, existing) {
 		return
 	}
 
@@ -625,8 +686,17 @@ func UpdateRecording(c *gin.Context) {
 			existing.ProjectName = ""
 		}
 	}
+	if scopedProjectID := routeRecordingProjectID(c); scopedProjectID != "" {
+		project, err := services.GetAppProject(c.Request.Context(), scopedProjectID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "project not found"})
+			return
+		}
+		existing.ProjectID = project.ID
+		existing.ProjectName = project.Name
+	}
 	// Allow explicit update of project_name
-	if projectName, ok := updateData["project_name"].(string); ok {
+	if projectName, ok := updateData["project_name"].(string); ok && routeRecordingProjectID(c) == "" {
 		existing.ProjectName = projectName
 	}
 	if issueID, ok := updateData["issue_id"].(string); ok {
@@ -683,7 +753,7 @@ func UpdateRecording(c *gin.Context) {
 }
 
 func DeleteRecording(c *gin.Context) {
-	id := c.Param("id")
+	id := routeRecordingID(c)
 	if id == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "recording id is required"})
 		return
@@ -702,6 +772,9 @@ func DeleteRecording(c *gin.Context) {
 	var recording models.ManualRecording
 	if err := json.Unmarshal([]byte(val), &recording); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to unmarshal recording"})
+		return
+	}
+	if !ensureRecordingProject(c, recording) {
 		return
 	}
 
@@ -725,7 +798,7 @@ func DeleteRecording(c *gin.Context) {
 }
 
 func GetRecording(c *gin.Context) {
-	id := c.Param("id")
+	id := routeRecordingID(c)
 	if id == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "recording id is required"})
 		return
@@ -745,10 +818,17 @@ func GetRecording(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to unmarshal recording"})
 		return
 	}
+	if !ensureRecordingProject(c, recording) {
+		return
+	}
 
-	// Enrich with project details if project_id is present
-	if recording.ProjectID != "" && recording.ProjectDetails == nil {
-		recording.ProjectDetails = getProjectDetails(c, recording.ProjectID)
+	// Enrich with project name/details if project_id is present
+	if recording.ProjectID != "" {
+		if project, err := services.GetAppProject(ctx, recording.ProjectID); err == nil {
+			recording.ProjectName = project.Name
+		} else if recording.ProjectDetails == nil {
+			recording.ProjectDetails = getProjectDetails(c, recording.ProjectID)
+		}
 	}
 
 	c.JSON(http.StatusOK, recording)
@@ -773,6 +853,7 @@ func BulkDeleteRecordings(c *gin.Context) {
 	var notFound []string
 	var errors []string
 
+	projectID := routeRecordingProjectID(c)
 	for _, id := range req.IDs {
 		key := fmt.Sprintf("recording:%s", id)
 
@@ -786,6 +867,10 @@ func BulkDeleteRecordings(c *gin.Context) {
 		var recording models.ManualRecording
 		if err := json.Unmarshal([]byte(val), &recording); err != nil {
 			errors = append(errors, fmt.Sprintf("%s: %v", id, err))
+			continue
+		}
+		if projectID != "" && recording.ProjectID != projectID {
+			notFound = append(notFound, id)
 			continue
 		}
 
@@ -818,7 +903,7 @@ func BulkDeleteRecordings(c *gin.Context) {
 
 // RunRecording handles POST /recordings/:id/run - starts execution of a recording
 func RunRecording(c *gin.Context) {
-	id := c.Param("id")
+	id := routeRecordingID(c)
 	if id == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "recording id is required"})
 		return
@@ -842,6 +927,9 @@ func RunRecording(c *gin.Context) {
 	var recording models.ManualRecording
 	if err := json.Unmarshal([]byte(val), &recording); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to unmarshal recording"})
+		return
+	}
+	if !ensureRecordingProject(c, recording) {
 		return
 	}
 
