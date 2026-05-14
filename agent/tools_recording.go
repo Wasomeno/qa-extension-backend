@@ -7,14 +7,14 @@ import (
 	"fmt"
 	"log"
 	"qa-extension-backend/database"
-	"qa-extension-backend/internal/models"
 	"qa-extension-backend/identity"
+	"qa-extension-backend/internal/models"
 	"strings"
 	"time"
 
+	"golang.org/x/oauth2"
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
-	"golang.org/x/oauth2"
 )
 
 func GetTestTools() []tool.Tool {
@@ -63,22 +63,7 @@ func listTestScenarios(ctx tool.Context, _ struct{}) (*ListTestScenariosResponse
 	var ids []string
 	var err error
 
-	// Try to get user identity from context
-	token, _ := ctx.Value("token").(*oauth2.Token)
-	sessionID, _ := ctx.Value("session_id").(string)
-
-	if token != nil && sessionID != "" {
-		userID, err := identity.GetCurrentUserIDFromCtx(ctx, token, sessionID)
-		if err == nil {
-			userKey := fmt.Sprintf("scenarios:user:%d", userID)
-			ids, err = database.RedisClient.SUnion(ctx, "scenarios:legacy", userKey).Result()
-		} else {
-			log.Printf("[AgentTool] listTestScenarios failed to get user identity: %v", err)
-			ids, err = database.RedisClient.SMembers(ctx, "scenarios").Result()
-		}
-	} else {
-		ids, err = database.RedisClient.SMembers(ctx, "scenarios").Result()
-	}
+	ids, err = database.RedisClient.SMembers(ctx, "scenarios").Result()
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to list scenarios: %w", err)
@@ -334,7 +319,7 @@ func listRecordedTests(ctx tool.Context, args ListRecordedTestsArgs) (*ListRecor
 
 	events := NewAgentToolEmitter(ctx)
 	events.Start("Fetching recorded tests...")
-	
+
 	var ids []string
 	var err error
 
@@ -343,22 +328,7 @@ func listRecordedTests(ctx tool.Context, args ListRecordedTestsArgs) (*ListRecor
 	} else if args.ProjectID != "" {
 		ids, err = database.RedisClient.SMembers(ctx, fmt.Sprintf("recordings:project:%s", args.ProjectID)).Result()
 	} else {
-		// Scoping by user for general list
-		token, _ := ctx.Value("token").(*oauth2.Token)
-		sessionID, _ := ctx.Value("session_id").(string)
-
-		if token != nil && sessionID != "" {
-			userID, err := identity.GetCurrentUserIDFromCtx(ctx, token, sessionID)
-			if err == nil {
-				userKey := fmt.Sprintf("recordings:user:%d", userID)
-				ids, err = database.RedisClient.SUnion(ctx, "recordings:legacy", userKey).Result()
-			} else {
-				log.Printf("[AgentTool] listRecordedTests failed to get user identity: %v", err)
-				ids, err = database.RedisClient.SMembers(ctx, "recordings").Result()
-			}
-		} else {
-			ids, err = database.RedisClient.SMembers(ctx, "recordings").Result()
-		}
+		ids, err = database.RedisClient.SMembers(ctx, "recordings").Result()
 	}
 
 	if err != nil {
@@ -475,11 +445,11 @@ func runRecordedTest(ctx tool.Context, args RunRecordedTestArgs) (*models.TestRe
 		}
 		return nil, err
 	}
-	
+
 	if timeoutCtx.Err() != nil && errors.Is(timeoutCtx.Err(), context.DeadlineExceeded) {
 		result.Status = "timeout"
 	}
-	
+
 	// Save result to Redis (ignore error)
 	_ = database.SaveTestResult(ctx, result)
 

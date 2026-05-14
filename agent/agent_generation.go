@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
-	"google.golang.org/genai"
 	"google.golang.org/adk/agent"
 	"google.golang.org/adk/session"
+	"google.golang.org/genai"
 )
 
 // RunAgentForTestGenerationWithLLM runs the actual QA LLM agent to generate automations
@@ -30,7 +30,7 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input AutomationAgent
 
 	// Build the prompt with all test case data
 	prompt := buildAgentGenerationPrompt(scenario, input.ScenarioID, input.TestCaseIDs)
-	
+
 	// Create a unique session ID for this generation task
 	scenarioShortID := input.ScenarioID
 	if len(scenarioShortID) > 8 {
@@ -58,7 +58,7 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input AutomationAgent
 
 	// Create the content message
 	content := &genai.Content{
-		Role: genai.RoleUser,
+		Role:  genai.RoleUser,
 		Parts: []*genai.Part{{Text: prompt}},
 	}
 
@@ -149,7 +149,7 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input AutomationAgent
 
 	// Collect generated automation tests from the scenario
 	output := &GenerateAutomationsOutput{
-		Automations:   []models.GeneratedAutomation{},
+		Automations:  []models.GeneratedAutomation{},
 		FailedIDs:    []string{},
 		Warnings:     []string{},
 		TotalCount:   totalCases,
@@ -241,6 +241,7 @@ For EACH test case in the scenario below:
 `)
 	prompt.WriteString(fmt.Sprintf("- Scenario ID: %s\n", scenarioID))
 	prompt.WriteString(fmt.Sprintf("- Project ID: %s\n", scenario.ProjectID))
+	prompt.WriteString(fmt.Sprintf("- GitLab Specs Repo ID: %s\n", scenario.GitLabSpecsProjectID()))
 	prompt.WriteString(fmt.Sprintf("- Creator ID: %d\n", scenario.CreatorID))
 	prompt.WriteString(fmt.Sprintf("- Base URL: %s\n", scenario.AuthConfig.BaseURL))
 	prompt.WriteString(fmt.Sprintf("- Login URL: %s\n", scenario.AuthConfig.LoginURL))
@@ -287,7 +288,7 @@ For EACH test case in the scenario below:
 				}
 			}
 			prompt.WriteString(fmt.Sprintf("#### Test Case: %s - %s\n", tc.ID, tc.Title))
-			
+
 			if tc.Description != "" {
 				prompt.WriteString(fmt.Sprintf("**Description:** %s\n", tc.Description))
 			}
@@ -312,9 +313,9 @@ For EACH test case in the scenario below:
 
 	prompt.WriteString(`
 ## Instructions
-1. First, use listGitLabRepositoryTree to explore the project structure
+1. First, use listGitLabRepositoryTree with the GitLab Specs Repo ID above to explore the project structure
 2. For each test case, identify which pages/components are relevant
-3. Use getGitLabFileContent to fetch the source files
+3. Use getGitLabFileContent with the GitLab Specs Repo ID above to fetch the source files
 4. Extract Playwright-compatible selectors (CSS and XPath) from the source code
 5. Use save_automation_test to save each generated automation
 

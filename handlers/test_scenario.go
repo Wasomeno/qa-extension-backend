@@ -7,11 +7,10 @@ import (
 	"log"
 	"net/http"
 	"qa-extension-backend/agent"
-	"qa-extension-backend/auth"
 	"qa-extension-backend/client"
 	"qa-extension-backend/database"
-	"qa-extension-backend/internal/models"
 	"qa-extension-backend/identity"
+	"qa-extension-backend/internal/models"
 	"qa-extension-backend/services"
 	"sort"
 	"strconv"
@@ -32,6 +31,32 @@ func pluralize(n int) string {
 	return "s"
 }
 
+func routeProjectID(c *gin.Context) string {
+	if strings.Contains(c.FullPath(), "/projects/:id/") {
+		return c.Param("id")
+	}
+	return c.Param("project_id")
+}
+
+func routeScenarioID(c *gin.Context) string {
+	if id := c.Param("scenario_id"); id != "" {
+		return id
+	}
+	return c.Param("id")
+}
+
+func ensureScenarioProject(c *gin.Context, scenario models.TestScenario) bool {
+	projectID := routeProjectID(c)
+	if projectID == "" {
+		return true
+	}
+	if scenario.ProjectID != projectID {
+		c.JSON(http.StatusNotFound, gin.H{"error": "scenario not found in project"})
+		return false
+	}
+	return true
+}
+
 // UploadScenario handles uploading an XLSX file and parsing it into a TestScenario
 func UploadScenario(c *gin.Context) {
 	err := c.Request.ParseMultipartForm(10 << 20) // 10 MB limit
@@ -47,7 +72,24 @@ func UploadScenario(c *gin.Context) {
 	}
 	defer file.Close()
 
-	projectID := c.Request.FormValue("projectId")
+	projectID := routeProjectID(c)
+	if projectID == "" {
+		projectID = c.Request.FormValue("projectId")
+	}
+	if projectID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "projectId is required"})
+		return
+	}
+
+	var appProject *models.AppProject
+	if projectID != "" {
+		var err error
+		appProject, err = services.GetAppProject(c.Request.Context(), projectID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "project not found"})
+			return
+		}
+	}
 
 	var authConfig models.AuthConfig
 	authConfigStr := c.Request.FormValue("authConfig")
@@ -65,21 +107,12 @@ func UploadScenario(c *gin.Context) {
 	}
 
 	projectName := ""
-	if projectID != "" {
-		token, _ := c.MustGet("token").(*oauth2.Token)
-		sessionID, _ := c.MustGet("session_id").(string)
-		if token != nil {
-			tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-				return auth.UpdateSession(ctx, sessionID, t)
-			}
-			gitlabClient, err := client.GetClient(c, token, tokenSaver)
-			if err == nil {
-				project, _, err := gitlabClient.Projects.GetProject(projectID, &gitlab.GetProjectOptions{})
-				if err == nil && project != nil {
-					projectName = project.NameWithNamespace
-				}
-			}
-		}
+	issueRepoID := ""
+	specsRepoID := ""
+	if appProject != nil {
+		projectName = appProject.Name
+		issueRepoID = strconv.FormatInt(appProject.IssueRepoID, 10)
+		specsRepoID = strconv.FormatInt(appProject.SpecsRepoID, 10)
 	}
 
 	userID, err := identity.GetCurrentUserID(c)
@@ -89,6 +122,8 @@ func UploadScenario(c *gin.Context) {
 
 	scenario := services.BuildScenarioFromXLSX(header.Filename, sheets, projectID, projectName, authConfig, userID)
 	scenario.ID = uuid.NewString()
+	scenario.IssueRepoID = issueRepoID
+	scenario.SpecsRepoID = specsRepoID
 
 	// Save to Redis
 	ctx := c.Request.Context()
@@ -108,6 +143,9 @@ func UploadScenario(c *gin.Context) {
 
 	// Add to set of scenarios
 	database.RedisClient.SAdd(ctx, "scenarios", scenario.ID)
+	if scenario.ProjectID != "" {
+		database.RedisClient.SAdd(ctx, fmt.Sprintf("scenarios:project:%s", scenario.ProjectID), scenario.ID)
+	}
 	if scenario.CreatorID != 0 {
 		database.RedisClient.SAdd(ctx, fmt.Sprintf("scenarios:user:%d", scenario.CreatorID), scenario.ID)
 	} else {
@@ -115,8 +153,8 @@ func UploadScenario(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "scenario uploaded and parsed successfully",
-		"id":      scenario.ID,
+		"message":  "scenario uploaded and parsed successfully",
+		"id":       scenario.ID,
 		"sections": len(scenario.Sections),
 	})
 }
@@ -124,7 +162,7 @@ func UploadScenario(c *gin.Context) {
 // ListScenarios lists all test scenarios
 func ListScenarios(c *gin.Context) {
 	ctx := c.Request.Context()
-	userID, _ := identity.GetCurrentUserID(c)
+	projectID := routeProjectID(c)
 	search := c.Query("search")
 	status := c.Query("status")
 	sortBy := c.Query("sort_by") // "created_at", "title", "status"
@@ -146,9 +184,8 @@ func ListScenarios(c *gin.Context) {
 	var ids []string
 	var err error
 
-	if userID != 0 {
-		userKey := fmt.Sprintf("scenarios:user:%d", userID)
-		ids, err = database.RedisClient.SUnion(ctx, "scenarios:legacy", userKey).Result()
+	if projectID != "" {
+		ids, err = database.RedisClient.SMembers(ctx, fmt.Sprintf("scenarios:project:%s", projectID)).Result()
 	} else {
 		ids, err = database.RedisClient.SMembers(ctx, "scenarios").Result()
 	}
@@ -169,15 +206,16 @@ func ListScenarios(c *gin.Context) {
 		if err == nil {
 			var s models.TestScenario
 			if json.Unmarshal([]byte(val), &s) == nil {
-				if userID == 0 || s.CreatorID == 0 || s.CreatorID == userID {
-					// For lists, we don't need the full parsed sheets or massive test cases payload
-					// We can just compute stats and clear out the heavy parts
-					s.ComputeStats()
-					s.Sections = nil
-					s.Sheets = nil
-					scenarios = append(scenarios, s)
-					processedIDs[id] = true
+				if projectID != "" && s.ProjectID != projectID {
+					continue
 				}
+				// For lists, we don't need the full parsed sheets or massive test cases payload
+				// We can just compute stats and clear out the heavy parts
+				s.ComputeStats()
+				s.Sections = nil
+				s.Sheets = nil
+				scenarios = append(scenarios, s)
+				processedIDs[id] = true
 			}
 		}
 	}
@@ -248,7 +286,7 @@ func ListScenarios(c *gin.Context) {
 
 	if start >= total {
 		c.JSON(http.StatusOK, gin.H{
-			"data":        []models.TestScenario{},
+			"data":       []models.TestScenario{},
 			"pagination": gin.H{"page": page, "limit": limit, "total": total, "totalPages": totalPages},
 		})
 		return
@@ -258,14 +296,14 @@ func ListScenarios(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"data":        scenarios[start:end],
+		"data":       scenarios[start:end],
 		"pagination": gin.H{"page": page, "limit": limit, "total": total, "totalPages": totalPages},
 	})
 }
 
 // GetScenario gets a specific test scenario
 func GetScenario(c *gin.Context) {
-	id := c.Param("id")
+	id := routeScenarioID(c)
 	if id == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "scenario id is required"})
 		return
@@ -277,9 +315,13 @@ func GetScenario(c *gin.Context) {
 		return
 	}
 
+	if !ensureScenarioProject(c, scenario) {
+		return
+	}
+
 	// Ensure stats are computed
 	scenario.ComputeStats()
-	
+
 	// Exclude sheets from response to save bandwidth
 	scenario.Sheets = nil
 
@@ -288,7 +330,7 @@ func GetScenario(c *gin.Context) {
 
 // UpdateScenario updates top-level scenario fields
 func UpdateScenario(c *gin.Context) {
-	id := c.Param("id")
+	id := routeScenarioID(c)
 	var req models.UpdateScenarioRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -299,6 +341,9 @@ func UpdateScenario(c *gin.Context) {
 	scenario, err := getScenario(ctx, id)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "scenario not found"})
+		return
+	}
+	if !ensureScenarioProject(c, scenario) {
 		return
 	}
 
@@ -318,7 +363,7 @@ func UpdateScenario(c *gin.Context) {
 
 // UpdateTestCase updates fields of a specific test case
 func UpdateTestCase(c *gin.Context) {
-	id := c.Param("id")
+	id := routeScenarioID(c)
 	sectionID := c.Param("sectionId")
 	tcID := c.Param("tcId")
 
@@ -334,6 +379,9 @@ func UpdateTestCase(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "scenario not found"})
 		return
 	}
+	if !ensureScenarioProject(c, scenario) {
+		return
+	}
 
 	updated := false
 	for i := range scenario.Sections {
@@ -341,23 +389,39 @@ func UpdateTestCase(c *gin.Context) {
 			for j := range scenario.Sections[i].TestCases {
 				if scenario.Sections[i].TestCases[j].ID == tcID {
 					tc := &scenario.Sections[i].TestCases[j]
-					
-					if req.Title != nil { tc.Title = *req.Title }
-					if req.Description != nil { tc.Description = *req.Description }
-					if req.PreCondition != nil { tc.PreCondition = *req.PreCondition }
-					if req.Tags != nil { tc.Tags = *req.Tags }
-					if req.Priority != nil { tc.Priority = *req.Priority }
-					if req.Type != nil { tc.Type = *req.Type }
-					if req.Status != nil { tc.Status = *req.Status }
-					if req.Note != nil { tc.Note = *req.Note }
-					if req.Steps != nil { 
+
+					if req.Title != nil {
+						tc.Title = *req.Title
+					}
+					if req.Description != nil {
+						tc.Description = *req.Description
+					}
+					if req.PreCondition != nil {
+						tc.PreCondition = *req.PreCondition
+					}
+					if req.Tags != nil {
+						tc.Tags = *req.Tags
+					}
+					if req.Priority != nil {
+						tc.Priority = *req.Priority
+					}
+					if req.Type != nil {
+						tc.Type = *req.Type
+					}
+					if req.Status != nil {
+						tc.Status = *req.Status
+					}
+					if req.Note != nil {
+						tc.Note = *req.Note
+					}
+					if req.Steps != nil {
 						tc.Steps = *req.Steps
 						// Enforce order
 						for k := range tc.Steps {
 							tc.Steps[k].Order = k + 1
 						}
 					}
-					
+
 					tc.UpdatedAt = time.Now().Format(time.RFC3339)
 					updated = true
 					break
@@ -382,7 +446,7 @@ func UpdateTestCase(c *gin.Context) {
 
 // ReorderTestCases updates the order of test cases in a section
 func ReorderTestCases(c *gin.Context) {
-	id := c.Param("id")
+	id := routeScenarioID(c)
 	sectionID := c.Param("sectionId")
 
 	var req models.ReorderTestCasesRequest
@@ -395,6 +459,9 @@ func ReorderTestCases(c *gin.Context) {
 	scenario, err := getScenario(ctx, id)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "scenario not found"})
+		return
+	}
+	if !ensureScenarioProject(c, scenario) {
 		return
 	}
 
@@ -445,7 +512,7 @@ func ReorderTestCases(c *gin.Context) {
 
 // AddTestCase adds a new test case to a section
 func AddTestCase(c *gin.Context) {
-	id := c.Param("id")
+	id := routeScenarioID(c)
 	sectionID := c.Param("sectionId")
 
 	var req models.CreateTestCaseRequest
@@ -460,12 +527,15 @@ func AddTestCase(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "scenario not found"})
 		return
 	}
+	if !ensureScenarioProject(c, scenario) {
+		return
+	}
 
 	updated := false
 	for i := range scenario.Sections {
 		if scenario.Sections[i].ID == sectionID {
 			now := time.Now().Format(time.RFC3339)
-			
+
 			// Enforce step orders
 			for k := range req.Steps {
 				req.Steps[k].Order = k + 1
@@ -505,9 +575,15 @@ func AddTestCase(c *gin.Context) {
 				UpdatedAt:    now,
 			}
 
-			if newTC.Priority == "" { newTC.Priority = models.PriorityMedium }
-			if newTC.Type == "" { newTC.Type = "positive" }
-			if newTC.Status == "" { newTC.Status = models.TCStatusDraft }
+			if newTC.Priority == "" {
+				newTC.Priority = models.PriorityMedium
+			}
+			if newTC.Type == "" {
+				newTC.Type = "positive"
+			}
+			if newTC.Status == "" {
+				newTC.Status = models.TCStatusDraft
+			}
 
 			scenario.Sections[i].TestCases = append(scenario.Sections[i].TestCases, newTC)
 			updated = true
@@ -530,7 +606,7 @@ func AddTestCase(c *gin.Context) {
 
 // DeleteTestCase removes a test case
 func DeleteTestCase(c *gin.Context) {
-	id := c.Param("id")
+	id := routeScenarioID(c)
 	sectionID := c.Param("sectionId")
 	tcID := c.Param("tcId")
 
@@ -538,6 +614,9 @@ func DeleteTestCase(c *gin.Context) {
 	scenario, err := getScenario(ctx, id)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "scenario not found"})
+		return
+	}
+	if !ensureScenarioProject(c, scenario) {
 		return
 	}
 
@@ -574,25 +653,39 @@ func DeleteTestCase(c *gin.Context) {
 
 // DeleteScenario deletes a scenario
 func DeleteScenario(c *gin.Context) {
-	id := c.Param("id")
+	id := routeScenarioID(c)
 	if id == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "scenario id is required"})
 		return
 	}
 
 	ctx := c.Request.Context()
+	scenario, err := getScenario(ctx, id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "scenario not found"})
+		return
+	}
+	if !ensureScenarioProject(c, scenario) {
+		return
+	}
 
-	err := database.RedisClient.Del(ctx, fmt.Sprintf("scenario:%s", id)).Err()
+	err = database.RedisClient.Del(ctx, fmt.Sprintf("scenario:%s", id)).Err()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete scenario from redis"})
 		return
 	}
 
 	database.RedisClient.SRem(ctx, "scenarios", id)
+	database.RedisClient.SRem(ctx, fmt.Sprintf("scenarios:project:%s", scenario.ProjectID), id)
+	if scenario.CreatorID != 0 {
+		database.RedisClient.SRem(ctx, fmt.Sprintf("scenarios:user:%d", scenario.CreatorID), id)
+	} else {
+		database.RedisClient.SRem(ctx, "scenarios:legacy", id)
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "scenario deleted successfully",
-		"id":    id,
+		"id":      id,
 	})
 }
 
@@ -615,10 +708,15 @@ func BulkDeleteScenarios(c *gin.Context) {
 	var notFound []string
 	var errors []string
 
+	projectID := routeProjectID(c)
 	for _, id := range req.IDs {
 		// Check if scenario exists
-		_, err := getScenario(ctx, id)
+		scenario, err := getScenario(ctx, id)
 		if err != nil {
+			notFound = append(notFound, id)
+			continue
+		}
+		if projectID != "" && scenario.ProjectID != projectID {
 			notFound = append(notFound, id)
 			continue
 		}
@@ -630,6 +728,12 @@ func BulkDeleteScenarios(c *gin.Context) {
 		}
 
 		database.RedisClient.SRem(ctx, "scenarios", id)
+		database.RedisClient.SRem(ctx, fmt.Sprintf("scenarios:project:%s", scenario.ProjectID), id)
+		if scenario.CreatorID != 0 {
+			database.RedisClient.SRem(ctx, fmt.Sprintf("scenarios:user:%d", scenario.CreatorID), id)
+		} else {
+			database.RedisClient.SRem(ctx, "scenarios:legacy", id)
+		}
 		deletedCount++
 	}
 
@@ -644,7 +748,7 @@ func BulkDeleteScenarios(c *gin.Context) {
 // GenerateTests triggers AI generation. It can take either sheetNames (legacy/fallback)
 // or sectionIds/testCaseIds.
 func GenerateTests(c *gin.Context) {
-	id := c.Param("id")
+	id := routeScenarioID(c)
 	if id == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "scenario id is required"})
 		return
@@ -659,7 +763,7 @@ func GenerateTests(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	
+
 	if len(req.SheetNames) == 0 && len(req.SectionIDs) == 0 && len(req.TestCaseIDs) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "must provide sheetNames, sectionIds, or testCaseIds"})
 		return
@@ -671,10 +775,13 @@ func GenerateTests(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "scenario not found"})
 		return
 	}
+	if !ensureScenarioProject(c, scenario) {
+		return
+	}
 
 	// Resolve the list of target test case IDs based on the request
 	var targetTestCaseIDs []string
-	
+
 	if len(req.TestCaseIDs) > 0 {
 		targetTestCaseIDs = req.TestCaseIDs
 	} else if len(req.SectionIDs) > 0 {
@@ -731,7 +838,7 @@ func GenerateTests(c *gin.Context) {
 	go func(scenario *models.TestScenario, targetIDs []string, gitlabClient interface{}) {
 		bgCtx := context.Background()
 		events := agent.NewGenerationEmitter(bgCtx, id)
-		
+
 		clientObj, _ := client.GetClient(bgCtx, token, nil)
 		if clientObj == nil {
 			clientObj = gitlabClient.(*gitlab.Client)
@@ -886,7 +993,7 @@ func setTestCasesAutomationStatus(ctx context.Context, scenarioID string, target
 
 // RunScenarioTestCase runs a single test case's automation from a scenario.
 func RunScenarioTestCase(c *gin.Context) {
-	scenarioID := c.Param("id")
+	scenarioID := routeScenarioID(c)
 	sectionID := c.Param("sectionId")
 	tcID := c.Param("tcId")
 
@@ -899,6 +1006,9 @@ func RunScenarioTestCase(c *gin.Context) {
 	scenario, err := getScenario(ctx, scenarioID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "scenario not found"})
+		return
+	}
+	if !ensureScenarioProject(c, scenario) {
 		return
 	}
 

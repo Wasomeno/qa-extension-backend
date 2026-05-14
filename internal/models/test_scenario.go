@@ -160,28 +160,37 @@ type ScenarioStats struct {
 
 // TestScenario is the top-level entity stored in Redis
 type TestScenario struct {
-	ID             string         `json:"id"`
-	Title          string         `json:"title"`
-	Description    string         `json:"description,omitempty"`
-	Sections       []TestSection  `json:"sections"`
-	ProjectID      string         `json:"projectId,omitempty"`
-	ProjectName    string         `json:"projectName,omitempty"`
-	Status         ScenarioStatus `json:"status"`
-	Error          string         `json:"error,omitempty"`
-	Stats          *ScenarioStats `json:"stats,omitempty"`
-	AuthConfig     AuthConfig     `json:"authConfig"`
-	CreatorID      int            `json:"creatorId,omitempty"`
-	CreatedAt      time.Time      `json:"createdAt"`
-	UpdatedAt      time.Time      `json:"updatedAt"`
-	CreatedBy      string         `json:"createdBy,omitempty"`
+	ID          string         `json:"id"`
+	Title       string         `json:"title"`
+	Description string         `json:"description,omitempty"`
+	Sections    []TestSection  `json:"sections"`
+	ProjectID   string         `json:"projectId,omitempty"` // public QA project ID
+	ProjectName string         `json:"projectName,omitempty"`
+	IssueRepoID string         `json:"issueRepoId,omitempty"`
+	SpecsRepoID string         `json:"specsRepoId,omitempty"`
+	Status      ScenarioStatus `json:"status"`
+	Error       string         `json:"error,omitempty"`
+	Stats       *ScenarioStats `json:"stats,omitempty"`
+	AuthConfig  AuthConfig     `json:"authConfig"`
+	CreatorID   int            `json:"creatorId,omitempty"`
+	CreatedAt   time.Time      `json:"createdAt"`
+	UpdatedAt   time.Time      `json:"updatedAt"`
+	CreatedBy   string         `json:"createdBy,omitempty"`
 
 	// Internal: parsed XLSX sheets (kept for generation, not exposed in API)
-	Sheets         []TestScenarioSheet `json:"sheets,omitempty"`
+	Sheets []TestScenarioSheet `json:"sheets,omitempty"`
 }
 
 // ─────────────────────────────────────────────
 // Stats computation
 // ─────────────────────────────────────────────
+
+func (s *TestScenario) GitLabSpecsProjectID() string {
+	if s.SpecsRepoID != "" {
+		return s.SpecsRepoID
+	}
+	return s.ProjectID
+}
 
 func (s *TestScenario) ComputeStats() {
 	stats := ScenarioStats{TotalSections: len(s.Sections)}
@@ -228,13 +237,13 @@ type UpdateTestCaseRequest struct {
 }
 
 type CreateTestCaseRequest struct {
-	Title        string       `json:"title"`
-	Description  string       `json:"description,omitempty"`
-	PreCondition string       `json:"preCondition,omitempty"`
-	Steps        []TestStepV2 `json:"steps,omitempty"`
-	Tags         []string     `json:"tags,omitempty"`
-	Priority     Priority     `json:"priority,omitempty"`
-	Type         string       `json:"type,omitempty"`
+	Title        string         `json:"title"`
+	Description  string         `json:"description,omitempty"`
+	PreCondition string         `json:"preCondition,omitempty"`
+	Steps        []TestStepV2   `json:"steps,omitempty"`
+	Tags         []string       `json:"tags,omitempty"`
+	Priority     Priority       `json:"priority,omitempty"`
+	Type         string         `json:"type,omitempty"`
 	Status       TestCaseStatus `json:"status,omitempty"`
 }
 

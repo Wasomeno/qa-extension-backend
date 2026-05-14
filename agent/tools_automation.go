@@ -68,16 +68,16 @@ type SaveAutomationStep struct {
 	SelectorCandidates []string          `json:"selectorCandidates"`
 	XPath              string            `json:"xpath"`
 	XPathCandidates    []string          `json:"xpathCandidates"`
-	
+
 	// API specific fields
-	ApiMethod          string            `json:"apiMethod,omitempty"`
-	ApiEndpoint        string            `json:"apiEndpoint,omitempty"`
-	ApiPayload         string            `json:"apiPayload,omitempty"`
-	ApiHeaders         string            `json:"apiHeaders,omitempty"`
-	
-	Value              string            `json:"value"`
-	AssertionType      string            `json:"assertionType,omitempty"`
-	ExpectedValue      string            `json:"expectedValue,omitempty"`
+	ApiMethod   string `json:"apiMethod,omitempty"`
+	ApiEndpoint string `json:"apiEndpoint,omitempty"`
+	ApiPayload  string `json:"apiPayload,omitempty"`
+	ApiHeaders  string `json:"apiHeaders,omitempty"`
+
+	Value         string `json:"value"`
+	AssertionType string `json:"assertionType,omitempty"`
+	ExpectedValue string `json:"expectedValue,omitempty"`
 }
 
 type ElementHintsInput struct {
@@ -187,17 +187,17 @@ type RouteCandidate struct {
 }
 
 type AnalyzeTestCaseOutput struct {
-	TargetRoutes   []string          `json:"targetRoutes"`
-	ModuleName     string            `json:"moduleName"`
-	ActionTypes    []string          `json:"actionTypes"`
-	Components     []string          `json:"components"`
-	Reasoning      string            `json:"reasoning"`
-	Confidence     float64           `json:"confidence"`
-	Ambiguous      bool              `json:"ambiguous"`
-	Candidates     []RouteCandidate  `json:"candidates,omitempty"`
-	TestCaseName   string            `json:"testCaseName"`
-	PreCondition   string            `json:"preCondition"`
-	Steps          []TestStepSummary `json:"steps"`
+	TargetRoutes []string          `json:"targetRoutes"`
+	ModuleName   string            `json:"moduleName"`
+	ActionTypes  []string          `json:"actionTypes"`
+	Components   []string          `json:"components"`
+	Reasoning    string            `json:"reasoning"`
+	Confidence   float64           `json:"confidence"`
+	Ambiguous    bool              `json:"ambiguous"`
+	Candidates   []RouteCandidate  `json:"candidates,omitempty"`
+	TestCaseName string            `json:"testCaseName"`
+	PreCondition string            `json:"preCondition"`
+	Steps        []TestStepSummary `json:"steps"`
 }
 
 type TestStepSummary struct {
@@ -285,8 +285,8 @@ func analyzeTestCase(ctx tool.Context, input AnalyzeTestCaseInput) (*AnalyzeTest
 		output.Reasoning = "No route could be determined."
 	}
 
-	if scenario.ProjectID != "" {
-		catalog, err := getModuleCatalogFromCache(scenario.ProjectID)
+	if gitLabProjectID := scenario.GitLabSpecsProjectID(); gitLabProjectID != "" {
+		catalog, err := getModuleCatalogFromCache(gitLabProjectID)
 		if err == nil && catalog != nil {
 			candidates := findRouteCandidatesFromCatalog(catalog, testCase, output)
 			if len(candidates) > 1 {
@@ -428,8 +428,8 @@ func fetchSourceFiles(ctx tool.Context, input FetchFilesInput) (*FetchFilesOutpu
 
 	branch := input.Branch
 	if branch == "" && input.ScenarioID != "" {
-		if scenario, err := getScenarioFromRedis(input.ScenarioID); err == nil && scenario.ProjectID != "" {
-			if project, _, err := glClient.Projects.GetProject(scenario.ProjectID, nil); err == nil && project != nil {
+		if scenario, err := getScenarioFromRedis(input.ScenarioID); err == nil && scenario.GitLabSpecsProjectID() != "" {
+			if project, _, err := glClient.Projects.GetProject(scenario.GitLabSpecsProjectID(), nil); err == nil && project != nil {
 				branch = project.DefaultBranch
 			}
 		}
@@ -576,12 +576,12 @@ func extractSelectorsFromFile(filePath, content string) []SelectorInfo {
 			for _, match := range matches {
 				if len(match) > 1 {
 					selectors = append(selectors, SelectorInfo{
-						Type:         selType,
-						Value:        match[1],
-						FilePath:     filePath,
-						LineNumber:   lineNum,
-						ElementType:  elementType,
-						Confidence:   calculateSelectorConfidence(selType, match[1]),
+						Type:        selType,
+						Value:       match[1],
+						FilePath:    filePath,
+						LineNumber:  lineNum,
+						ElementType: elementType,
+						Confidence:  calculateSelectorConfidence(selType, match[1]),
 					})
 				}
 			}
@@ -679,8 +679,8 @@ type BuildAutomationInput struct {
 
 type BuildAutomationOutput struct {
 	Automation *models.GeneratedAutomation `json:"automation"`
-	Warnings  []string                    `json:"warnings"`
-	Issues    []string                    `json:"issues"`
+	Warnings   []string                    `json:"warnings"`
+	Issues     []string                    `json:"issues"`
 }
 
 func buildAutomationSteps(ctx tool.Context, input BuildAutomationInput) (*BuildAutomationOutput, error) {
@@ -1298,7 +1298,7 @@ func RunAgentForTestGeneration(ctx context.Context, input AutomationAgentInput, 
 	// 3. Get files for relevant pages
 	// 4. Extract selectors
 	// 5. Build automations
-	
+
 	// For now, use direct tool calls mimicking what the agent would do
 	output := &GenerateAutomationsOutput{
 		Automations: []models.GeneratedAutomation{},
@@ -1337,8 +1337,8 @@ func RunAgentForTestGeneration(ctx context.Context, input AutomationAgentInput, 
 		glClient, err = client.GetClient(ctx, token, nil)
 		if err != nil {
 			log.Printf("[AutomationAgent] Failed to get GitLab client: %v", err)
-		} else if scenario.ProjectID != "" {
-			if project, _, err := glClient.Projects.GetProject(scenario.ProjectID, nil); err == nil {
+		} else if scenario.GitLabSpecsProjectID() != "" {
+			if project, _, err := glClient.Projects.GetProject(scenario.GitLabSpecsProjectID(), nil); err == nil {
 				branch = project.DefaultBranch
 			}
 		}
@@ -1347,12 +1347,13 @@ func RunAgentForTestGeneration(ctx context.Context, input AutomationAgentInput, 
 		branch = "main"
 	}
 
-	log.Printf("[AutomationAgent] GitLab client: glClient=%v, projectID=%s, branch=%s", glClient != nil, scenario.ProjectID, branch)
+	gitLabProjectID := scenario.GitLabSpecsProjectID()
+	log.Printf("[AutomationAgent] GitLab client: glClient=%v, projectID=%s, branch=%s", glClient != nil, gitLabProjectID, branch)
 
 	// For each test case, let the agent figure out what to fetch
 	// Agent will look at test case name → infer what files are needed
 	for _, tc := range targetCases {
-		automation, warnings, err := agentGenerateSingleAutomation(ctx, glClient, scenario.ProjectID, scenario.ID, branch, tc)
+		automation, warnings, err := agentGenerateSingleAutomation(ctx, glClient, gitLabProjectID, scenario.ID, branch, tc)
 		if err != nil {
 			log.Printf("[AutomationAgent] Failed for %s: %v", tc.ID, err)
 			output.FailedIDs = append(output.FailedIDs, tc.ID)
@@ -1488,11 +1489,11 @@ func agentFetchRelevantFilesFromContext(ctx context.Context, glClient *gitlab.Cl
 
 	// Extract keywords from test case name + step content
 	keywords := extractKeywordsFromName(testCaseName)
-	
+
 	// Add keywords from step context
 	contextKeywords := extractKeywordsFromContext(stepContext)
 	keywords = append(keywords, contextKeywords...)
-	
+
 	// Deduplicate
 	seen := make(map[string]bool)
 	var uniqueKeywords []string
@@ -1503,7 +1504,7 @@ func agentFetchRelevantFilesFromContext(ctx context.Context, glClient *gitlab.Cl
 			uniqueKeywords = append(uniqueKeywords, kw)
 		}
 	}
-	
+
 	log.Printf("[AutomationAgent] Searching for keywords: %v", uniqueKeywords)
 
 	// Search the app directory for matching modules
@@ -1689,7 +1690,7 @@ func extractKeywordsFromName(name string) []string {
 
 	nameLower := strings.ToLower(name)
 	words := strings.Fields(nameLower)
-	
+
 	var keywords []string
 	for _, word := range words {
 		if skipWords[word] {
@@ -1699,7 +1700,7 @@ func extractKeywordsFromName(name string) []string {
 			keywords = append(keywords, word)
 		}
 	}
-	
+
 	// Also try original casing
 	origWords := strings.Fields(name)
 	for _, word := range origWords {
@@ -1741,10 +1742,10 @@ func getAuthConfigFromScenario(tc *models.ParsedTestCase) AuthConfig {
 }
 
 func getGitLabClientFromScenarioProject(ctx context.Context, scenario *models.TestScenario) (*gitlab.Client, error) {
-	if scenario.ProjectID == "" {
-		return nil, fmt.Errorf("no project ID in scenario")
+	if scenario.GitLabSpecsProjectID() == "" {
+		return nil, fmt.Errorf("no GitLab specs repo ID in scenario")
 	}
-	
+
 	// Get token from somewhere - this is a simplified version
 	// In production, you'd get this from the session/token
 	return nil, fmt.Errorf("need to implement token retrieval")
@@ -1757,7 +1758,7 @@ func buildGenerationPrompt(scenario *models.TestScenario, sheetNames []string) s
 	lines = append(lines, "")
 	lines = append(lines, fmt.Sprintf("Scenario: %s", scenario.Title))
 	lines = append(lines, "")
-	
+
 	for _, sheet := range scenario.Sheets {
 		if len(sheetNames) > 0 {
 			found := false
@@ -1771,14 +1772,14 @@ func buildGenerationPrompt(scenario *models.TestScenario, sheetNames []string) s
 				continue
 			}
 		}
-		
+
 		lines = append(lines, fmt.Sprintf("Sheet: %s (%d test cases)", sheet.Name, len(sheet.TestCases)))
 		for _, tc := range sheet.TestCases {
 			lines = append(lines, fmt.Sprintf("  - %s: %s", tc.ID, tc.Name))
 		}
 		lines = append(lines, "")
 	}
-	
+
 	return strings.Join(lines, "\n")
 }
 
@@ -1792,7 +1793,7 @@ func inferRouteFromTestCaseName(name string, glClient *gitlab.Client, projectID,
 	// Extract entity from test case name
 	// e.g., "Navigate to Edit MED02-10" → extract "med"
 	// e.g., "Create Medium" → extract "medium"
-	
+
 	entity := extractEntityFromName(name)
 	if entity == "" {
 		return ""
@@ -1800,7 +1801,7 @@ func inferRouteFromTestCaseName(name string, glClient *gitlab.Client, projectID,
 
 	// Search the repo tree for files containing this entity
 	entityLower := strings.ToLower(entity)
-	
+
 	// Try common routes
 	searchPaths := []string{
 		fmt.Sprintf("app/%s", entityLower),
@@ -1809,7 +1810,7 @@ func inferRouteFromTestCaseName(name string, glClient *gitlab.Client, projectID,
 		fmt.Sprintf("app/%s/list", entityLower),
 		fmt.Sprintf("app/(group)/%s", entityLower),
 	}
-	
+
 	for _, path := range searchPaths {
 		// Check if page.tsx exists at this path
 		pagePath := fmt.Sprintf("%s/page.tsx", path)
@@ -1821,7 +1822,7 @@ func inferRouteFromTestCaseName(name string, glClient *gitlab.Client, projectID,
 			return "/" + route
 		}
 	}
-	
+
 	// Try listing the app directory to find matching module
 	treeNodes, _, err := glClient.Repositories.ListTree(projectID, &gitlab.ListTreeOptions{
 		Path:      gitlab.Ptr("app"),
@@ -1999,7 +2000,7 @@ func generateAutomationsForScenario(ctx tool.Context, input GenerateAutomationsI
 		}
 	}
 	if input.ProjectID == "" {
-		input.ProjectID = scenario.ProjectID
+		input.ProjectID = scenario.GitLabSpecsProjectID()
 	}
 
 	batchSize := 5
@@ -2106,7 +2107,7 @@ func inferRouteFromName(name string) string {
 
 	// Pattern: "Navigate to Edit" → infer which entity and action
 	// Skip action phrases like "navigate to", "go to", "cancel", "edit"
-	
+
 	skipWords := map[string]bool{
 		"navigate": true, "goto": true, "go": true,
 		"cancel": true, "edit": true, "delete": true, "remove": true,
@@ -2118,7 +2119,7 @@ func inferRouteFromName(name string) string {
 	// Remove action words from name to get entity
 	words := strings.Fields(nameLower)
 	var entityWords []string
-	
+
 	for i, word := range words {
 		if skipWords[word] {
 			continue
@@ -2139,7 +2140,7 @@ func inferRouteFromName(name string) string {
 	}
 
 	entity := strings.Join(entityWords, "-")
-	
+
 	// Try to infer action from the original name
 	var action string
 	nameForAction := strings.ToLower(name)
@@ -2165,27 +2166,27 @@ func inferRouteFromTestCaseRoute(route string) string {
 	if route == "" {
 		return ""
 	}
-	
+
 	// Clean the route
 	route = strings.TrimSpace(route)
 	route = strings.TrimPrefix(route, "/")
 	route = strings.TrimSuffix(route, "/")
-	
+
 	if route == "" {
 		return ""
 	}
-	
+
 	// Validate it looks like a real route (has at least one segment)
 	parts := strings.Split(route, "/")
 	if len(parts) < 1 || parts[0] == "" {
 		return ""
 	}
-	
+
 	// Must start with alphanumeric (module name)
 	if matched, _ := regexp.MatchString(`^[a-zA-Z]`, parts[0]); !matched {
 		return ""
 	}
-	
+
 	return "/" + route
 }
 
@@ -2240,7 +2241,7 @@ func normalizeSteps(steps []models.ParsedStep) []models.ParsedStep {
 			normalized = append(normalized, step)
 			continue
 		}
-		
+
 		looksLikeList := false
 		for _, line := range lines {
 			trimmed := strings.TrimSpace(line)
@@ -2249,12 +2250,12 @@ func normalizeSteps(steps []models.ParsedStep) []models.ParsedStep {
 				break
 			}
 		}
-		
+
 		if !looksLikeList {
 			normalized = append(normalized, step)
 			continue
 		}
-		
+
 		for i, line := range lines {
 			trimmed := strings.TrimSpace(line)
 			if trimmed == "" {
@@ -2271,8 +2272,12 @@ func normalizeSteps(steps []models.ParsedStep) []models.ParsedStep {
 				trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "-"))
 			}
 			newStep := models.ParsedStep{Action: trimmed}
-			if i == 0 { newStep.InputData = step.InputData }
-			if i == len(lines)-1 { newStep.ExpectedResult = step.ExpectedResult }
+			if i == 0 {
+				newStep.InputData = step.InputData
+			}
+			if i == len(lines)-1 {
+				newStep.ExpectedResult = step.ExpectedResult
+			}
 			normalized = append(normalized, newStep)
 		}
 	}
