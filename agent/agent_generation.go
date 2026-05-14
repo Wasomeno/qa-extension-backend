@@ -29,7 +29,7 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input AutomationAgent
 	}
 
 	// Build the prompt with all test case data
-	prompt := buildAgentGenerationPrompt(scenario, input.ScenarioID, input.TestCaseIDs)
+	prompt := buildAgentGenerationPrompt(scenario, input.ScenarioID, input.RepoID, input.TestCaseIDs)
 
 	// Create a unique session ID for this generation task
 	scenarioShortID := input.ScenarioID
@@ -210,8 +210,11 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input AutomationAgent
 }
 
 // buildAgentGenerationPrompt creates the prompt for the agent to generate automations
-func buildAgentGenerationPrompt(scenario *models.TestScenario, scenarioID string, targetTestCaseIDs []string) string {
+func buildAgentGenerationPrompt(scenario *models.TestScenario, scenarioID string, repoID string, targetTestCaseIDs []string) string {
 	var prompt strings.Builder
+	if repoID == "" {
+		repoID = scenario.GitLabSpecsProjectID()
+	}
 
 	prompt.WriteString(`You are tasked with generating automation tests from a test scenario. 
 
@@ -242,6 +245,7 @@ For EACH test case in the scenario below:
 	prompt.WriteString(fmt.Sprintf("- Scenario ID: %s\n", scenarioID))
 	prompt.WriteString(fmt.Sprintf("- Project ID: %s\n", scenario.ProjectID))
 	prompt.WriteString(fmt.Sprintf("- GitLab Specs Repo ID: %s\n", scenario.GitLabSpecsProjectID()))
+	prompt.WriteString(fmt.Sprintf("- GitLab Frontend Repo ID: %s\n", repoID))
 	prompt.WriteString(fmt.Sprintf("- Creator ID: %d\n", scenario.CreatorID))
 	prompt.WriteString(fmt.Sprintf("- Base URL: %s\n", scenario.AuthConfig.BaseURL))
 	prompt.WriteString(fmt.Sprintf("- Login URL: %s\n", scenario.AuthConfig.LoginURL))
@@ -313,9 +317,9 @@ For EACH test case in the scenario below:
 
 	prompt.WriteString(`
 ## Instructions
-1. First, use listGitLabRepositoryTree with the GitLab Specs Repo ID above to explore the project structure
+1. First, use listGitLabRepositoryTree with the GitLab Frontend Repo ID above to explore the project structure
 2. For each test case, identify which pages/components are relevant
-3. Use getGitLabFileContent with the GitLab Specs Repo ID above to fetch the source files
+3. Use getGitLabFileContent with the GitLab Frontend Repo ID above to fetch the source files
 4. Extract Playwright-compatible selectors (CSS and XPath) from the source code
 5. Use save_automation_test to save each generated automation
 

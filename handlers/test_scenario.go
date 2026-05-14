@@ -4,8 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
+	"os"
+	"path/filepath"
 	"qa-extension-backend/agent"
 	"qa-extension-backend/client"
 	"qa-extension-backend/database"
@@ -935,6 +939,486 @@ func GenerateTests(c *gin.Context) {
 		events.Done("Successfully generated %d automation test%s for '%s'",
 			len(allAutomations), pluralize(len(allAutomations)), projectName)
 	}(&scenario, targetTestCaseIDs, gitlabClient)
+}
+
+// GenerateTestCaseAutomations creates automation artifacts for selected test cases.
+func GenerateTestCaseAutomations(c *gin.Context) {
+	scenarioID := routeScenarioID(c)
+	if scenarioID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "scenario id is required"})
+		return
+	}
+
+	var req models.GenerateAutomationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if len(req.TestCaseIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "testCaseIds is required"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	scenario, err := getScenario(ctx, scenarioID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "scenario not found"})
+		return
+	}
+	if !ensureScenarioProject(c, scenario) {
+		return
+	}
+
+	switch req.Category {
+	case models.AutomationCategoryAPI:
+		generateAPIAutomationPrompts(c, &scenario, req)
+	case models.AutomationCategoryE2E:
+		generateE2EAutomations(c, &scenario, req)
+	case models.AutomationCategoryManual:
+		markManualAutomation(c, &scenario, req.TestCaseIDs)
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "category must be api, e2e, or manual"})
+	}
+}
+
+func generateAPIAutomationPrompts(c *gin.Context, scenario *models.TestScenario, req models.GenerateAutomationRequest) {
+	if strings.TrimSpace(req.BackendRepoID) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "backendRepoId is required for api automation"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	backendRepoName := ""
+	if tokenValue, exists := c.Get("token"); exists {
+		if token, ok := tokenValue.(*oauth2.Token); ok {
+			if glClient, err := client.GetClient(ctx, token, nil); err == nil {
+				if project, _, err := glClient.Projects.GetProject(req.BackendRepoID, nil); err == nil && project != nil {
+					backendRepoName = project.PathWithNamespace
+				}
+			}
+		}
+	}
+
+	targets := make(map[string]bool, len(req.TestCaseIDs))
+	for _, id := range req.TestCaseIDs {
+		targets[id] = true
+	}
+	prompts := make([]gin.H, 0, len(req.TestCaseIDs))
+	found := 0
+	now := time.Now().Format(time.RFC3339)
+	for si := range scenario.Sections {
+		for ti := range scenario.Sections[si].TestCases {
+			tc := &scenario.Sections[si].TestCases[ti]
+			if !targets[tc.ID] {
+				continue
+			}
+			found++
+			prompt := services.BuildAPITestPrompt(*scenario, *tc, req.BackendRepoID, backendRepoName)
+			tc.AutomationType = models.AutomationCategoryAPI
+			tc.AutomationTest = &models.AutomationTest{
+				ID:        fmt.Sprintf("api-prompt-%s", tc.ID),
+				Name:      fmt.Sprintf("%s API test prompt", tc.Code),
+				Category:  models.AutomationCategoryAPI,
+				Status:    models.AutomationStatusIdle,
+				RepoID:    req.BackendRepoID,
+				Prompt:    prompt,
+				LastRunAt: now,
+			}
+			prompts = append(prompts, gin.H{"testCaseId": tc.ID, "prompt": prompt})
+		}
+	}
+	if found == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no matching test cases found"})
+		return
+	}
+	scenario.UpdatedAt = time.Now()
+	scenario.ComputeStats()
+	if err := saveScenario(ctx, scenario); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save scenario"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"category": req.Category, "backendRepoId": req.BackendRepoID, "prompts": prompts})
+}
+
+func markManualAutomation(c *gin.Context, scenario *models.TestScenario, testCaseIDs []string) {
+	targets := make(map[string]bool, len(testCaseIDs))
+	for _, id := range testCaseIDs {
+		targets[id] = true
+	}
+	found := 0
+	for si := range scenario.Sections {
+		for ti := range scenario.Sections[si].TestCases {
+			tc := &scenario.Sections[si].TestCases[ti]
+			if !targets[tc.ID] {
+				continue
+			}
+			found++
+			tc.AutomationType = models.AutomationCategoryManual
+			tc.AutomationTest = nil
+		}
+	}
+	if found == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no matching test cases found"})
+		return
+	}
+	scenario.UpdatedAt = time.Now()
+	scenario.ComputeStats()
+	if err := saveScenario(c.Request.Context(), scenario); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save scenario"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"category": models.AutomationCategoryManual, "updated": found})
+}
+
+func generateE2EAutomations(c *gin.Context, scenario *models.TestScenario, req models.GenerateAutomationRequest) {
+	if strings.TrimSpace(req.FrontendRepoID) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "frontendRepoId is required for e2e automation"})
+		return
+	}
+
+	targetIDs := filterExistingTestCaseIDs(scenario, req.TestCaseIDs)
+	if len(targetIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no matching test cases found"})
+		return
+	}
+
+	token, ok := c.MustGet("token").(*oauth2.Token)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	jobID := uuid.NewString()
+	scenario.Status = models.ScenarioStatusGenerating
+	scenario.UpdatedAt = time.Now()
+	setAutomationCategory(scenario, targetIDs, models.AutomationCategoryE2E, req.FrontendRepoID, models.AutomationStatusRunning)
+	if err := saveScenario(c.Request.Context(), scenario); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save scenario"})
+		return
+	}
+
+	c.JSON(http.StatusAccepted, gin.H{"message": "e2e generation started", "jobId": jobID, "id": scenario.ID, "testCaseIds": targetIDs})
+
+	go func(scenarioID string, targetIDs []string, frontendRepoID string, token *oauth2.Token) {
+		bgCtx := context.Background()
+		events := agent.NewGenerationEmitter(bgCtx, scenarioID)
+		events.SetTotalSteps(len(targetIDs))
+		events.Start("Generating %d e2e automation test%s...", len(targetIDs), pluralize(len(targetIDs)))
+
+		var allAutomations []models.GeneratedAutomation
+		var allFailedIDs []string
+		batchSize := 5
+		for i := 0; i < len(targetIDs); i += batchSize {
+			end := i + batchSize
+			if end > len(targetIDs) {
+				end = len(targetIDs)
+			}
+			batchIDs := targetIDs[i:end]
+			events.Progressf("Generating e2e automations for batch %d to %d (of %d)...", i+1, end, len(targetIDs))
+			result, err := agent.RunAgentForTestGenerationWithLLM(bgCtx, agent.AutomationAgentInput{
+				ScenarioID:  scenarioID,
+				RepoID:      frontendRepoID,
+				TestCaseIDs: batchIDs,
+			}, token)
+			if err != nil {
+				log.Printf("[E2EGeneration] batch failed: %v", err)
+				allFailedIDs = append(allFailedIDs, batchIDs...)
+				continue
+			}
+			if result != nil {
+				allAutomations = append(allAutomations, result.Automations...)
+				allFailedIDs = append(allFailedIDs, result.FailedIDs...)
+			}
+		}
+
+		s, err := getScenario(bgCtx, scenarioID)
+		if err != nil {
+			log.Printf("[E2EGeneration] failed to reload scenario: %v", err)
+			return
+		}
+		for _, auto := range allAutomations {
+			services.LinkAutomation(&s, &auto)
+		}
+		setGeneratedE2ERepo(&s, targetIDs, frontendRepoID)
+		markMissingE2EFailed(&s, allFailedIDs)
+		if len(allAutomations) == 0 && len(allFailedIDs) == len(targetIDs) {
+			s.Status = models.ScenarioStatusFailed
+			s.Error = "failed to generate e2e tests"
+			events.Error(s.Error)
+		} else {
+			s.Status = models.ScenarioStatusReady
+			s.Error = ""
+			events.Done("Successfully generated %d e2e automation test%s", len(allAutomations), pluralize(len(allAutomations)))
+		}
+		s.ComputeStats()
+		_ = saveScenario(bgCtx, &s)
+	}(scenario.ID, targetIDs, req.FrontendRepoID, token)
+}
+
+func filterExistingTestCaseIDs(scenario *models.TestScenario, requested []string) []string {
+	requestedSet := make(map[string]bool, len(requested))
+	for _, id := range requested {
+		requestedSet[id] = true
+	}
+	var ids []string
+	for _, section := range scenario.Sections {
+		for _, tc := range section.TestCases {
+			if requestedSet[tc.ID] {
+				ids = append(ids, tc.ID)
+			}
+		}
+	}
+	return ids
+}
+
+func setAutomationCategory(scenario *models.TestScenario, targetIDs []string, category models.AutomationCategory, repoID string, status models.AutomationRunStatus) {
+	idMap := make(map[string]bool, len(targetIDs))
+	for _, id := range targetIDs {
+		idMap[id] = true
+	}
+	for si := range scenario.Sections {
+		for ti := range scenario.Sections[si].TestCases {
+			tc := &scenario.Sections[si].TestCases[ti]
+			if !idMap[tc.ID] {
+				continue
+			}
+			tc.AutomationType = category
+			tc.AutomationTest = &models.AutomationTest{
+				ID:       fmt.Sprintf("auto-pending-%s-%d", tc.ID, time.Now().UnixNano()),
+				Name:     fmt.Sprintf("%s_%s", tc.Code, strings.ToUpper(string(category))),
+				Category: category,
+				Status:   status,
+				RepoID:   repoID,
+			}
+		}
+	}
+	scenario.ComputeStats()
+}
+
+func markMissingE2EFailed(scenario *models.TestScenario, failedIDs []string) {
+	failed := make(map[string]bool, len(failedIDs))
+	for _, id := range failedIDs {
+		failed[id] = true
+	}
+	for si := range scenario.Sections {
+		for ti := range scenario.Sections[si].TestCases {
+			tc := &scenario.Sections[si].TestCases[ti]
+			if tc.AutomationType != models.AutomationCategoryE2E || tc.AutomationTest == nil {
+				continue
+			}
+			if tc.AutomationTest.Status == models.AutomationStatusRunning || failed[tc.ID] {
+				tc.AutomationTest.Status = models.AutomationStatusFail
+				tc.AutomationTest.ErrorMessage = "Failed to generate e2e automation for this test case."
+			}
+		}
+	}
+}
+
+func setGeneratedE2ERepo(scenario *models.TestScenario, targetIDs []string, frontendRepoID string) {
+	targets := make(map[string]bool, len(targetIDs))
+	for _, id := range targetIDs {
+		targets[id] = true
+	}
+	for si := range scenario.Sections {
+		for ti := range scenario.Sections[si].TestCases {
+			tc := &scenario.Sections[si].TestCases[ti]
+			if !targets[tc.ID] || tc.AutomationTest == nil {
+				continue
+			}
+			tc.AutomationType = models.AutomationCategoryE2E
+			tc.AutomationTest.Category = models.AutomationCategoryE2E
+			tc.AutomationTest.RepoID = frontendRepoID
+		}
+	}
+}
+
+// CreateManualTestResult stores a manual execution result and uploads evidence to R2.
+func CreateManualTestResult(c *gin.Context) {
+	scenarioID := routeScenarioID(c)
+	tcID := c.Param("tcId")
+	if scenarioID == "" || tcID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "scenario id and test case id are required"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	scenario, err := getScenario(ctx, scenarioID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "scenario not found"})
+		return
+	}
+	if !ensureScenarioProject(c, scenario) {
+		return
+	}
+
+	if err := c.Request.ParseMultipartForm(64 << 20); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to parse multipart form"})
+		return
+	}
+	status := models.ManualTestStatus(strings.TrimSpace(c.Request.FormValue("status")))
+	description := strings.TrimSpace(c.Request.FormValue("description"))
+	if status != models.ManualTestStatusPassed && status != models.ManualTestStatusFailed {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "status must be passed or failed"})
+		return
+	}
+	if description == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "description is required"})
+		return
+	}
+
+	sectionID, ok := ensureManualTestCase(&scenario, tcID)
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "test case not found"})
+		return
+	}
+
+	r2, err := client.NewR2Client()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "R2 storage is not configured"})
+		return
+	}
+
+	files := c.Request.MultipartForm.File["evidence"]
+	files = append(files, c.Request.MultipartForm.File["evidence[]"]...)
+	if len(files) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "at least one evidence file is required"})
+		return
+	}
+
+	resultID := uuid.NewString()
+	evidence := make([]models.ManualEvidenceFile, 0, len(files))
+	for _, header := range files {
+		url, err := uploadManualEvidence(ctx, r2, scenario.ProjectID, scenarioID, tcID, resultID, header.Filename, header)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to upload evidence: %v", err)})
+			return
+		}
+		evidence = append(evidence, models.ManualEvidenceFile{
+			Name:        header.Filename,
+			URL:         url,
+			ContentType: header.Header.Get("Content-Type"),
+			Size:        header.Size,
+			UploadedAt:  time.Now(),
+		})
+	}
+
+	testerID, _ := identity.GetCurrentUserID(c)
+	now := time.Now()
+	result := models.ManualTestResult{
+		ID:          resultID,
+		ProjectID:   scenario.ProjectID,
+		ScenarioID:  scenarioID,
+		SectionID:   sectionID,
+		TestCaseID:  tcID,
+		Status:      status,
+		Description: description,
+		Evidence:    evidence,
+		TesterID:    testerID,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if err := saveManualTestResult(ctx, result); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save manual test result"})
+		return
+	}
+	scenario.ComputeStats()
+	_ = saveScenario(ctx, &scenario)
+	c.JSON(http.StatusCreated, result)
+}
+
+func ListManualTestResults(c *gin.Context) {
+	scenarioID := routeScenarioID(c)
+	tcID := c.Param("tcId")
+	if scenarioID == "" || tcID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "scenario id and test case id are required"})
+		return
+	}
+	scenario, err := getScenario(c.Request.Context(), scenarioID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "scenario not found"})
+		return
+	}
+	if !ensureScenarioProject(c, scenario) {
+		return
+	}
+
+	ids, err := database.RedisClient.SMembers(c.Request.Context(), fmt.Sprintf("manual_test_results:scenario:%s:test_case:%s", scenarioID, tcID)).Result()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list manual test results"})
+		return
+	}
+	results := make([]models.ManualTestResult, 0, len(ids))
+	for _, id := range ids {
+		val, err := database.RedisClient.Get(c.Request.Context(), fmt.Sprintf("manual_test_result:%s", id)).Result()
+		if err != nil {
+			continue
+		}
+		var result models.ManualTestResult
+		if err := json.Unmarshal([]byte(val), &result); err == nil {
+			results = append(results, result)
+		}
+	}
+	sort.Slice(results, func(i, j int) bool { return results[i].CreatedAt.After(results[j].CreatedAt) })
+	c.JSON(http.StatusOK, gin.H{"manualResults": results})
+}
+
+func ensureManualTestCase(scenario *models.TestScenario, tcID string) (string, bool) {
+	for si := range scenario.Sections {
+		for ti := range scenario.Sections[si].TestCases {
+			if scenario.Sections[si].TestCases[ti].ID != tcID {
+				continue
+			}
+			tc := &scenario.Sections[si].TestCases[ti]
+			tc.AutomationType = models.AutomationCategoryManual
+			tc.AutomationTest = nil
+			return scenario.Sections[si].ID, true
+		}
+	}
+	return "", false
+}
+
+func uploadManualEvidence(ctx context.Context, r2 *client.R2Client, projectID string, scenarioID string, tcID string, resultID string, name string, header *multipart.FileHeader) (string, error) {
+	file, err := header.Open()
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	tmp, err := os.CreateTemp("", "manual-evidence-*")
+	if err != nil {
+		return "", err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := io.Copy(tmp, file); err != nil {
+		_ = tmp.Close()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+
+	cleanName := strings.ReplaceAll(filepath.Base(name), " ", "_")
+	key := fmt.Sprintf("manual-evidence/%s/%s/%s/%s/%s", projectID, scenarioID, tcID, resultID, cleanName)
+	contentType := header.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	return r2.UploadFile(ctx, tmpPath, key, contentType)
+}
+
+func saveManualTestResult(ctx context.Context, result models.ManualTestResult) error {
+	data, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	key := fmt.Sprintf("manual_test_result:%s", result.ID)
+	if err := database.RedisClient.Set(ctx, key, data, 0).Err(); err != nil {
+		return err
+	}
+	database.RedisClient.SAdd(ctx, fmt.Sprintf("manual_test_results:scenario:%s:test_case:%s", result.ScenarioID, result.TestCaseID), result.ID)
+	database.RedisClient.SAdd(ctx, fmt.Sprintf("manual_test_results:project:%s", result.ProjectID), result.ID)
+	return nil
 }
 
 // ─────────────────────────────────────────────

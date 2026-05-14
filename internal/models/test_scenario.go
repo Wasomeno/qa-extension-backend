@@ -87,6 +87,14 @@ const (
 	AutomationStatusFail    AutomationRunStatus = "fail"
 )
 
+type AutomationCategory string
+
+const (
+	AutomationCategoryAPI    AutomationCategory = "api"
+	AutomationCategoryE2E    AutomationCategory = "e2e"
+	AutomationCategoryManual AutomationCategory = "manual"
+)
+
 // ─────────────────────────────────────────────
 // Core domain types
 // ─────────────────────────────────────────────
@@ -97,8 +105,11 @@ const (
 type AutomationTest struct {
 	ID              string              `json:"id"`
 	Name            string              `json:"name"`
+	Category        AutomationCategory  `json:"category,omitempty"`
 	Framework       string              `json:"framework,omitempty"` // nextjs or vite
 	Status          AutomationRunStatus `json:"status"`
+	RepoID          string              `json:"repoId,omitempty"`
+	Prompt          string              `json:"prompt,omitempty"`
 	LastRunAt       string              `json:"lastRunAt,omitempty"`
 	RunDurationMs   int64               `json:"runDurationMs,omitempty"`
 	Steps           []RecordingStep     `json:"steps,omitempty"`
@@ -121,21 +132,22 @@ type TestStepV2 struct {
 
 // TestCase is a single test case
 type TestCase struct {
-	ID             string          `json:"id"`
-	Order          int             `json:"order"`
-	Code           string          `json:"code"`
-	Title          string          `json:"title"`
-	Description    string          `json:"description,omitempty"`
-	PreCondition   string          `json:"preCondition,omitempty"`
-	Steps          []TestStepV2    `json:"steps"`
-	Tags           []string        `json:"tags"`
-	Priority       Priority        `json:"priority"`
-	Type           string          `json:"type"`
-	Status         TestCaseStatus  `json:"status"`
-	AutomationTest *AutomationTest `json:"automationTest,omitempty"`
-	Note           string          `json:"note,omitempty"`
-	CreatedAt      string          `json:"createdAt"`
-	UpdatedAt      string          `json:"updatedAt"`
+	ID             string             `json:"id"`
+	Order          int                `json:"order"`
+	Code           string             `json:"code"`
+	Title          string             `json:"title"`
+	Description    string             `json:"description,omitempty"`
+	PreCondition   string             `json:"preCondition,omitempty"`
+	Steps          []TestStepV2       `json:"steps"`
+	Tags           []string           `json:"tags"`
+	Priority       Priority           `json:"priority"`
+	Type           string             `json:"type"`
+	Status         TestCaseStatus     `json:"status"`
+	AutomationType AutomationCategory `json:"automationType,omitempty"`
+	AutomationTest *AutomationTest    `json:"automationTest,omitempty"`
+	Note           string             `json:"note,omitempty"`
+	CreatedAt      string             `json:"createdAt"`
+	UpdatedAt      string             `json:"updatedAt"`
 }
 
 // TestSection groups test cases by functional area
@@ -168,6 +180,9 @@ type TestScenario struct {
 	ProjectName string         `json:"projectName,omitempty"`
 	IssueRepoID string         `json:"issueRepoId,omitempty"`
 	SpecsRepoID string         `json:"specsRepoId,omitempty"`
+	SourceType  string         `json:"sourceType,omitempty"`
+	SourcePath  string         `json:"sourcePath,omitempty"`
+	SourceSHA   string         `json:"sourceSha,omitempty"`
 	Status      ScenarioStatus `json:"status"`
 	Error       string         `json:"error,omitempty"`
 	Stats       *ScenarioStats `json:"stats,omitempty"`
@@ -177,8 +192,37 @@ type TestScenario struct {
 	UpdatedAt   time.Time      `json:"updatedAt"`
 	CreatedBy   string         `json:"createdBy,omitempty"`
 
-	// Internal: parsed XLSX sheets (kept for generation, not exposed in API)
+	// Internal: legacy parsed XLSX sheets (not used for Markdown-backed scenarios)
 	Sheets []TestScenarioSheet `json:"sheets,omitempty"`
+}
+
+type ManualTestStatus string
+
+const (
+	ManualTestStatusPassed ManualTestStatus = "passed"
+	ManualTestStatusFailed ManualTestStatus = "failed"
+)
+
+type ManualEvidenceFile struct {
+	Name        string    `json:"name"`
+	URL         string    `json:"url"`
+	ContentType string    `json:"contentType,omitempty"`
+	Size        int64     `json:"size,omitempty"`
+	UploadedAt  time.Time `json:"uploadedAt"`
+}
+
+type ManualTestResult struct {
+	ID          string               `json:"id"`
+	ProjectID   string               `json:"projectId"`
+	ScenarioID  string               `json:"scenarioId"`
+	SectionID   string               `json:"sectionId,omitempty"`
+	TestCaseID  string               `json:"testCaseId"`
+	Status      ManualTestStatus     `json:"status"`
+	Description string               `json:"description"`
+	Evidence    []ManualEvidenceFile `json:"evidence"`
+	TesterID    int                  `json:"testerId"`
+	CreatedAt   time.Time            `json:"createdAt"`
+	UpdatedAt   time.Time            `json:"updatedAt"`
 }
 
 // ─────────────────────────────────────────────
@@ -257,6 +301,13 @@ type GenerateTestCaseRequest struct {
 
 type GenerateSectionRequest struct {
 	SectionIDs []string `json:"sectionIds"`
+}
+
+type GenerateAutomationRequest struct {
+	Category       AutomationCategory `json:"category" binding:"required"`
+	TestCaseIDs    []string           `json:"testCaseIds" binding:"required"`
+	BackendRepoID  string             `json:"backendRepoId,omitempty"`
+	FrontendRepoID string             `json:"frontendRepoId,omitempty"`
 }
 
 // ─────────────────────────────────────────────

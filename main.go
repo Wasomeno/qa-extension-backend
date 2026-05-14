@@ -74,12 +74,10 @@ func main() {
 		protected.DELETE("/recordings/:id", handlers.DeleteRecording)
 		protected.POST("/recordings/bulk-delete", handlers.BulkDeleteRecordings)
 
-		protected.POST("/test-scenarios/upload", handlers.UploadScenario)
 		protected.GET("/test-scenarios", handlers.ListScenarios)
 		protected.GET("/test-scenarios/:id", handlers.GetScenario)
 		protected.PATCH("/test-scenarios/:id", handlers.UpdateScenario)
 		protected.DELETE("/test-scenarios/:id", handlers.DeleteScenario)
-		protected.POST("/test-scenarios/:id/generate", handlers.GenerateTests)
 		protected.GET("/test-scenarios/:id/stream", handlers.StreamEvents)
 		protected.POST("/test-scenarios/bulk-delete", handlers.BulkDeleteScenarios)
 
@@ -93,12 +91,12 @@ func main() {
 		protected.POST("/projects/:id/recordings/bulk-delete", handlers.BulkDeleteRecordings)
 		protected.POST("/projects/:id/recordings/:recording_id/run", handlers.RunRecording)
 
-		protected.POST("/projects/:id/test-scenarios/upload", handlers.UploadScenario)
+		protected.POST("/projects/:id/test-scenarios/sync", routes.SyncAppProjectTestScenarios)
 		protected.GET("/projects/:id/test-scenarios", handlers.ListScenarios)
 		protected.GET("/projects/:id/test-scenarios/:scenario_id", handlers.GetScenario)
 		protected.PATCH("/projects/:id/test-scenarios/:scenario_id", handlers.UpdateScenario)
 		protected.DELETE("/projects/:id/test-scenarios/:scenario_id", handlers.DeleteScenario)
-		protected.POST("/projects/:id/test-scenarios/:scenario_id/generate", handlers.GenerateTests)
+		protected.POST("/projects/:id/test-scenarios/:scenario_id/automations", handlers.GenerateTestCaseAutomations)
 		protected.GET("/projects/:id/test-scenarios/:scenario_id/stream", handlers.StreamEvents)
 		protected.POST("/projects/:id/test-scenarios/bulk-delete", handlers.BulkDeleteScenarios)
 
@@ -111,6 +109,8 @@ func main() {
 		protected.PATCH("/projects/:id/test-scenarios/:scenario_id/sections/:sectionId/test-cases/reorder", handlers.ReorderTestCases)
 		protected.PATCH("/projects/:id/test-scenarios/:scenario_id/sections/:sectionId/test-cases/:tcId", handlers.UpdateTestCase)
 		protected.POST("/projects/:id/test-scenarios/:scenario_id/sections/:sectionId/test-cases/:tcId/run", handlers.RunScenarioTestCase)
+		protected.GET("/projects/:id/test-scenarios/:scenario_id/test-cases/:tcId/manual-results", handlers.ListManualTestResults)
+		protected.POST("/projects/:id/test-scenarios/:scenario_id/test-cases/:tcId/manual-results", handlers.CreateManualTestResult)
 
 		protected.POST("/recordings/:id/run", handlers.RunRecording)
 

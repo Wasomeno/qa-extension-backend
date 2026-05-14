@@ -192,11 +192,14 @@ func LinkAutomation(scenario *models.TestScenario, auto *models.GeneratedAutomat
 				tc := &scenario.Sections[i].TestCases[j]
 				if tc.ID == auto.TestCaseID || strings.HasPrefix(auto.TestCaseID, tc.ID) || strings.Contains(auto.TestCaseID, tc.ID) || strings.Contains(tc.ID, auto.TestCaseID) {
 					tc.AutomationTest = &models.AutomationTest{
-						ID:     fmt.Sprintf("auto-%s", auto.ID),
-						Name:   auto.Name,
-						Status: models.AutomationStatusIdle,
-						Steps:  auto.Steps,
+						ID:        fmt.Sprintf("auto-%s", auto.ID),
+						Name:      auto.Name,
+						Category:  models.AutomationCategoryE2E,
+						Framework: auto.Framework,
+						Status:    models.AutomationStatusIdle,
+						Steps:     auto.Steps,
 					}
+					tc.AutomationType = models.AutomationCategoryE2E
 					return true
 				}
 			}
@@ -216,11 +219,14 @@ func LinkAutomation(scenario *models.TestScenario, auto *models.GeneratedAutomat
 			if strings.Contains(autoLower, codeLower) ||
 				strings.Contains(autoLower, strings.ReplaceAll(tcLower, " ", "_")) {
 				tc.AutomationTest = &models.AutomationTest{
-					ID:     fmt.Sprintf("auto-%s", auto.ID),
-					Name:   auto.Name,
-					Status: models.AutomationStatusIdle,
-					Steps:  auto.Steps,
+					ID:        fmt.Sprintf("auto-%s", auto.ID),
+					Name:      auto.Name,
+					Category:  models.AutomationCategoryE2E,
+					Framework: auto.Framework,
+					Status:    models.AutomationStatusIdle,
+					Steps:     auto.Steps,
 				}
+				tc.AutomationType = models.AutomationCategoryE2E
 				return true
 			}
 		}
@@ -231,11 +237,14 @@ func LinkAutomation(scenario *models.TestScenario, auto *models.GeneratedAutomat
 			tc := &scenario.Sections[i].TestCases[j]
 			if tc.AutomationTest == nil || len(tc.AutomationTest.Steps) == 0 {
 				tc.AutomationTest = &models.AutomationTest{
-					ID:     fmt.Sprintf("auto-%s", auto.ID),
-					Name:   auto.Name,
-					Status: models.AutomationStatusIdle,
-					Steps:  auto.Steps,
+					ID:        fmt.Sprintf("auto-%s", auto.ID),
+					Name:      auto.Name,
+					Category:  models.AutomationCategoryE2E,
+					Framework: auto.Framework,
+					Status:    models.AutomationStatusIdle,
+					Steps:     auto.Steps,
 				}
+				tc.AutomationType = models.AutomationCategoryE2E
 				return true
 			}
 		}
