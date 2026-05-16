@@ -448,6 +448,118 @@ func UpdateTestCase(c *gin.Context) {
 	c.JSON(http.StatusOK, scenario)
 }
 
+// UpdateTestCaseAutomationCategory updates only a test case's automation category.
+// The request body accepts either {"category":"api|e2e|manual"} or
+// {"automationType":"api|e2e|manual"}. Send null or an empty string to clear it.
+func UpdateTestCaseAutomationCategory(c *gin.Context) {
+	id := routeScenarioID(c)
+	sectionID := c.Param("sectionId")
+	tcID := c.Param("tcId")
+
+	if id == "" || tcID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "scenario id and test case id are required"})
+		return
+	}
+
+	var payload map[string]json.RawMessage
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	rawCategory, ok := payload["category"]
+	if !ok {
+		rawCategory, ok = payload["automationType"]
+	}
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "category is required"})
+		return
+	}
+
+	category, err := parseNullableAutomationCategory(rawCategory)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx := c.Request.Context()
+	scenario, err := getScenario(ctx, id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "scenario not found"})
+		return
+	}
+	if !ensureScenarioProject(c, scenario) {
+		return
+	}
+
+	var updatedTestCase *models.TestCase
+	for i := range scenario.Sections {
+		if sectionID != "" && scenario.Sections[i].ID != sectionID {
+			continue
+		}
+		for j := range scenario.Sections[i].TestCases {
+			if scenario.Sections[i].TestCases[j].ID != tcID {
+				continue
+			}
+
+			tc := &scenario.Sections[i].TestCases[j]
+			tc.AutomationType = category
+			if tc.AutomationTest != nil {
+				if category == nil {
+					tc.AutomationTest.Category = ""
+				} else {
+					tc.AutomationTest.Category = *category
+				}
+			}
+			tc.UpdatedAt = time.Now().Format(time.RFC3339)
+			updatedTestCase = tc
+			break
+		}
+		if updatedTestCase != nil {
+			break
+		}
+	}
+
+	if updatedTestCase == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "test case not found"})
+		return
+	}
+
+	scenario.UpdatedAt = time.Now()
+	scenario.ComputeStats()
+	if err := saveScenario(ctx, &scenario); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save scenario"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"testCase": updatedTestCase})
+}
+
+func parseNullableAutomationCategory(raw json.RawMessage) (*models.AutomationCategory, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "null" || trimmed == `""` {
+		return nil, nil
+	}
+
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, fmt.Errorf("category must be api, e2e, manual, null, or an empty string")
+	}
+
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return nil, nil
+	}
+
+	category := models.AutomationCategory(value)
+	switch category {
+	case models.AutomationCategoryAPI, models.AutomationCategoryE2E, models.AutomationCategoryManual:
+		return models.AutomationCategoryPtr(category), nil
+	default:
+		return nil, fmt.Errorf("category must be api, e2e, manual, null, or an empty string")
+	}
+}
+
 // ReorderTestCases updates the order of test cases in a section
 func ReorderTestCases(c *gin.Context) {
 	id := routeScenarioID(c)

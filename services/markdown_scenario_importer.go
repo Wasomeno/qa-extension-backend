@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -48,8 +49,11 @@ func SyncMarkdownTestScenarios(ctx context.Context, glClient *gitlab.Client, pro
 	for {
 		pageNodes, resp, err := glClient.Repositories.ListTree(specsRepoID, listOpts)
 		if err != nil {
-			// A project without docs/test-scenarios is valid and simply has no scenarios.
-			return []models.TestScenario{}, nil
+			if resp != nil && resp.StatusCode == http.StatusNotFound {
+				// A project without docs/test-scenarios is valid and simply has no scenarios.
+				return []models.TestScenario{}, nil
+			}
+			return nil, fmt.Errorf("failed to list %s in specs repo %s: %w", defaultTestScenarioDir, specsRepoID, err)
 		}
 		nodes = append(nodes, pageNodes...)
 		if resp == nil || resp.NextPage == 0 {
