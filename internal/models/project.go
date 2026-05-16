@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"strconv"
+	"time"
+)
 
 // AppProject is the public QA workspace project that groups GitLab issues,
 // issue boards, specs, test scenarios, recordings, and fix sessions.
@@ -16,6 +19,42 @@ type AppProject struct {
 	UpdatedByID int       `json:"updatedById,omitempty"`
 	CreatedAt   time.Time `json:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt"`
+}
+
+// AppProjectResponse is the API response for app projects, with repo names
+// instead of repo IDs. Repo names are in the format "group/subgroup/repo-name".
+type AppProjectResponse struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Description    string `json:"description"`
+	IssueRepoName  string `json:"issueRepoName"`
+	SpecsRepoName  string `json:"specsRepoName"`
+	CreatedByID    int       `json:"createdById,omitempty"`
+	UpdatedByID    int       `json:"updatedById,omitempty"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
+// ToResponse converts an AppProject to an AppProjectResponse, using the provided
+// repo names. If a repo name is empty, it falls back to the repo ID as a string.
+func (p *AppProject) ToResponse(issueRepoName, specsRepoName string) AppProjectResponse {
+	if issueRepoName == "" {
+		issueRepoName = strconv.FormatInt(p.IssueRepoID, 10)
+	}
+	if specsRepoName == "" {
+		specsRepoName = strconv.FormatInt(p.SpecsRepoID, 10)
+	}
+	return AppProjectResponse{
+		ID:            p.ID,
+		Name:          p.Name,
+		Description:   p.Description,
+		IssueRepoName: issueRepoName,
+		SpecsRepoName: specsRepoName,
+		CreatedByID:   p.CreatedByID,
+		UpdatedByID:   p.UpdatedByID,
+		CreatedAt:     p.CreatedAt,
+		UpdatedAt:     p.UpdatedAt,
+	}
 }
 
 // CreateAppProjectRequest is the payload for creating a public QA project.

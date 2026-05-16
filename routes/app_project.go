@@ -41,16 +41,25 @@ func CreateAppProject(c *gin.Context) {
 	}
 
 	importedCount := 0
-	if glClient, ok := gitLabClientFromContext(c); ok {
+	glClient, hasGitLab := gitLabClientFromContext(c)
+	if hasGitLab {
 		imported, syncErr := services.SyncMarkdownTestScenarios(c.Request.Context(), glClient, project, actorID)
 		if syncErr != nil {
-			c.JSON(http.StatusCreated, gin.H{"project": project, "scenariosImported": importedCount, "warning": syncErr.Error()})
+			issueRepoName := fetchRepoName(glClient, project.IssueRepoID)
+			specsRepoName := fetchRepoName(glClient, project.SpecsRepoID)
+			c.JSON(http.StatusCreated, gin.H{"project": project.ToResponse(issueRepoName, specsRepoName), "scenariosImported": importedCount, "warning": syncErr.Error()})
 			return
 		}
 		importedCount = len(imported)
 	}
 
-	c.JSON(http.StatusCreated, gin.H{"project": project, "scenariosImported": importedCount})
+	// Convert to response format with repo names
+	var issueRepoName, specsRepoName string
+	if hasGitLab {
+		issueRepoName = fetchRepoName(glClient, project.IssueRepoID)
+		specsRepoName = fetchRepoName(glClient, project.SpecsRepoID)
+	}
+	c.JSON(http.StatusCreated, gin.H{"project": project.ToResponse(issueRepoName, specsRepoName), "scenariosImported": importedCount})
 }
 
 func ListAppProjects(c *gin.Context) {
@@ -59,7 +68,21 @@ func ListAppProjects(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"projects": projects})
+
+	// Convert to response format with repo names
+	var responses []models.AppProjectResponse
+	glClient, hasGitLab := gitLabClientFromContext(c)
+
+	for _, project := range projects {
+		var issueRepoName, specsRepoName string
+		if hasGitLab {
+			issueRepoName = fetchRepoName(glClient, project.IssueRepoID)
+			specsRepoName = fetchRepoName(glClient, project.SpecsRepoID)
+		}
+		responses = append(responses, project.ToResponse(issueRepoName, specsRepoName))
+	}
+
+	c.JSON(http.StatusOK, gin.H{"projects": responses})
 }
 
 func GetAppProject(c *gin.Context) {
@@ -68,7 +91,29 @@ func GetAppProject(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
 		return
 	}
-	c.JSON(http.StatusOK, project)
+
+	// Convert to response format with repo names
+	var issueRepoName, specsRepoName string
+	glClient, hasGitLab := gitLabClientFromContext(c)
+	if hasGitLab {
+		issueRepoName = fetchRepoName(glClient, project.IssueRepoID)
+		specsRepoName = fetchRepoName(glClient, project.SpecsRepoID)
+	}
+
+	c.JSON(http.StatusOK, project.ToResponse(issueRepoName, specsRepoName))
+}
+
+// fetchRepoName fetches the path with namespace for a GitLab project ID.
+// Returns empty string if the fetch fails.
+func fetchRepoName(glClient *gitlab.Client, projectID int64) string {
+	if projectID <= 0 {
+		return ""
+	}
+	project, _, err := glClient.Projects.GetProject(projectID, nil)
+	if err != nil {
+		return ""
+	}
+	return project.PathWithNamespace
 }
 
 func UpdateAppProject(c *gin.Context) {
@@ -104,16 +149,27 @@ func UpdateAppProject(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
 		return
 	}
+
 	importedCount := 0
-	if glClient, ok := gitLabClientFromContext(c); ok {
+	glClient, hasGitLab := gitLabClientFromContext(c)
+	if hasGitLab {
 		imported, syncErr := services.SyncMarkdownTestScenarios(c.Request.Context(), glClient, project, actorID)
 		if syncErr != nil {
-			c.JSON(http.StatusOK, gin.H{"project": project, "scenariosImported": importedCount, "warning": syncErr.Error()})
+			issueRepoName := fetchRepoName(glClient, project.IssueRepoID)
+			specsRepoName := fetchRepoName(glClient, project.SpecsRepoID)
+			c.JSON(http.StatusOK, gin.H{"project": project.ToResponse(issueRepoName, specsRepoName), "scenariosImported": importedCount, "warning": syncErr.Error()})
 			return
 		}
 		importedCount = len(imported)
 	}
-	c.JSON(http.StatusOK, gin.H{"project": project, "scenariosImported": importedCount})
+
+	// Convert to response format with repo names
+	var issueRepoName, specsRepoName string
+	if hasGitLab {
+		issueRepoName = fetchRepoName(glClient, project.IssueRepoID)
+		specsRepoName = fetchRepoName(glClient, project.SpecsRepoID)
+	}
+	c.JSON(http.StatusOK, gin.H{"project": project.ToResponse(issueRepoName, specsRepoName), "scenariosImported": importedCount})
 }
 
 func SyncAppProjectTestScenarios(c *gin.Context) {
