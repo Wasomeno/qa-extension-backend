@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"qa-extension-backend/database"
 
@@ -25,6 +26,9 @@ func StreamEvents(c *gin.Context) {
 	// Optional filters from query params
 	filterResourceID := c.Query("resourceId")
 	filterType := c.Query("type")
+	if filterResourceID == "" && strings.Contains(c.FullPath(), "test-scenarios") {
+		filterResourceID = routeScenarioID(c)
+	}
 
 	ctx := c.Request.Context()
 

@@ -1220,7 +1220,9 @@ func generateE2EAutomations(c *gin.Context, scenario *models.TestScenario, req m
 		bgCtx := context.Background()
 		events := agent.NewGenerationEmitter(bgCtx, scenarioID)
 		events.SetTotalSteps(len(targetIDs))
-		events.Start("Generating %d e2e automation test%s...", len(targetIDs), pluralize(len(targetIDs)))
+		if err := events.Start("Generating %d e2e automation test%s...", len(targetIDs), pluralize(len(targetIDs))); err != nil {
+			log.Printf("[E2EGeneration] failed to publish start event: %v", err)
+		}
 
 		var allAutomations []models.GeneratedAutomation
 		var allFailedIDs []string
@@ -1231,14 +1233,16 @@ func generateE2EAutomations(c *gin.Context, scenario *models.TestScenario, req m
 				end = len(targetIDs)
 			}
 			batchIDs := targetIDs[i:end]
-			events.Progressf("Generating e2e automations for batch %d to %d (of %d)...", i+1, end, len(targetIDs))
+			if err := events.Progressf("Generating e2e automations for batch %d to %d (of %d)...", i+1, end, len(targetIDs)); err != nil {
+				log.Printf("[E2EGeneration] failed to publish progress event: %v", err)
+			}
 			result, err := agent.RunAgentForTestGenerationWithLLM(bgCtx, agent.AutomationAgentInput{
 				ScenarioID:  scenarioID,
 				RepoID:      frontendRepoID,
 				TestCaseIDs: batchIDs,
 			}, token)
 			if err != nil {
-				log.Printf("[E2EGeneration] batch failed: %v", err)
+				log.Printf("[E2EGeneration] batch failed for scenario=%s testCaseIds=%v: %v", scenarioID, batchIDs, err)
 				allFailedIDs = append(allFailedIDs, batchIDs...)
 				continue
 			}
@@ -1250,25 +1254,48 @@ func generateE2EAutomations(c *gin.Context, scenario *models.TestScenario, req m
 
 		s, err := getScenario(bgCtx, scenarioID)
 		if err != nil {
-			log.Printf("[E2EGeneration] failed to reload scenario: %v", err)
+			msg := fmt.Sprintf("failed to reload scenario after e2e generation: %v", err)
+			log.Printf("[E2EGeneration] %s", msg)
+			if eventErr := events.Error(msg); eventErr != nil {
+				log.Printf("[E2EGeneration] failed to publish error event: %v", eventErr)
+			}
 			return
 		}
 		for _, auto := range allAutomations {
 			services.LinkAutomation(&s, &auto)
 		}
 		setGeneratedE2ERepo(&s, targetIDs, frontendRepoID)
-		markMissingE2EFailed(&s, allFailedIDs)
-		if len(allAutomations) == 0 && len(allFailedIDs) == len(targetIDs) {
-			s.Status = models.ScenarioStatusFailed
-			s.Error = "failed to generate e2e tests"
-			events.Error(s.Error)
-		} else {
+		markMissingE2EFailed(&s, targetIDs, allFailedIDs)
+
+		success := !(len(allAutomations) == 0 && len(allFailedIDs) == len(targetIDs))
+		if success {
 			s.Status = models.ScenarioStatusReady
 			s.Error = ""
-			events.Done("Successfully generated %d e2e automation test%s", len(allAutomations), pluralize(len(allAutomations)))
+		} else {
+			s.Status = models.ScenarioStatusFailed
+			s.Error = "failed to generate e2e tests"
 		}
 		s.ComputeStats()
-		_ = saveScenario(bgCtx, &s)
+		if err := saveScenario(bgCtx, &s); err != nil {
+			msg := fmt.Sprintf("failed to save e2e generation result: %v", err)
+			log.Printf("[E2EGeneration] scenario=%s %s", scenarioID, msg)
+			if eventErr := events.Error(msg); eventErr != nil {
+				log.Printf("[E2EGeneration] failed to publish error event: %v", eventErr)
+			}
+			return
+		}
+
+		if success {
+			log.Printf("[E2EGeneration] completed scenario=%s generated=%d failed=%d", scenarioID, len(allAutomations), len(allFailedIDs))
+			if err := events.Done("Successfully generated %d e2e automation test%s", len(allAutomations), pluralize(len(allAutomations))); err != nil {
+				log.Printf("[E2EGeneration] failed to publish done event: %v", err)
+			}
+		} else {
+			log.Printf("[E2EGeneration] failed scenario=%s generated=0 failed=%d", scenarioID, len(allFailedIDs))
+			if err := events.Error(s.Error); err != nil {
+				log.Printf("[E2EGeneration] failed to publish error event: %v", err)
+			}
+		}
 	}(scenario.ID, targetIDs, req.FrontendRepoID, token)
 }
 
@@ -1312,7 +1339,11 @@ func setAutomationCategory(scenario *models.TestScenario, targetIDs []string, ca
 	scenario.ComputeStats()
 }
 
-func markMissingE2EFailed(scenario *models.TestScenario, failedIDs []string) {
+func markMissingE2EFailed(scenario *models.TestScenario, targetIDs []string, failedIDs []string) {
+	targets := make(map[string]bool, len(targetIDs))
+	for _, id := range targetIDs {
+		targets[id] = true
+	}
 	failed := make(map[string]bool, len(failedIDs))
 	for _, id := range failedIDs {
 		failed[id] = true
@@ -1320,7 +1351,7 @@ func markMissingE2EFailed(scenario *models.TestScenario, failedIDs []string) {
 	for si := range scenario.Sections {
 		for ti := range scenario.Sections[si].TestCases {
 			tc := &scenario.Sections[si].TestCases[ti]
-			if tc.AutomationType == nil || *tc.AutomationType != models.AutomationCategoryE2E || tc.AutomationTest == nil {
+			if !targets[tc.ID] || tc.AutomationType == nil || *tc.AutomationType != models.AutomationCategoryE2E || tc.AutomationTest == nil {
 				continue
 			}
 			if tc.AutomationTest.Status == models.AutomationStatusRunning || failed[tc.ID] {
