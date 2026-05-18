@@ -136,6 +136,9 @@ func main() {
 		protected.GET("/projects/:id", routes.GetAppProject)
 		protected.PATCH("/projects/:id", routes.UpdateAppProject)
 		protected.PUT("/projects/:id", routes.UpdateAppProject)
+		protected.GET("/projects/:id/test-context", routes.GetProjectTestContext)
+		protected.PUT("/projects/:id/test-context", routes.UpdateProjectTestContext)
+		protected.PATCH("/projects/:id/test-context", routes.UpdateProjectTestContext)
 		protected.DELETE("/projects/:id", routes.DeleteAppProject)
 		protected.GET("/projects/:id/activity", routes.ListAppProjectActivity)
 

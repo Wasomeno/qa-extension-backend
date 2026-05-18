@@ -24,6 +24,7 @@ func CreateAppProject(c *gin.Context) {
 	}
 	req.Name = strings.TrimSpace(req.Name)
 	req.Description = strings.TrimSpace(req.Description)
+	req.TestContextMarkdown = strings.TrimSpace(req.TestContextMarkdown)
 	if req.Name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
 		return
@@ -36,6 +37,10 @@ func CreateAppProject(c *gin.Context) {
 	actorID, _ := identity.GetCurrentUserID(c)
 	project, err := services.CreateAppProject(c.Request.Context(), req, actorID)
 	if err != nil {
+		if strings.Contains(err.Error(), "too large") {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -103,6 +108,46 @@ func GetAppProject(c *gin.Context) {
 	c.JSON(http.StatusOK, project.ToResponse(issueRepoName, specsRepoName))
 }
 
+func GetProjectTestContext(c *gin.Context) {
+	project, err := services.GetAppProject(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"projectId": project.ID,
+		"markdown":  project.TestContextMarkdown,
+		"template":  services.ProjectTestContextTemplate(),
+		"maxBytes":  services.MaxProjectTestContextBytes,
+	})
+}
+
+func UpdateProjectTestContext(c *gin.Context) {
+	var req models.UpdateProjectTestContextRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	actorID, _ := identity.GetCurrentUserID(c)
+	project, err := services.UpdateProjectTestContext(c.Request.Context(), c.Param("id"), req.Markdown, actorID)
+	if err != nil {
+		if strings.Contains(err.Error(), "too large") {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"projectId": project.ID,
+		"markdown":  project.TestContextMarkdown,
+		"maxBytes":  services.MaxProjectTestContextBytes,
+	})
+}
+
 // fetchRepoName fetches the path with namespace for a GitLab project ID.
 // Returns empty string if the fetch fails.
 func fetchRepoName(glClient *gitlab.Client, projectID int64) string {
@@ -134,6 +179,10 @@ func UpdateAppProject(c *gin.Context) {
 		trimmed := strings.TrimSpace(*req.Description)
 		req.Description = &trimmed
 	}
+	if req.TestContextMarkdown != nil {
+		trimmed := strings.TrimSpace(*req.TestContextMarkdown)
+		req.TestContextMarkdown = &trimmed
+	}
 	if req.IssueRepoID != nil && *req.IssueRepoID <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "issueRepoId must be a valid GitLab repo ID"})
 		return
@@ -146,6 +195,10 @@ func UpdateAppProject(c *gin.Context) {
 	actorID, _ := identity.GetCurrentUserID(c)
 	project, err := services.UpdateAppProject(c.Request.Context(), c.Param("id"), req, actorID)
 	if err != nil {
+		if strings.Contains(err.Error(), "too large") {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
 		return
 	}
