@@ -1125,7 +1125,12 @@ func generateAPIAutomationPrompts(c *gin.Context, scenario *models.TestScenario,
 				continue
 			}
 			found++
-			prompt := services.BuildAPITestPrompt(*scenario, *tc, req.BackendRepoID, backendRepoName)
+			prompt, err := services.GenerateAPITestPromptWithLLM(ctx, *scenario, *tc, req.BackendRepoID, backendRepoName)
+			if err != nil {
+				log.Printf("[GenerateAPIAutomationPrompts] failed to generate API test prompt for test case %s: %v", tc.ID, err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate API test prompt"})
+				return
+			}
 			tc.AutomationType = models.AutomationCategoryPtr(models.AutomationCategoryAPI)
 			tc.AutomationTest = &models.AutomationTest{
 				ID:        fmt.Sprintf("api-prompt-%s", tc.ID),
