@@ -277,47 +277,77 @@ func markdownSection(content string, name string) string {
 
 func parseMarkdownScenarioCases(path string, content string, preconditions string, now time.Time) []models.TestCase {
 	lines := strings.Split(content, "\n")
-	headingRe := regexp.MustCompile(`^###\s+Scenario\s+\d+\s*:\s*(.+)$`)
+	oldHeadingRe := regexp.MustCompile(`^###\s+Scenario\s+\d+\s*:\s*(.+)$`)
+	newHeadingRe := regexp.MustCompile(`^###\s+(?:[^\w\s]\s*)?([A-Z]+-\w+\d+)\s*-\s*(Positive|Negative)\s*:\s*(.+)$`)
 	var cases []models.TestCase
 	var currentTitle string
+	var currentTcCode string
+	var currentTcType string
 	var currentRows []string
+	var currentFormat string // "old" or "new"
 
 	flush := func() {
 		if currentTitle == "" {
 			return
 		}
-		steps := parseMarkdownStepTable(currentRows)
-		if len(steps) == 0 {
-			currentTitle = ""
-			currentRows = nil
-			return
+		if currentFormat == "new" {
+			tc, ok := parseNewFormatTestCase(path, currentTcCode, currentTcType, currentTitle, currentRows, preconditions, now)
+			if !ok {
+				currentTitle = ""
+				currentTcCode = ""
+				currentTcType = ""
+				currentRows = nil
+				currentFormat = ""
+				return
+			}
+			tc.Order = len(cases) + 1
+			cases = append(cases, tc)
+		} else {
+			steps := parseMarkdownStepTable(currentRows)
+			if len(steps) == 0 {
+				currentTitle = ""
+				currentRows = nil
+				return
+			}
+			idx := len(cases) + 1
+			nowStr := now.Format(time.RFC3339)
+			parsed := models.ParsedTestCase{Name: currentTitle, PreCondition: preconditions, Steps: parsedStepsFromV2(steps)}
+			cases = append(cases, models.TestCase{
+				ID:           deterministicID("tc", path, currentTitle),
+				Order:        idx,
+				Code:         fmt.Sprintf("TC-%03d", idx),
+				Title:        currentTitle,
+				PreCondition: preconditions,
+				Steps:        steps,
+				Tags:         inferTags(parsed),
+				Priority:     inferPriority(parsed),
+				Type:         inferTestType(parsed),
+				Status:       models.TCStatusReady,
+				CreatedAt:    nowStr,
+				UpdatedAt:    nowStr,
+			})
 		}
-		idx := len(cases) + 1
-		nowStr := now.Format(time.RFC3339)
-		parsed := models.ParsedTestCase{Name: currentTitle, PreCondition: preconditions, Steps: parsedStepsFromV2(steps)}
-		cases = append(cases, models.TestCase{
-			ID:           deterministicID("tc", path, currentTitle),
-			Order:        idx,
-			Code:         fmt.Sprintf("TC-%03d", idx),
-			Title:        currentTitle,
-			PreCondition: preconditions,
-			Steps:        steps,
-			Tags:         inferTags(parsed),
-			Priority:     inferPriority(parsed),
-			Type:         inferTestType(parsed),
-			Status:       models.TCStatusReady,
-			CreatedAt:    nowStr,
-			UpdatedAt:    nowStr,
-		})
 		currentTitle = ""
+		currentTcCode = ""
+		currentTcType = ""
 		currentRows = nil
+		currentFormat = ""
 	}
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if m := headingRe.FindStringSubmatch(trimmed); len(m) == 2 {
+		if m := oldHeadingRe.FindStringSubmatch(trimmed); len(m) == 2 {
 			flush()
 			currentTitle = strings.TrimSpace(m[1])
+			currentFormat = "old"
+			continue
+		}
+		if m := newHeadingRe.FindStringSubmatch(trimmed); len(m) == 4 {
+			flush()
+			currentTcCode = strings.TrimSpace(m[1])
+			currentTcType = strings.TrimSpace(m[2])
+			currentTitle = strings.TrimSpace(m[3])
+			currentFormat = "new"
 			continue
 		}
 		if currentTitle != "" {
@@ -326,6 +356,131 @@ func parseMarkdownScenarioCases(path string, content string, preconditions strin
 	}
 	flush()
 	return cases
+}
+
+// parseNewFormatTestCase parses a test case in the alternative format:
+//   ### 📄 CODE - Positive/Negative: Title
+//   | Field | Detail |  (2-column metadata table)
+//   **Pre-Condition**
+//   1. step
+//   **Test Step**
+//   1. action
+//   **Expected Result**
+//   > expected text
+func parseNewFormatTestCase(path string, tcCode string, tcType string, title string, lines []string, filePreconditions string, now time.Time) (models.TestCase, bool) {
+	contentStr := strings.Join(lines, "\n")
+
+	// Parse Pre-Condition section
+	preCondition := parseNewFormatBoldSection(contentStr, "Pre-Condition")
+	if preCondition == "" {
+		preCondition = filePreconditions
+	}
+
+	// Parse Test Steps
+	stepLines := parseNewFormatBoldSectionLines(contentStr, "Test Step")
+	var steps []models.TestStepV2
+	for _, line := range stepLines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		// Remove numbering prefix like "1. ", "2. "
+		action := regexp.MustCompile(`^\d+\.\s*`).ReplaceAllString(trimmed, "")
+		if action == "" {
+			continue
+		}
+		steps = append(steps, models.TestStepV2{
+			ID:       fmt.Sprintf("st-%d", len(steps)+1),
+			Order:    len(steps) + 1,
+			Action:   action,
+			Expected: "",
+		})
+	}
+
+	// Parse Expected Result section
+	expectedLines := parseNewFormatBoldSectionLines(contentStr, "Expected Result")
+	var expectedParts []string
+	for _, line := range expectedLines {
+		trimmed := strings.TrimSpace(line)
+		trimmed = strings.TrimPrefix(trimmed, ">")
+		trimmed = strings.TrimSpace(trimmed)
+		if trimmed != "" {
+			expectedParts = append(expectedParts, trimmed)
+		}
+	}
+	expected := strings.Join(expectedParts, " ")
+
+	if len(steps) > 0 && expected != "" {
+		steps[len(steps)-1].Expected = expected
+	}
+
+	if len(steps) == 0 {
+		return models.TestCase{}, false
+	}
+
+	nowStr := now.Format(time.RFC3339)
+	testCaseName := fmt.Sprintf("%s - %s: %s", tcCode, tcType, title)
+	parsed := models.ParsedTestCase{
+		Name:         testCaseName,
+		PreCondition: preCondition,
+		Steps:        parsedStepsFromV2(steps),
+	}
+
+	return models.TestCase{
+		ID:           deterministicID("tc", path, testCaseName),
+		Order:        0, // Caller sets this
+		Code:         tcCode,
+		Title:        testCaseName,
+		PreCondition: preCondition,
+		Steps:        steps,
+		Tags:         inferTags(parsed),
+		Priority:     inferPriority(parsed),
+		Type:         inferTestType(parsed),
+		Status:       models.TCStatusReady,
+		CreatedAt:    nowStr,
+		UpdatedAt:    nowStr,
+	}, true
+}
+
+// parseNewFormatBoldSection extracts content after a bold heading like **Pre-Condition**
+// until the next bold heading or end of content.
+func parseNewFormatBoldSection(content string, heading string) string {
+	lines := strings.Split(content, "\n")
+	var out []string
+	inSection := false
+	boldHeadingRe := regexp.MustCompile(`^\*\*(.+?)\*\*\s*$`)
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if m := boldHeadingRe.FindStringSubmatch(trimmed); len(m) >= 2 {
+			if inSection {
+				break
+			}
+			inSection = strings.EqualFold(strings.TrimSpace(m[1]), heading)
+			continue
+		}
+		if inSection && trimmed != "" {
+			out = append(out, line)
+		}
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+// parseNewFormatBoldSectionLines extracts non-empty lines from a bold section.
+func parseNewFormatBoldSectionLines(content string, heading string) []string {
+	section := parseNewFormatBoldSection(content, heading)
+	if section == "" {
+		return nil
+	}
+	rawLines := strings.Split(section, "\n")
+	var result []string
+	for _, line := range rawLines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
 }
 
 func parseMarkdownStepTable(lines []string) []models.TestStepV2 {
