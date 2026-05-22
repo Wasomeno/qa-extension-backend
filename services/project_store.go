@@ -372,6 +372,55 @@ func isContextStopWord(term string) bool {
 	}
 }
 
+// ExtractBaseURLFromTestContext parses the project test context markdown and returns
+// the base URL if one is defined. It supports two formats:
+//
+//   ## Base URL
+//   https://staging.example.com
+//
+// or an inline line:
+//
+//   base url: https://staging.example.com
+func ExtractBaseURLFromTestContext(markdown string) string {
+	if markdown == "" {
+		return ""
+	}
+	// First, look for a ## Base URL (or ## Base URL / ## Base url) section
+	lines := strings.Split(markdown, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "## ") && strings.Contains(strings.ToLower(trimmed), "base url") {
+			// Collect the content lines until next heading or blank-block separator
+			for j := i + 1; j < len(lines); j++ {
+				next := strings.TrimSpace(lines[j])
+				if next == "" {
+					continue
+				}
+				if strings.HasPrefix(next, "## ") {
+					break
+				}
+				// Skip list markers, bold markers, etc.
+				urlCandidate := strings.TrimRight(strings.TrimLeft(next, "-* \t"), " \t")
+				if urlCandidate != "" && strings.HasPrefix(urlCandidate, "http") {
+					return urlCandidate
+				}
+			}
+		}
+	}
+	// Fallback: scan for "base url:" inline
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if idx := strings.Index(strings.ToLower(trimmed), "base url"); idx >= 0 {
+			rest := strings.TrimSpace(trimmed[idx+8:])
+			rest = strings.TrimLeft(rest, ": \t")
+			if strings.HasPrefix(rest, "http") {
+				return rest
+			}
+		}
+	}
+	return ""
+}
+
 func truncateString(value string, maxBytes int) string {
 	if maxBytes <= 0 || len(value) <= maxBytes {
 		return value
