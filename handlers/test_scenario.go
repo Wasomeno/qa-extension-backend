@@ -61,108 +61,6 @@ func ensureScenarioProject(c *gin.Context, scenario models.TestScenario) bool {
 	return true
 }
 
-// UploadScenario handles uploading an XLSX file and parsing it into a TestScenario
-func UploadScenario(c *gin.Context) {
-	err := c.Request.ParseMultipartForm(10 << 20) // 10 MB limit
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to parse multipart form"})
-		return
-	}
-
-	file, header, err := c.Request.FormFile("file")
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "file is required"})
-		return
-	}
-	defer file.Close()
-
-	projectID := routeProjectID(c)
-	if projectID == "" {
-		projectID = c.Request.FormValue("projectId")
-	}
-	if projectID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "projectId is required"})
-		return
-	}
-
-	var appProject *models.AppProject
-	if projectID != "" {
-		var err error
-		appProject, err = services.GetAppProject(c.Request.Context(), projectID)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "project not found"})
-			return
-		}
-	}
-
-	var authConfig models.AuthConfig
-	authConfigStr := c.Request.FormValue("authConfig")
-	if authConfigStr != "" {
-		if err := json.Unmarshal([]byte(authConfigStr), &authConfig); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid authConfig format"})
-			return
-		}
-	}
-
-	sheets, err := services.ParseXLSX(file)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("failed to parse xlsx: %v", err)})
-		return
-	}
-
-	projectName := ""
-	issueRepoID := ""
-	specsRepoID := ""
-	if appProject != nil {
-		projectName = appProject.Name
-		issueRepoID = strconv.FormatInt(appProject.IssueRepoID, 10)
-		specsRepoID = strconv.FormatInt(appProject.SpecsRepoID, 10)
-	}
-
-	userID, err := identity.GetCurrentUserID(c)
-	if err != nil {
-		userID = 0
-	}
-
-	scenario := services.BuildScenarioFromXLSX(header.Filename, sheets, projectID, projectName, authConfig, userID)
-	scenario.ID = uuid.NewString()
-	scenario.IssueRepoID = issueRepoID
-	scenario.SpecsRepoID = specsRepoID
-
-	// Save to Redis
-	ctx := c.Request.Context()
-	key := fmt.Sprintf("scenario:%s", scenario.ID)
-
-	val, err := json.Marshal(scenario)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to marshal scenario"})
-		return
-	}
-
-	err = database.RedisClient.Set(ctx, key, val, 0).Err()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save to redis"})
-		return
-	}
-
-	// Add to set of scenarios
-	database.RedisClient.SAdd(ctx, "scenarios", scenario.ID)
-	if scenario.ProjectID != "" {
-		database.RedisClient.SAdd(ctx, fmt.Sprintf("scenarios:project:%s", scenario.ProjectID), scenario.ID)
-	}
-	if scenario.CreatorID != 0 {
-		database.RedisClient.SAdd(ctx, fmt.Sprintf("scenarios:user:%d", scenario.CreatorID), scenario.ID)
-	} else {
-		database.RedisClient.SAdd(ctx, "scenarios:legacy", scenario.ID)
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"message":  "scenario uploaded and parsed successfully",
-		"id":       scenario.ID,
-		"sections": len(scenario.Sections),
-	})
-}
-
 // ListScenarios lists all test scenarios
 func ListScenarios(c *gin.Context) {
 	ctx := c.Request.Context()
@@ -861,8 +759,7 @@ func BulkDeleteScenarios(c *gin.Context) {
 	})
 }
 
-// GenerateTests triggers AI generation. It can take either sheetNames (legacy/fallback)
-// or sectionIds/testCaseIds.
+// GenerateTests triggers AI generation. It can take sectionIds or testCaseIds.
 func GenerateTests(c *gin.Context) {
 	id := routeScenarioID(c)
 	if id == "" {
@@ -871,7 +768,6 @@ func GenerateTests(c *gin.Context) {
 	}
 
 	var req struct {
-		SheetNames  []string `json:"sheetNames"`
 		SectionIDs  []string `json:"sectionIds"`
 		TestCaseIDs []string `json:"testCaseIds"`
 	}
@@ -880,8 +776,8 @@ func GenerateTests(c *gin.Context) {
 		return
 	}
 
-	if len(req.SheetNames) == 0 && len(req.SectionIDs) == 0 && len(req.TestCaseIDs) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "must provide sheetNames, sectionIds, or testCaseIds"})
+	if len(req.SectionIDs) == 0 && len(req.TestCaseIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "must provide sectionIds or testCaseIds"})
 		return
 	}
 
@@ -904,17 +800,6 @@ func GenerateTests(c *gin.Context) {
 		for _, sId := range req.SectionIDs {
 			for _, sec := range scenario.Sections {
 				if sec.ID == sId {
-					for _, tc := range sec.TestCases {
-						targetTestCaseIDs = append(targetTestCaseIDs, tc.ID)
-					}
-				}
-			}
-		}
-	} else if len(req.SheetNames) > 0 {
-		// Mapping sheets to sections (fallback)
-		for _, sName := range req.SheetNames {
-			for _, sec := range scenario.Sections {
-				if sec.Title == sName {
 					for _, tc := range sec.TestCases {
 						targetTestCaseIDs = append(targetTestCaseIDs, tc.ID)
 					}
