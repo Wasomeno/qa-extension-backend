@@ -179,8 +179,8 @@ func ListScenarios(c *gin.Context) {
 			page = parsed
 		}
 	}
-	if l := c.Query("limit"); l != "" {
-		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 100 {
+	if p := c.Query("per_page"); p != "" {
+		if parsed, err := strconv.Atoi(p); err == nil && parsed > 0 && parsed <= 100 {
 			limit = parsed
 		}
 	}
@@ -291,7 +291,7 @@ func ListScenarios(c *gin.Context) {
 	if start >= total {
 		c.JSON(http.StatusOK, gin.H{
 			"data":       []models.TestScenario{},
-			"pagination": gin.H{"page": page, "limit": limit, "total": total, "totalPages": totalPages},
+			"pagination": gin.H{"page": page, "per_page": limit, "total": total, "totalPages": totalPages},
 		})
 		return
 	}
@@ -301,7 +301,7 @@ func ListScenarios(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"data":       scenarios[start:end],
-		"pagination": gin.H{"page": page, "limit": limit, "total": total, "totalPages": totalPages},
+		"pagination": gin.H{"page": page, "per_page": limit, "total": total, "totalPages": totalPages},
 	})
 }
 

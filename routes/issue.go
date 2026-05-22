@@ -351,11 +351,17 @@ func GetIssues(ginContext *gin.Context) {
 	// Parse field selection for list views
 	includeFields := parseFieldSelection(fieldsParam, fetchChildren)
 
-	// Optional pagination limit (default 100)
+	// Optional pagination params (default 100 per page, page 1)
 	limit := 100
-	if limitStr := ginContext.Query("limit"); limitStr != "" {
-		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= 500 {
+	page := 1
+	if p := ginContext.Query("per_page"); p != "" {
+		if l, err := strconv.Atoi(p); err == nil && l > 0 && l <= 500 {
 			limit = l
+		}
+	}
+	if p := ginContext.Query("page"); p != "" {
+		if parsed, err := strconv.Atoi(p); err == nil && parsed > 0 {
+			page = parsed
 		}
 	}
 
@@ -408,7 +414,7 @@ func GetIssues(ginContext *gin.Context) {
 	opts := &gitlab.ListIssuesOptions{
 		WithLabelDetails: gitlab.Ptr(true),
 		Scope:            gitlab.Ptr("all"),
-		ListOptions:      gitlab.ListOptions{PerPage: int64(limit), Page: 1},
+		ListOptions:      gitlab.ListOptions{PerPage: int64(limit), Page: int64(page)},
 	}
 
 	if issueIds != "" {

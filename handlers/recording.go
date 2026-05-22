@@ -416,8 +416,8 @@ func ListRecordings(c *gin.Context) {
 			page = parsed
 		}
 	}
-	if l := c.Query("limit"); l != "" {
-		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 100 {
+	if p := c.Query("per_page"); p != "" {
+		if parsed, err := strconv.Atoi(p); err == nil && parsed > 0 && parsed <= 100 {
 			limit = parsed
 		}
 	}
@@ -448,7 +448,7 @@ func ListRecordings(c *gin.Context) {
 	if len(ids) == 0 {
 		c.JSON(http.StatusOK, gin.H{
 			"data":       []models.ManualRecording{},
-			"pagination": gin.H{"page": page, "limit": limit, "total": 0, "totalPages": 0},
+			"pagination": gin.H{"page": page, "per_page": limit, "total": 0, "totalPages": 0},
 		})
 		return
 	}
@@ -556,7 +556,7 @@ func ListRecordings(c *gin.Context) {
 	if start >= total {
 		c.JSON(http.StatusOK, gin.H{
 			"data":       []models.ManualRecording{},
-			"pagination": gin.H{"page": page, "limit": limit, "total": total, "totalPages": totalPages},
+			"pagination": gin.H{"page": page, "per_page": limit, "total": total, "totalPages": totalPages},
 		})
 		return
 	}
@@ -619,7 +619,7 @@ func ListRecordings(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"data":       paginatedRecordings,
-		"pagination": gin.H{"page": page, "limit": limit, "total": total, "totalPages": totalPages},
+		"pagination": gin.H{"page": page, "per_page": limit, "total": total, "totalPages": totalPages},
 	})
 }
 

@@ -220,7 +220,7 @@ func CommitSpecsFiles(c *gin.Context) {
 }
 
 // --- GET /projects/:id/specs/commits ---
-// Query params: path, ref, perPage, page
+// Query params: path, ref, per_page, page
 func GetSpecsCommits(c *gin.Context) {
 	token := c.MustGet("token").(*oauth2.Token)
 	sessionID := c.MustGet("session_id").(string)
@@ -241,7 +241,7 @@ func GetSpecsCommits(c *gin.Context) {
 	perPage := 20
 	page := 1
 
-	if p := c.Query("perPage"); p != "" {
+	if p := c.Query("per_page"); p != "" {
 		fmt.Sscanf(p, "%d", &perPage)
 	}
 	if p := c.Query("page"); p != "" {
