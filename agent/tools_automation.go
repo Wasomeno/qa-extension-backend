@@ -215,19 +215,7 @@ func analyzeTestCase(ctx tool.Context, input AnalyzeTestCaseInput) (*AnalyzeTest
 		return nil, fmt.Errorf("scenario not found: %w", err)
 	}
 
-	var testCase *models.ParsedTestCase
-	for _, sheet := range scenario.Sheets {
-		for _, tc := range sheet.TestCases {
-			if tc.ID == input.TestCaseID || tc.Name == input.TestCaseID {
-				testCase = &tc
-				break
-			}
-		}
-		if testCase != nil {
-			break
-		}
-	}
-
+	var testCase = findTestCaseInScenario(scenario, input.TestCaseID)
 	if testCase == nil {
 		return nil, fmt.Errorf("test case not found: %s", input.TestCaseID)
 	}
@@ -701,19 +689,7 @@ func buildAutomationSteps(ctx tool.Context, input BuildAutomationInput) (*BuildA
 		return nil, fmt.Errorf("scenario not found: %w", err)
 	}
 
-	var testCase *models.ParsedTestCase
-	for _, sheet := range scenario.Sheets {
-		for _, tc := range sheet.TestCases {
-			if tc.ID == input.TestCaseID || tc.Name == input.TestCaseID {
-				testCase = &tc
-				break
-			}
-		}
-		if testCase != nil {
-			break
-		}
-	}
-
+	var testCase = findTestCaseInScenario(scenario, input.TestCaseID)
 	if testCase == nil {
 		return nil, fmt.Errorf("test case not found: %s", input.TestCaseID)
 	}
@@ -1206,6 +1182,14 @@ func generateAutomationForTestCase(ctx tool.Context, input GenerateAutomationInp
 				LoginURL: scenario.AuthConfig.LoginURL,
 				Username: scenario.AuthConfig.Username,
 				Password: scenario.AuthConfig.Password,
+			}
+			// Fallback: resolve base URL from project test context if still empty
+			if input.AuthConfig.BaseURL == "" && scenario.ProjectID != "" {
+				if markdown, err := services.GetProjectTestContext(context.Background(), scenario.ProjectID); err == nil {
+					if extracted := services.ExtractBaseURLFromTestContext(markdown); extracted != "" {
+						input.AuthConfig.BaseURL = extracted
+					}
+				}
 			}
 		}
 	}
@@ -1999,6 +1983,14 @@ func generateAutomationsForScenario(ctx tool.Context, input GenerateAutomationsI
 			Username: scenario.AuthConfig.Username,
 			Password: scenario.AuthConfig.Password,
 		}
+		// Fallback: resolve base URL from project test context if still empty
+		if input.AuthConfig.BaseURL == "" && scenario.ProjectID != "" {
+			if markdown, err := services.GetProjectTestContext(context.Background(), scenario.ProjectID); err == nil {
+				if extracted := services.ExtractBaseURLFromTestContext(markdown); extracted != "" {
+					input.AuthConfig.BaseURL = extracted
+				}
+			}
+		}
 	}
 	if input.ProjectID == "" {
 		input.ProjectID = scenario.GitLabSpecsProjectID()
@@ -2052,6 +2044,46 @@ func getScenarioFromRedis(scenarioID string) (*models.TestScenario, error) {
 		return nil, err
 	}
 	return &scenario, nil
+}
+
+// findTestCaseInScenario searches for a test case by ID or name, first in legacy
+// Sheets (XLSX) and then in Sections (markdown). Returns a ParsedTestCase suitable
+// for downstream automation generation.
+func findTestCaseInScenario(scenario *models.TestScenario, testCaseID string) *models.ParsedTestCase {
+	// 1. Try legacy Sheets (XLSX import)
+	for _, sheet := range scenario.Sheets {
+		for _, tc := range sheet.TestCases {
+			if tc.ID == testCaseID || tc.Name == testCaseID {
+				return &tc
+			}
+		}
+	}
+
+	// 2. Try Sections (markdown import)
+	for _, sec := range scenario.Sections {
+		for _, tc := range sec.TestCases {
+			if tc.ID == testCaseID || tc.Title == testCaseID {
+				parsed := models.ParsedTestCase{
+					ID:           tc.ID,
+					Name:         tc.Title,
+					PreCondition: tc.PreCondition,
+					UserStory:    tc.Description,
+					Status:       string(tc.Status),
+					Note:         tc.Note,
+				}
+				for _, step := range tc.Steps {
+					parsed.Steps = append(parsed.Steps, models.ParsedStep{
+						Action:         step.Action,
+						InputData:      step.Data,
+						ExpectedResult: step.Expected,
+					})
+				}
+				return &parsed
+			}
+		}
+	}
+
+	return nil
 }
 
 func saveScenarioToRedis(ctx context.Context, scenario *models.TestScenario) error {
