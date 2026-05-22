@@ -243,15 +243,30 @@ For EACH test case in the scenario below:
 
 ## Project Information
 `)
+
+	// Resolve base URL: prefer scenario-level config, fall back to project test context
+	baseURL := scenario.AuthConfig.BaseURL
+	loginURL := scenario.AuthConfig.LoginURL
+	username := scenario.AuthConfig.Username
+	password := scenario.AuthConfig.Password
+
+	if baseURL == "" && scenario.ProjectID != "" {
+		if markdown, err := services.GetProjectTestContext(context.Background(), scenario.ProjectID); err == nil {
+			if extracted := services.ExtractBaseURLFromTestContext(markdown); extracted != "" {
+				baseURL = extracted
+			}
+		}
+	}
+
 	prompt.WriteString(fmt.Sprintf("- Scenario ID: %s\n", scenarioID))
 	prompt.WriteString(fmt.Sprintf("- Project ID: %s\n", scenario.ProjectID))
 	prompt.WriteString(fmt.Sprintf("- GitLab Specs Repo ID: %s\n", scenario.GitLabSpecsProjectID()))
 	prompt.WriteString(fmt.Sprintf("- GitLab Frontend Repo ID: %s\n", repoID))
 	prompt.WriteString(fmt.Sprintf("- Creator ID: %d\n", scenario.CreatorID))
-	prompt.WriteString(fmt.Sprintf("- Base URL: %s\n", scenario.AuthConfig.BaseURL))
-	prompt.WriteString(fmt.Sprintf("- Login URL: %s\n", scenario.AuthConfig.LoginURL))
-	prompt.WriteString(fmt.Sprintf("- Username: %s\n", scenario.AuthConfig.Username))
-	prompt.WriteString(fmt.Sprintf("- Password: %s\n", scenario.AuthConfig.Password))
+	prompt.WriteString(fmt.Sprintf("- Base URL: %s\n", baseURL))
+	prompt.WriteString(fmt.Sprintf("- Login URL: %s\n", loginURL))
+	prompt.WriteString(fmt.Sprintf("- Username: %s\n", username))
+	prompt.WriteString(fmt.Sprintf("- Password: %s\n", password))
 
 	if scenario.ProjectID != "" {
 		if markdown, err := services.GetProjectTestContext(context.Background(), scenario.ProjectID); err == nil {
