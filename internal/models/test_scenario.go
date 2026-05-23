@@ -221,6 +221,7 @@ type TestScenario struct {
 	SourceType       string                   `json:"sourceType,omitempty"`
 	SourcePath       string                   `json:"sourcePath,omitempty"`
 	SourceSHA        string                   `json:"sourceSha,omitempty"`
+	SourceDisplay    string                   `json:"sourceDisplay,omitempty"`
 	ProcessingStatus ProcessingStatus         `json:"processingStatus,omitempty"`
 	AutomationStatus ScenarioAutomationStatus `json:"automationStatus,omitempty"`
 	Error            string                   `json:"error,omitempty"`

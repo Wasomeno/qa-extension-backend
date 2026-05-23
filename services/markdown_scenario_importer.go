@@ -96,6 +96,13 @@ func SyncMarkdownTestScenarios(ctx context.Context, glClient *gitlab.Client, pro
 		scenario.SourceSHA = node.ID
 		mergeExistingScenarioState(ctx, &scenario)
 
+		// Generate a concise LLM description for new scenarios
+		if scenario.Description == "" {
+			if desc, err := GenerateScenarioDescription(ctx, scenario.Title, string(content)); err == nil {
+				scenario.Description = desc
+			}
+		}
+
 		if err := SaveImportedScenario(ctx, &scenario); err != nil {
 			return nil, err
 		}
@@ -182,15 +189,15 @@ func BuildScenarioFromMarkdown(path string, content string, project *models.AppP
 	}
 
 	scenario := models.TestScenario{
-		Title:       title,
-		Description: fmt.Sprintf("Imported from %s", path),
-		ProjectID:   project.ID,
-		ProjectName: project.Name,
-		CreatorID:   creatorID,
-		CreatedAt:   now,
-		UpdatedAt:   now,
-		CreatedBy:   createdBy,
-		Sections:    sections,
+		Title:         title,
+		SourceDisplay: fmt.Sprintf("Imported from %s", path),
+		ProjectID:     project.ID,
+		ProjectName:   project.Name,
+		CreatorID:     creatorID,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		CreatedBy:     createdBy,
+		Sections:      sections,
 	}
 	scenario.ComputeStats()
 	return scenario, true
