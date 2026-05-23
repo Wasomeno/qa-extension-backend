@@ -185,7 +185,6 @@ func BuildScenarioFromMarkdown(path string, content string, project *models.AppP
 		Description: fmt.Sprintf("Imported from %s", path),
 		ProjectID:   project.ID,
 		ProjectName: project.Name,
-		Status:      models.ScenarioStatusReady,
 		CreatorID:   creatorID,
 		CreatedAt:   now,
 		UpdatedAt:   now,
@@ -281,8 +280,9 @@ func markdownSection(content string, name string) string {
 }
 
 // suiteHeadingRe matches H2 suite headers like:
-//   ## 📁 Suite 1: 4.1 Daftar Komponen Global
-//   ## Suite 2: Something
+//
+//	## 📁 Suite 1: 4.1 Daftar Komponen Global
+//	## Suite 2: Something
 var suiteHeadingRe = regexp.MustCompile(`^##\s+(?:[^\w\s]\s*)?(Suite\s+\d+\s*:\s*.+)$`)
 
 // parseMarkdownScenarioCases parses markdown content and returns flat test cases.
@@ -308,20 +308,22 @@ func parseMarkdownScenarioCases(path string, content string, preconditions strin
 // Supports two formats:
 //
 // Old format (flat, no suites):
-//   # Title
-//   ## Preconditions
-//   ## Scenarios
-//   ### Scenario 1: Title
-//   | Step | Action | Expected Result |
+//
+//	# Title
+//	## Preconditions
+//	## Scenarios
+//	### Scenario 1: Title
+//	| Step | Action | Expected Result |
 //
 // New format (suite-grouped):
-//   # Title
-//   ## 📁 Suite 1: Section Name
-//   ### 📄 CODE - Positive/Negative: Title
-//   | Field | Detail |
-//   **Pre-Condition**
-//   **Test Step**
-//   **Expected Result**
+//
+//	# Title
+//	## 📁 Suite 1: Section Name
+//	### 📄 CODE - Positive/Negative: Title
+//	| Field | Detail |
+//	**Pre-Condition**
+//	**Test Step**
+//	**Expected Result**
 func parseMarkdownIntoSections(path string, content string, preconditions string, now time.Time) []models.TestSection {
 	lines := strings.Split(content, "\n")
 	oldHeadingRe := regexp.MustCompile(`^###\s+Scenario\s+\d+\s*:\s*(.+)$`)
@@ -382,7 +384,6 @@ func parseMarkdownIntoSections(path string, content string, preconditions string
 				Tags:         inferTags(parsed),
 				Priority:     inferPriority(parsed),
 				Type:         inferTestType(parsed),
-				Status:       models.TCStatusReady,
 				CreatedAt:    nowStr,
 				UpdatedAt:    nowStr,
 			})
@@ -472,9 +473,9 @@ func parseMarkdownIntoSections(path string, content string, preconditions string
 //	| **Status**          | ...    |
 //	| **Additional Note** | ...    |
 type testCaseMetadata struct {
-	UserStory     string
-	Category      string
-	Status        string
+	UserStory      string
+	Category       string
+	Status         string
 	AdditionalNote string
 }
 
@@ -506,14 +507,15 @@ func parseNewFormatMetadataTable(content string) testCaseMetadata {
 }
 
 // parseNewFormatTestCase parses a test case in the alternative format:
-//   ### 📄 CODE - Positive/Negative: Title
-//   | Field | Detail |  (2-column metadata table)
-//   **Pre-Condition**
-//   1. step
-//   **Test Step**
-//   1. action
-//   **Expected Result**
-//   > expected text
+//
+//	### 📄 CODE - Positive/Negative: Title
+//	| Field | Detail |  (2-column metadata table)
+//	**Pre-Condition**
+//	1. step
+//	**Test Step**
+//	1. action
+//	**Expected Result**
+//	> expected text
 func parseNewFormatTestCase(path string, tcCode string, tcType string, title string, lines []string, filePreconditions string, now time.Time) (models.TestCase, bool) {
 	contentStr := strings.Join(lines, "\n")
 
@@ -598,12 +600,6 @@ func parseNewFormatTestCase(path string, tcCode string, tcType string, title str
 	nowStr := now.Format(time.RFC3339)
 	testCaseName := fmt.Sprintf("%s - %s: %s", tcCode, tcType, title)
 
-	// Map metadata status to internal status
-	tcStatus := models.TCStatusReady
-	if meta.Status != "" {
-		tcStatus = mapTCStatus(meta.Status)
-	}
-
 	parsed := models.ParsedTestCase{
 		Name:         testCaseName,
 		UserStory:    meta.UserStory,
@@ -622,7 +618,6 @@ func parseNewFormatTestCase(path string, tcCode string, tcType string, title str
 		Tags:         inferTags(parsed),
 		Priority:     inferPriority(parsed),
 		Type:         inferTestType(parsed),
-		Status:       tcStatus,
 		Note:         meta.AdditionalNote,
 		CreatedAt:    nowStr,
 		UpdatedAt:    nowStr,

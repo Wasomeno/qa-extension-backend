@@ -354,7 +354,7 @@ func TestBuildScenarioFromMarkdownMultipleSuites(t *testing.T) {
 		t.Fatalf("tc1 description = %q", tc1.Description)
 	}
 
-	// Verify status mapping from metadata
+	// Verify metadata note cleanup
 	tc2 := s1.TestCases[1]
 	if tc2.Note != "" {
 		t.Fatalf("tc2 should have empty note (was '-'), got %q", tc2.Note)
@@ -455,4 +455,3 @@ func TestBuildScenarioFromMarkdownMoreExpectedThanSteps(t *testing.T) {
 		t.Fatalf("step 1 expected should contain extra results, got: %q", tc.Steps[1].Expected)
 	}
 }
-

@@ -66,8 +66,10 @@ func ListScenarios(c *gin.Context) {
 	ctx := c.Request.Context()
 	projectID := routeProjectID(c)
 	search := c.Query("search")
-	status := c.Query("status")
-	sortBy := c.Query("sort_by") // "created_at", "title", "status"
+	status := c.Query("status") // Backward-compatible alias for processing_status or automation_status
+	processingStatus := c.Query("processing_status")
+	automationStatus := c.Query("automation_status")
+	sortBy := c.Query("sort_by") // "created_at", "title", "processing_status", "automation_status"
 	order := c.Query("order")    // "asc", "desc"
 	page := 1
 	limit := 20
@@ -111,9 +113,9 @@ func ListScenarios(c *gin.Context) {
 				if projectID != "" && s.ProjectID != projectID {
 					continue
 				}
-				// For lists, we don't need the full parsed sheets or massive test cases payload
-				// We can just compute stats and clear out the heavy parts
-				s.ComputeStats()
+				// For lists, we don't need the full parsed sheets or massive test cases payload.
+				// Compute a compact automation summary and clear out the heavy parts.
+				s.ComputeAutomationSummary(5)
 				s.Sections = nil
 				s.Sheets = nil
 				scenarios = append(scenarios, s)
@@ -124,9 +126,31 @@ func ListScenarios(c *gin.Context) {
 
 	// Apply filters
 	if status != "" {
+		processingStatus = status
+		automationStatus = status
+	}
+	if status != "" {
 		filtered := make([]models.TestScenario, 0)
 		for _, s := range scenarios {
-			if string(s.Status) == status {
+			if string(s.ProcessingStatus) == processingStatus || string(s.AutomationStatus) == automationStatus {
+				filtered = append(filtered, s)
+			}
+		}
+		scenarios = filtered
+	}
+	if status == "" && processingStatus != "" {
+		filtered := make([]models.TestScenario, 0)
+		for _, s := range scenarios {
+			if string(s.ProcessingStatus) == processingStatus {
+				filtered = append(filtered, s)
+			}
+		}
+		scenarios = filtered
+	}
+	if status == "" && automationStatus != "" {
+		filtered := make([]models.TestScenario, 0)
+		for _, s := range scenarios {
+			if string(s.AutomationStatus) == automationStatus {
 				filtered = append(filtered, s)
 			}
 		}
@@ -163,11 +187,17 @@ func ListScenarios(c *gin.Context) {
 			} else {
 				condition = scenarios[i].Title > scenarios[j].Title
 			}
-		case "status":
+		case "processing_status", "processingStatus":
 			if order == "asc" {
-				condition = scenarios[i].Status < scenarios[j].Status
+				condition = scenarios[i].ProcessingStatus < scenarios[j].ProcessingStatus
 			} else {
-				condition = scenarios[i].Status > scenarios[j].Status
+				condition = scenarios[i].ProcessingStatus > scenarios[j].ProcessingStatus
+			}
+		case "automation_status", "automationStatus", "status":
+			if order == "asc" {
+				condition = scenarios[i].AutomationStatus < scenarios[j].AutomationStatus
+			} else {
+				condition = scenarios[i].AutomationStatus > scenarios[j].AutomationStatus
 			}
 		case "created_at":
 			fallthrough
@@ -309,9 +339,6 @@ func UpdateTestCase(c *gin.Context) {
 					}
 					if req.Type != nil {
 						tc.Type = *req.Type
-					}
-					if req.Status != nil {
-						tc.Status = *req.Status
 					}
 					if req.Note != nil {
 						tc.Note = *req.Note
@@ -584,7 +611,6 @@ func AddTestCase(c *gin.Context) {
 				Tags:         req.Tags,
 				Priority:     req.Priority,
 				Type:         req.Type,
-				Status:       req.Status,
 				CreatedAt:    now,
 				UpdatedAt:    now,
 			}
@@ -595,10 +621,6 @@ func AddTestCase(c *gin.Context) {
 			if newTC.Type == "" {
 				newTC.Type = "positive"
 			}
-			if newTC.Status == "" {
-				newTC.Status = models.TCStatusDraft
-			}
-
 			scenario.Sections[i].TestCases = append(scenario.Sections[i].TestCases, newTC)
 			updated = true
 			break
@@ -813,12 +835,8 @@ func GenerateTests(c *gin.Context) {
 		return
 	}
 
-	scenario.Status = models.ScenarioStatusGenerating
-	saveScenario(ctx, &scenario)
-
 	token, ok := c.MustGet("token").(*oauth2.Token)
 	if !ok {
-		scenario.Status = models.ScenarioStatusFailed
 		scenario.Error = "unauthorized: missing GitLab token"
 		saveScenario(ctx, &scenario)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
@@ -827,7 +845,6 @@ func GenerateTests(c *gin.Context) {
 
 	gitlabClient, err := client.GetClient(ctx, token, nil)
 	if err != nil {
-		scenario.Status = models.ScenarioStatusFailed
 		scenario.Error = fmt.Sprintf("failed to get gitlab client: %v", err)
 		saveScenario(ctx, &scenario)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": scenario.Error})
@@ -897,8 +914,8 @@ func GenerateTests(c *gin.Context) {
 			setTestCasesAutomationStatus(bgCtx, id, targetIDs, models.AutomationStatusFail)
 
 			s, _ := getScenario(bgCtx, id)
-			s.Status = models.ScenarioStatusFailed
 			s.Error = "failed to generate tests: all batches failed"
+			s.ComputeStats()
 			saveScenario(bgCtx, &s)
 			return
 		}
@@ -928,7 +945,6 @@ func GenerateTests(c *gin.Context) {
 			}
 		}
 
-		s.Status = models.ScenarioStatusReady
 		s.Error = ""
 		s.ComputeStats()
 		saveScenario(bgCtx, &s)
@@ -1091,7 +1107,6 @@ func generateE2EAutomations(c *gin.Context, scenario *models.TestScenario, req m
 	}
 
 	jobID := uuid.NewString()
-	scenario.Status = models.ScenarioStatusGenerating
 	scenario.UpdatedAt = time.Now()
 	setAutomationCategory(scenario, targetIDs, models.AutomationCategoryE2E, req.FrontendRepoID, models.AutomationStatusRunning)
 	if err := saveScenario(c.Request.Context(), scenario); err != nil {
@@ -1154,10 +1169,8 @@ func generateE2EAutomations(c *gin.Context, scenario *models.TestScenario, req m
 
 		success := !(len(allAutomations) == 0 && len(allFailedIDs) == len(targetIDs))
 		if success {
-			s.Status = models.ScenarioStatusReady
 			s.Error = ""
 		} else {
-			s.Status = models.ScenarioStatusFailed
 			s.Error = "failed to generate e2e tests"
 		}
 		s.ComputeStats()
@@ -1491,14 +1504,34 @@ func setTestCasesAutomationStatus(ctx context.Context, scenarioID string, target
 		for j := range scenario.Sections[i].TestCases {
 			tc := &scenario.Sections[i].TestCases[j]
 			if idMap[tc.ID] {
-				if tc.AutomationTest == nil {
+				if status == models.AutomationStatusRunning {
+					var category models.AutomationCategory
+					repoID := ""
+					if tc.AutomationTest != nil {
+						if tc.AutomationTest.Category != "" {
+							category = tc.AutomationTest.Category
+						}
+						repoID = tc.AutomationTest.RepoID
+					}
 					tc.AutomationTest = &models.AutomationTest{
-						ID:     fmt.Sprintf("auto-pending-%d", time.Now().UnixNano()),
-						Name:   fmt.Sprintf("%s_Automation", tc.Code),
-						Status: status,
+						ID:       fmt.Sprintf("auto-pending-%d", time.Now().UnixNano()),
+						Name:     fmt.Sprintf("%s_Automation", tc.Code),
+						Category: category,
+						RepoID:   repoID,
+						Status:   status,
+					}
+				} else if tc.AutomationTest == nil {
+					tc.AutomationTest = &models.AutomationTest{
+						ID:           fmt.Sprintf("auto-pending-%d", time.Now().UnixNano()),
+						Name:         fmt.Sprintf("%s_Automation", tc.Code),
+						Status:       status,
+						ErrorMessage: "Failed to generate automation for this test case.",
 					}
 				} else {
 					tc.AutomationTest.Status = status
+					if status == models.AutomationStatusFail {
+						tc.AutomationTest.ErrorMessage = "Failed to generate automation for this test case."
+					}
 				}
 			}
 		}

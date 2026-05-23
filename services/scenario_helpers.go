@@ -71,19 +71,6 @@ func inferTags(tc models.ParsedTestCase) []string {
 	return tags
 }
 
-func mapTCStatus(status string) models.TestCaseStatus {
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "ready", "approved", "active":
-		return models.TCStatusReady
-	case "blocked", "blocker":
-		return models.TCStatusBlocked
-	case "deprecated", "obsolete", "retired":
-		return models.TCStatusDeprecated
-	default:
-		return models.TCStatusDraft
-	}
-}
-
 // LinkAutomation links a generated automation to a matching test case using TestCaseID, then name fallback.
 func LinkAutomation(scenario *models.TestScenario, auto *models.GeneratedAutomation) bool {
 	// First try exact ID match

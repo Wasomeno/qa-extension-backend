@@ -2068,7 +2068,6 @@ func findTestCaseInScenario(scenario *models.TestScenario, testCaseID string) *m
 					Name:         tc.Title,
 					PreCondition: tc.PreCondition,
 					UserStory:    tc.Description,
-					Status:       string(tc.Status),
 					Note:         tc.Note,
 				}
 				for _, step := range tc.Steps {

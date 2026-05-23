@@ -60,22 +60,33 @@ const (
 	PriorityCritical Priority = "critical"
 )
 
-type TestCaseStatus string
+type ProcessingStatus string
 
 const (
-	TCStatusDraft      TestCaseStatus = "draft"
-	TCStatusReady      TestCaseStatus = "ready"
-	TCStatusBlocked    TestCaseStatus = "blocked"
-	TCStatusDeprecated TestCaseStatus = "deprecated"
+	ProcessingStatusIdle             ProcessingStatus = "idle"
+	ProcessingStatusGenerating       ProcessingStatus = "generating"
+	ProcessingStatusGenerationFailed ProcessingStatus = "generation_failed"
 )
 
-type ScenarioStatus string
+type TestCaseAutomationStatus string
 
 const (
-	ScenarioStatusDraft      ScenarioStatus = "draft"
-	ScenarioStatusReady      ScenarioStatus = "ready"
-	ScenarioStatusGenerating ScenarioStatus = "generating"
-	ScenarioStatusFailed     ScenarioStatus = "failed"
+	TestCaseAutomationNotGenerated TestCaseAutomationStatus = "not_generated"
+	TestCaseAutomationIdle         TestCaseAutomationStatus = "idle"
+	TestCaseAutomationRunning      TestCaseAutomationStatus = "running"
+	TestCaseAutomationPassed       TestCaseAutomationStatus = "passed"
+	TestCaseAutomationFailed       TestCaseAutomationStatus = "failed"
+)
+
+type ScenarioAutomationStatus string
+
+const (
+	ScenarioAutomationNotGenerated ScenarioAutomationStatus = "not_generated"
+	ScenarioAutomationIdle         ScenarioAutomationStatus = "idle"
+	ScenarioAutomationRunning      ScenarioAutomationStatus = "running"
+	ScenarioAutomationPassed       ScenarioAutomationStatus = "passed"
+	ScenarioAutomationFailed       ScenarioAutomationStatus = "failed"
+	ScenarioAutomationPartial      ScenarioAutomationStatus = "partial"
 )
 
 type AutomationRunStatus string
@@ -136,22 +147,23 @@ type TestStepV2 struct {
 
 // TestCase is a single test case
 type TestCase struct {
-	ID             string              `json:"id"`
-	Order          int                 `json:"order"`
-	Code           string              `json:"code"`
-	Title          string              `json:"title"`
-	Description    string              `json:"description,omitempty"`
-	PreCondition   string              `json:"preCondition,omitempty"`
-	Steps          []TestStepV2        `json:"steps"`
-	Tags           []string            `json:"tags"`
-	Priority       Priority            `json:"priority"`
-	Type           string              `json:"type"`
-	Status         TestCaseStatus      `json:"status"`
-	AutomationType *AutomationCategory `json:"automationType"`
-	AutomationTest *AutomationTest     `json:"automationTest,omitempty"`
-	Note           string              `json:"note,omitempty"`
-	CreatedAt      string              `json:"createdAt"`
-	UpdatedAt      string              `json:"updatedAt"`
+	ID               string                   `json:"id"`
+	Order            int                      `json:"order"`
+	Code             string                   `json:"code"`
+	Title            string                   `json:"title"`
+	Description      string                   `json:"description,omitempty"`
+	PreCondition     string                   `json:"preCondition,omitempty"`
+	Steps            []TestStepV2             `json:"steps"`
+	Tags             []string                 `json:"tags"`
+	Priority         Priority                 `json:"priority"`
+	Type             string                   `json:"type"`
+	ProcessingStatus ProcessingStatus         `json:"processingStatus,omitempty"`
+	AutomationStatus TestCaseAutomationStatus `json:"automationStatus,omitempty"`
+	AutomationType   *AutomationCategory      `json:"automationType"`
+	AutomationTest   *AutomationTest          `json:"automationTest,omitempty"`
+	Note             string                   `json:"note,omitempty"`
+	CreatedAt        string                   `json:"createdAt"`
+	UpdatedAt        string                   `json:"updatedAt"`
 }
 
 // TestSection groups test cases by functional area
@@ -165,36 +177,61 @@ type TestSection struct {
 
 // ScenarioStats provides aggregate counts
 type ScenarioStats struct {
-	TotalSections  int `json:"totalSections"`
-	TotalTestCases int `json:"totalTestCases"`
-	TotalSteps     int `json:"totalSteps"`
+	TotalSections         int `json:"totalSections"`
+	TotalTestCases        int `json:"totalTestCases"`
+	TotalSteps            int `json:"totalSteps"`
+	GeneratedCount        int `json:"generatedCount"`
+	NotGeneratedCount     int `json:"notGeneratedCount"`
+	GeneratingCount       int `json:"generatingCount"`
+	GenerationFailedCount int `json:"generationFailedCount"`
+	IdleCount             int `json:"idleCount"`
+	RunningCount          int `json:"runningCount"`
+	PassCount             int `json:"passCount"`
+	FailCount             int `json:"failCount"`
+	CoveragePercent       int `json:"coveragePercent"`
+
+	// Deprecated compatibility field. Prefer GeneratedCount.
 	AutomatedCount int `json:"automatedCount"`
-	PassCount      int `json:"passCount"`
-	FailCount      int `json:"failCount"`
-	DraftCount     int `json:"draftCount"`
+}
+
+type TestCaseSummary struct {
+	ID           string `json:"id"`
+	Code         string `json:"code"`
+	Title        string `json:"title"`
+	ErrorMessage string `json:"errorMessage,omitempty"`
+}
+
+type ActiveTestCases struct {
+	Generating       []TestCaseSummary `json:"generating"`
+	Running          []TestCaseSummary `json:"running"`
+	FailedGeneration []TestCaseSummary `json:"failedGeneration"`
+	FailedRun        []TestCaseSummary `json:"failedRun"`
 }
 
 // TestScenario is the top-level entity stored in Redis
 type TestScenario struct {
-	ID          string         `json:"id"`
-	Title       string         `json:"title"`
-	Description string         `json:"description,omitempty"`
-	Sections    []TestSection  `json:"sections"`
-	ProjectID   string         `json:"projectId,omitempty"` // public QA project ID
-	ProjectName string         `json:"projectName,omitempty"`
-	IssueRepoID string         `json:"issueRepoId,omitempty"`
-	SpecsRepoID string         `json:"specsRepoId,omitempty"`
-	SourceType  string         `json:"sourceType,omitempty"`
-	SourcePath  string         `json:"sourcePath,omitempty"`
-	SourceSHA   string         `json:"sourceSha,omitempty"`
-	Status      ScenarioStatus `json:"status"`
-	Error       string         `json:"error,omitempty"`
-	Stats       *ScenarioStats `json:"stats,omitempty"`
-	AuthConfig  AuthConfig     `json:"authConfig"`
-	CreatorID   int            `json:"creatorId,omitempty"`
-	CreatedAt   time.Time      `json:"createdAt"`
-	UpdatedAt   time.Time      `json:"updatedAt"`
-	CreatedBy   string         `json:"createdBy,omitempty"`
+	ID               string                   `json:"id"`
+	Title            string                   `json:"title"`
+	Description      string                   `json:"description,omitempty"`
+	Sections         []TestSection            `json:"sections"`
+	ProjectID        string                   `json:"projectId,omitempty"` // public QA project ID
+	ProjectName      string                   `json:"projectName,omitempty"`
+	IssueRepoID      string                   `json:"issueRepoId,omitempty"`
+	SpecsRepoID      string                   `json:"specsRepoId,omitempty"`
+	SourceType       string                   `json:"sourceType,omitempty"`
+	SourcePath       string                   `json:"sourcePath,omitempty"`
+	SourceSHA        string                   `json:"sourceSha,omitempty"`
+	ProcessingStatus ProcessingStatus         `json:"processingStatus,omitempty"`
+	AutomationStatus ScenarioAutomationStatus `json:"automationStatus,omitempty"`
+	Error            string                   `json:"error,omitempty"`
+	Stats            *ScenarioStats           `json:"stats,omitempty"`
+	AutomationStats  *ScenarioStats           `json:"automationStats,omitempty"`
+	ActiveTestCases  *ActiveTestCases         `json:"activeTestCases,omitempty"`
+	AuthConfig       AuthConfig               `json:"authConfig"`
+	CreatorID        int                      `json:"creatorId,omitempty"`
+	CreatedAt        time.Time                `json:"createdAt"`
+	UpdatedAt        time.Time                `json:"updatedAt"`
+	CreatedBy        string                   `json:"createdBy,omitempty"`
 
 	// Internal: legacy parsed XLSX sheets (not used for Markdown-backed scenarios)
 	Sheets []TestScenarioSheet `json:"sheets,omitempty"`
@@ -242,25 +279,117 @@ func (s *TestScenario) GitLabSpecsProjectID() string {
 
 func (s *TestScenario) ComputeStats() {
 	stats := ScenarioStats{TotalSections: len(s.Sections)}
-	for _, sec := range s.Sections {
-		stats.TotalTestCases += len(sec.TestCases)
-		for _, tc := range sec.TestCases {
+	active := ActiveTestCases{
+		Generating:       []TestCaseSummary{},
+		Running:          []TestCaseSummary{},
+		FailedGeneration: []TestCaseSummary{},
+		FailedRun:        []TestCaseSummary{},
+	}
+	for si := range s.Sections {
+		stats.TotalTestCases += len(s.Sections[si].TestCases)
+		for ti := range s.Sections[si].TestCases {
+			tc := &s.Sections[si].TestCases[ti]
 			stats.TotalSteps += len(tc.Steps)
-			if tc.AutomationTest != nil {
-				stats.AutomatedCount++
-				switch tc.AutomationTest.Status {
-				case AutomationStatusPass:
-					stats.PassCount++
-				case AutomationStatusFail:
-					stats.FailCount++
-				}
+
+			tc.ProcessingStatus = ProcessingStatusIdle
+			tc.AutomationStatus = TestCaseAutomationNotGenerated
+
+			if tc.AutomationTest == nil {
+				stats.NotGeneratedCount++
+				continue
 			}
-			if tc.Status == TCStatusDraft {
-				stats.DraftCount++
+
+			generated := len(tc.AutomationTest.Steps) > 0
+			if !generated {
+				stats.NotGeneratedCount++
+				switch tc.AutomationTest.Status {
+				case AutomationStatusRunning:
+					tc.ProcessingStatus = ProcessingStatusGenerating
+					stats.GeneratingCount++
+					appendActiveCase(&active.Generating, tc)
+				case AutomationStatusFail:
+					tc.ProcessingStatus = ProcessingStatusGenerationFailed
+					stats.GenerationFailedCount++
+					appendActiveCase(&active.FailedGeneration, tc)
+				}
+				continue
+			}
+
+			stats.GeneratedCount++
+			stats.AutomatedCount++
+			switch tc.AutomationTest.Status {
+			case AutomationStatusRunning:
+				tc.AutomationStatus = TestCaseAutomationRunning
+				stats.RunningCount++
+				appendActiveCase(&active.Running, tc)
+			case AutomationStatusPass:
+				tc.AutomationStatus = TestCaseAutomationPassed
+				stats.PassCount++
+			case AutomationStatusFail:
+				tc.AutomationStatus = TestCaseAutomationFailed
+				stats.FailCount++
+				appendActiveCase(&active.FailedRun, tc)
+			default:
+				tc.AutomationStatus = TestCaseAutomationIdle
+				stats.IdleCount++
 			}
 		}
 	}
+	if stats.TotalTestCases > 0 {
+		stats.CoveragePercent = stats.GeneratedCount * 100 / stats.TotalTestCases
+	}
+
+	s.ProcessingStatus = ProcessingStatusIdle
+	if stats.GeneratingCount > 0 {
+		s.ProcessingStatus = ProcessingStatusGenerating
+	} else if stats.GenerationFailedCount > 0 {
+		s.ProcessingStatus = ProcessingStatusGenerationFailed
+	}
+
+	s.AutomationStatus = ScenarioAutomationNotGenerated
+	if stats.GeneratedCount == 0 {
+		s.AutomationStatus = ScenarioAutomationNotGenerated
+	} else if stats.RunningCount > 0 {
+		s.AutomationStatus = ScenarioAutomationRunning
+	} else if stats.FailCount > 0 {
+		s.AutomationStatus = ScenarioAutomationFailed
+	} else if stats.GeneratedCount < stats.TotalTestCases {
+		s.AutomationStatus = ScenarioAutomationPartial
+	} else if stats.PassCount == stats.GeneratedCount {
+		s.AutomationStatus = ScenarioAutomationPassed
+	} else {
+		s.AutomationStatus = ScenarioAutomationIdle
+	}
+
 	s.Stats = &stats
+	s.AutomationStats = &stats
+	s.ActiveTestCases = &active
+}
+
+func (s *TestScenario) ComputeAutomationSummary(activeLimit int) {
+	s.ComputeStats()
+	if activeLimit <= 0 || s.ActiveTestCases == nil {
+		return
+	}
+	s.ActiveTestCases.Generating = limitTestCaseSummaries(s.ActiveTestCases.Generating, activeLimit)
+	s.ActiveTestCases.Running = limitTestCaseSummaries(s.ActiveTestCases.Running, activeLimit)
+	s.ActiveTestCases.FailedGeneration = limitTestCaseSummaries(s.ActiveTestCases.FailedGeneration, activeLimit)
+	s.ActiveTestCases.FailedRun = limitTestCaseSummaries(s.ActiveTestCases.FailedRun, activeLimit)
+}
+
+func limitTestCaseSummaries(items []TestCaseSummary, limit int) []TestCaseSummary {
+	if len(items) <= limit {
+		return items
+	}
+	return items[:limit]
+}
+
+func appendActiveCase(items *[]TestCaseSummary, tc *TestCase) {
+	summary := TestCaseSummary{ID: tc.ID, Code: tc.Code, Title: tc.Title}
+	if tc.AutomationTest != nil {
+		summary.ErrorMessage = tc.AutomationTest.ErrorMessage
+	}
+	*items = append(*items, summary)
 }
 
 // ─────────────────────────────────────────────
@@ -273,26 +402,24 @@ type UpdateScenarioRequest struct {
 }
 
 type UpdateTestCaseRequest struct {
-	Title        *string         `json:"title,omitempty"`
-	Description  *string         `json:"description,omitempty"`
-	PreCondition *string         `json:"preCondition,omitempty"`
-	Steps        *[]TestStepV2   `json:"steps,omitempty"`
-	Tags         *[]string       `json:"tags,omitempty"`
-	Priority     *Priority       `json:"priority,omitempty"`
-	Type         *string         `json:"type,omitempty"`
-	Status       *TestCaseStatus `json:"status,omitempty"`
-	Note         *string         `json:"note,omitempty"`
+	Title        *string       `json:"title,omitempty"`
+	Description  *string       `json:"description,omitempty"`
+	PreCondition *string       `json:"preCondition,omitempty"`
+	Steps        *[]TestStepV2 `json:"steps,omitempty"`
+	Tags         *[]string     `json:"tags,omitempty"`
+	Priority     *Priority     `json:"priority,omitempty"`
+	Type         *string       `json:"type,omitempty"`
+	Note         *string       `json:"note,omitempty"`
 }
 
 type CreateTestCaseRequest struct {
-	Title        string         `json:"title"`
-	Description  string         `json:"description,omitempty"`
-	PreCondition string         `json:"preCondition,omitempty"`
-	Steps        []TestStepV2   `json:"steps,omitempty"`
-	Tags         []string       `json:"tags,omitempty"`
-	Priority     Priority       `json:"priority,omitempty"`
-	Type         string         `json:"type,omitempty"`
-	Status       TestCaseStatus `json:"status,omitempty"`
+	Title        string       `json:"title"`
+	Description  string       `json:"description,omitempty"`
+	PreCondition string       `json:"preCondition,omitempty"`
+	Steps        []TestStepV2 `json:"steps,omitempty"`
+	Tags         []string     `json:"tags,omitempty"`
+	Priority     Priority     `json:"priority,omitempty"`
+	Type         string       `json:"type,omitempty"`
 }
 
 type ReorderTestCasesRequest struct {
