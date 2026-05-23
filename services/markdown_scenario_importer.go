@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"qa-extension-backend/database"
 	"qa-extension-backend/internal/models"
@@ -150,9 +152,9 @@ func mergeExistingScenarioState(ctx context.Context, scenario *models.TestScenar
 // (suite-grouped test cases with metadata tables) markdown documents.
 func BuildScenarioFromMarkdown(path string, content string, project *models.AppProject, creatorID int) (models.TestScenario, bool) {
 	now := time.Now()
-	title := markdownTitle(content)
+	title := cleanScenarioTitle(markdownTitle(content))
 	if title == "" {
-		title = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		title = cleanScenarioTitle(strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)))
 	}
 	preconditions := markdownSection(content, "Preconditions")
 
@@ -171,8 +173,7 @@ func BuildScenarioFromMarkdown(path string, content string, project *models.AppP
 	// derive a fallback section title from the H1 heading.
 	for i := range sections {
 		if sections[i].Title == "" || sections[i].Title == fmt.Sprintf("Section %d", i+1) {
-			sectionTitle := strings.TrimPrefix(title, "Test Scenarios:")
-			sectionTitle = strings.TrimSpace(sectionTitle)
+			sectionTitle := strings.TrimSpace(title)
 			if sectionTitle == "" {
 				sectionTitle = title
 			}
@@ -255,6 +256,28 @@ func markdownTitle(content string) string {
 		}
 	}
 	return ""
+}
+
+func cleanScenarioTitle(title string) string {
+	trimmed := strings.TrimSpace(title)
+	if trimmed == "" {
+		return ""
+	}
+
+	re := regexp.MustCompile(`(?i)^test scenarios?\s*[:\-–—]\s*`)
+	cleaned := strings.TrimSpace(re.ReplaceAllString(trimmed, ""))
+	if cleaned == "" || cleaned == trimmed {
+		return trimmed
+	}
+	return capitalizeFirstRune(cleaned)
+}
+
+func capitalizeFirstRune(value string) string {
+	r, size := utf8.DecodeRuneInString(value)
+	if r == utf8.RuneError && size == 0 {
+		return value
+	}
+	return string(unicode.ToUpper(r)) + value[size:]
 }
 
 func markdownSection(content string, name string) string {

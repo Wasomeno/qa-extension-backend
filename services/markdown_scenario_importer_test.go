@@ -65,6 +65,9 @@ func TestBuildScenarioFromMarkdownNewFormat(t *testing.T) {
 	if !ok {
 		t.Fatal("expected new-format scenario to be parsed")
 	}
+	if scenario.Title != "Master Komponen Global" {
+		t.Fatalf("scenario title = %q, want Master Komponen Global", scenario.Title)
+	}
 	if len(scenario.Sections) != 1 {
 		t.Fatalf("sections = %d, want 1", len(scenario.Sections))
 	}
@@ -114,6 +117,32 @@ func TestBuildScenarioFromMarkdownNewFormat(t *testing.T) {
 	}
 	if tc2.Type != "negative" {
 		t.Fatalf("tc2 type = %q, want negative", tc2.Type)
+	}
+}
+
+func TestBuildScenarioFromMarkdownStripsColonTitlePrefix(t *testing.T) {
+	content := `# Test scenario: master data karyawan
+
+## 📁 Suite 1: Master Data Karyawan
+
+### 📄 MDK-TC001 - Positive: Akses halaman master data karyawan
+
+**Test Step**
+
+1. Navigasi ke halaman Master Data Karyawan
+
+**Expected Result**
+
+> Halaman Master Data Karyawan tampil
+`
+
+	project := &models.AppProject{ID: "project-1", Name: "QA Project", SpecsRepoID: 1, IssueRepoID: 2}
+	scenario, ok := BuildScenarioFromMarkdown("docs/test-scenarios/Master Data Karyawan.md", content, project, 7)
+	if !ok {
+		t.Fatal("expected scenario to be parsed")
+	}
+	if scenario.Title != "Master data karyawan" {
+		t.Fatalf("scenario title = %q, want Master data karyawan", scenario.Title)
 	}
 }
 
