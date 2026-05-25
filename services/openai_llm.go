@@ -3,8 +3,10 @@ package services
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"strings"
+	"time"
 
 	openai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -57,6 +59,7 @@ type openAIChatResponse struct {
 
 // GenerateOpenAIText calls the configured OpenAI-compatible chat completions API.
 func GenerateOpenAIText(ctx context.Context, req OpenAILLMRequest) (*OpenAILLMResponse, error) {
+	start := time.Now()
 	model := req.Model
 	if model == "" {
 		model = os.Getenv("OPENAI_MODEL")
@@ -73,6 +76,7 @@ func GenerateOpenAIText(ctx context.Context, req OpenAILLMRequest) (*OpenAILLMRe
 	if baseURL != "" {
 		opts = append(opts, option.WithBaseURL(baseURL))
 	}
+	log.Printf("[OpenAILLM] request start feature=%s model=%s baseURLSet=%t jsonMode=%t promptBytes=%d systemPromptBytes=%d", req.Feature, model, baseURL != "", req.JSONMode, len(req.Prompt), len(req.SystemPrompt))
 	client := openai.NewClient(opts...)
 
 	messages := make([]openAIChatMessage, 0, 2)
@@ -108,11 +112,14 @@ func GenerateOpenAIText(ctx context.Context, req OpenAILLMRequest) (*OpenAILLMRe
 
 	var resp openAIChatResponse
 	if err := client.Post(ctx, "chat/completions", body, &resp); err != nil {
+		log.Printf("[OpenAILLM] request failed feature=%s model=%s duration=%s error=%v", req.Feature, model, time.Since(start), err)
 		return nil, fmt.Errorf("OpenAI chat completion failed: %w", err)
 	}
 	if len(resp.Choices) == 0 {
+		log.Printf("[OpenAILLM] request empty choices feature=%s model=%s duration=%s", req.Feature, model, time.Since(start))
 		return nil, fmt.Errorf("OpenAI returned no choices")
 	}
+	log.Printf("[OpenAILLM] request success feature=%s model=%s duration=%s inputTokens=%d outputTokens=%d totalTokens=%d responseBytes=%d", req.Feature, model, time.Since(start), resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens, len(resp.Choices[0].Message.Content))
 
 	return &OpenAILLMResponse{
 		Text:         cleanLLMText(resp.Choices[0].Message.Content),

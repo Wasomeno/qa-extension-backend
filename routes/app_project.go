@@ -2,6 +2,7 @@ package routes
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"qa-extension-backend/client"
 	"strconv"
@@ -35,8 +36,10 @@ func CreateAppProject(c *gin.Context) {
 	}
 
 	actorID, _ := identity.GetCurrentUserID(c)
+	log.Printf("[ProjectCreation] start name=%q issueRepoID=%d specsRepoID=%d actorID=%d hasTestContext=%t", req.Name, req.IssueRepoID, req.SpecsRepoID, actorID, req.TestContextMarkdown != "")
 	project, err := services.CreateAppProject(c.Request.Context(), req, actorID)
 	if err != nil {
+		log.Printf("[ProjectCreation] failed to create project name=%q actorID=%d error=%v", req.Name, actorID, err)
 		if strings.Contains(err.Error(), "too large") {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
@@ -44,18 +47,24 @@ func CreateAppProject(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	log.Printf("[ProjectCreation] created projectID=%s name=%q actorID=%d", project.ID, project.Name, actorID)
 
 	importedCount := 0
 	glClient, hasGitLab := gitLabClientFromContext(c)
 	if hasGitLab {
+		log.Printf("[ProjectCreation] syncing markdown scenarios projectID=%s specsRepoID=%d actorID=%d", project.ID, project.SpecsRepoID, actorID)
 		imported, syncErr := services.SyncMarkdownTestScenarios(c.Request.Context(), glClient, project, actorID)
 		if syncErr != nil {
+			log.Printf("[ProjectCreation] scenario sync warning projectID=%s error=%v", project.ID, syncErr)
 			issueRepoName := fetchRepoName(glClient, project.IssueRepoID)
 			specsRepoName := fetchRepoName(glClient, project.SpecsRepoID)
 			c.JSON(http.StatusCreated, gin.H{"project": project.ToResponse(issueRepoName, specsRepoName), "scenariosImported": importedCount, "warning": syncErr.Error()})
 			return
 		}
 		importedCount = len(imported)
+		log.Printf("[ProjectCreation] scenario sync complete projectID=%s imported=%d", project.ID, importedCount)
+	} else {
+		log.Printf("[ProjectCreation] skipping scenario sync projectID=%s reason=missing_gitlab_token", project.ID)
 	}
 
 	// Convert to response format with repo names
@@ -64,6 +73,7 @@ func CreateAppProject(c *gin.Context) {
 		issueRepoName = fetchRepoName(glClient, project.IssueRepoID)
 		specsRepoName = fetchRepoName(glClient, project.SpecsRepoID)
 	}
+	log.Printf("[ProjectCreation] complete projectID=%s imported=%d", project.ID, importedCount)
 	c.JSON(http.StatusCreated, gin.H{"project": project.ToResponse(issueRepoName, specsRepoName), "scenariosImported": importedCount})
 }
 
