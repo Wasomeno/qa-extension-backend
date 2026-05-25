@@ -35,10 +35,11 @@ type openAIChatMessage struct {
 }
 
 type openAIChatRequest struct {
-	Model          string              `json:"model"`
-	Messages       []openAIChatMessage `json:"messages"`
-	Temperature    *float64            `json:"temperature,omitempty"`
-	ResponseFormat any                 `json:"response_format,omitempty"`
+	Model           string              `json:"model"`
+	Messages        []openAIChatMessage `json:"messages"`
+	Temperature     *float64            `json:"temperature,omitempty"`
+	ResponseFormat  any                 `json:"response_format,omitempty"`
+	ReasoningEffort string              `json:"reasoning_effort,omitempty"`
 }
 
 type openAIChatResponse struct {
@@ -96,9 +97,10 @@ func GenerateOpenAIText(ctx context.Context, req OpenAILLMRequest) (*OpenAILLMRe
 	messages = append(messages, openAIChatMessage{Role: "user", Content: prompt})
 
 	body := openAIChatRequest{
-		Model:       model,
-		Messages:    messages,
-		Temperature: &req.Temperature,
+		Model:           model,
+		Messages:        messages,
+		Temperature:     &req.Temperature,
+		ReasoningEffort: openAIReasoningEffort(baseURL),
 	}
 	if req.JSONMode && !strings.Contains(baseURL, "crof.ai") {
 		body.ResponseFormat = map[string]string{"type": "json_object"}
@@ -119,6 +121,16 @@ func GenerateOpenAIText(ctx context.Context, req OpenAILLMRequest) (*OpenAILLMRe
 		OutputTokens: resp.Usage.CompletionTokens,
 		TotalTokens:  resp.Usage.TotalTokens,
 	}, nil
+}
+
+func openAIReasoningEffort(baseURL string) string {
+	if effort := os.Getenv("OPENAI_REASONING_EFFORT"); effort != "" {
+		return effort
+	}
+	if strings.Contains(baseURL, "crof.ai") {
+		return "high"
+	}
+	return ""
 }
 
 func cleanLLMText(s string) string {

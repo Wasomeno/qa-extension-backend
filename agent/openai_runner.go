@@ -204,6 +204,8 @@ type openAIChatRequest struct {
 	Tools       []openai.ChatCompletionToolParam `json:"tools,omitempty"`
 	ToolChoice  string                           `json:"tool_choice,omitempty"`
 	Temperature *float64                         `json:"temperature,omitempty"`
+	// reasoning_effort is supported by reasoning-capable OpenAI-compatible providers.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 type openAIChatMessage struct {
@@ -247,17 +249,28 @@ type openAIUsage struct {
 func (r *OpenAIAgentRunner) createChatCompletion(ctx context.Context, messages []openAIChatMessage) (*openAIChatResponse, error) {
 	temperature := 0.2
 	body := openAIChatRequest{
-		Model:       r.model,
-		Messages:    messages,
-		Tools:       r.tools.OpenAITools(),
-		ToolChoice:  "auto",
-		Temperature: &temperature,
+		Model:           r.model,
+		Messages:        messages,
+		Tools:           r.tools.OpenAITools(),
+		ToolChoice:      "auto",
+		Temperature:     &temperature,
+		ReasoningEffort: openAIReasoningEffort(os.Getenv("OPENAI_BASE_URL")),
 	}
 	var resp openAIChatResponse
 	if err := r.client.Post(ctx, "chat/completions", body, &resp); err != nil {
 		return nil, fmt.Errorf("OpenAI chat completion failed: %w", err)
 	}
 	return &resp, nil
+}
+
+func openAIReasoningEffort(baseURL string) string {
+	if effort := os.Getenv("OPENAI_REASONING_EFFORT"); effort != "" {
+		return effort
+	}
+	if strings.Contains(baseURL, "crof.ai") {
+		return "high"
+	}
+	return ""
 }
 
 func buildOpenAIChatMessages(instructionRole string, messages []AgentMessage) []openAIChatMessage {
