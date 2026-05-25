@@ -5,16 +5,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 	"regexp"
 	"strings"
 	"time"
+
 	"qa-extension-backend/internal/models"
 	"qa-extension-backend/tracker"
 
 	"github.com/google/uuid"
-	"google.golang.org/genai"
 )
+
+const TestGeneratorLLMModel = ""
 
 // GenerateTestsForScenario uses Gemini to generate automation steps from parsed test cases and module catalog.
 // It uses the pre-extracted selectors to ensure all selectors exist in the codebase.
@@ -80,7 +81,7 @@ func processBatchWithCatalog(
 func validateAndFixSelectors(steps []models.RecordingStep, catalog *ModuleCatalog) []models.RecordingStep {
 	// Build a comprehensive selector map including both raw values and formatted
 	validSelectors := buildValidSelectorMap(catalog)
-	
+
 	// Track validation stats
 	validCount := 0
 	fixedCount := 0
@@ -93,17 +94,17 @@ func validateAndFixSelectors(steps []models.RecordingStep, catalog *ModuleCatalo
 
 		// Extract the selector value from various formats
 		selectorValue := extractSelectorValue(step.Selector)
-		
+
 		if _, exists := validSelectors[selectorValue]; !exists {
 			// Try to find an alternative selector by text matching
 			if alternative := findAlternativeSelector(step.Description, validSelectors); alternative != "" {
-				log.Printf("[TestGenerator] Step %d: Selector '%s' not found, using alternative '%s'", 
+				log.Printf("[TestGenerator] Step %d: Selector '%s' not found, using alternative '%s'",
 					i+1, step.Selector, alternative)
 				steps[i].Selector = alternative
 				steps[i].SelectorCandidates = append(steps[i].SelectorCandidates, step.Selector) // Keep original as fallback
 				fixedCount++
 			} else {
-				log.Printf("[TestGenerator] Warning: Step %d selector '%s' not validated against codebase", 
+				log.Printf("[TestGenerator] Warning: Step %d selector '%s' not validated against codebase",
 					i+1, step.Selector)
 				warningCount++
 			}
@@ -113,7 +114,7 @@ func validateAndFixSelectors(steps []models.RecordingStep, catalog *ModuleCatalo
 	}
 
 	if warningCount > 0 || fixedCount > 0 {
-		log.Printf("[TestGenerator] Selector validation: %d valid, %d fixed, %d warnings", 
+		log.Printf("[TestGenerator] Selector validation: %d valid, %d fixed, %d warnings",
 			validCount, fixedCount, warningCount)
 	}
 
@@ -123,7 +124,7 @@ func validateAndFixSelectors(steps []models.RecordingStep, catalog *ModuleCatalo
 // buildValidSelectorMap builds a comprehensive map of all valid selectors
 func buildValidSelectorMap(catalog *ModuleCatalog) map[string]string {
 	validSelectors := make(map[string]string)
-	
+
 	for filePath, selectors := range catalog.Selectors {
 		for _, sel := range selectors {
 			// Add formatted selectors
@@ -152,7 +153,7 @@ func buildValidSelectorMap(catalog *ModuleCatalog) map[string]string {
 			if sel.Role != "" {
 				validSelectors[sel.Role] = fmt.Sprintf("[role='%s']", sel.Role)
 			}
-			
+
 			// Also add formatted versions directly
 			if sel.Testid != "" {
 				validSelectors[fmt.Sprintf("[data-testid='%s']", sel.Testid)] = fmt.Sprintf("[data-testid='%s']", sel.Testid)
@@ -172,7 +173,7 @@ func buildValidSelectorMap(catalog *ModuleCatalog) map[string]string {
 		}
 		log.Printf("[TestGenerator] Loaded %d selectors from %s", len(selectors), filePath)
 	}
-	
+
 	return validSelectors
 }
 
@@ -288,98 +289,41 @@ func generateAutomations(
 	prompt string,
 ) ([]models.GeneratedAutomation, error) {
 
-	projectID := os.Getenv("GOOGLE_CLOUD_PROJECT")
-	location := os.Getenv("VERTEX_LOCATION")
-	if location == "" {
-		location = "us-central1"
-	}
-
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		Backend:  genai.BackendVertexAI,
-		Project:  projectID,
-		Location: location,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create genai client: %w", err)
-	}
-
-	automationSchema := &genai.Schema{
-		Type: genai.TypeArray,
-		Items: &genai.Schema{
-			Type: genai.TypeObject,
-			Properties: map[string]*genai.Schema{
-				"id":          {Type: genai.TypeString},
-				"name":        {Type: genai.TypeString},
-				"description": {Type: genai.TypeString},
-				"steps": {
-					Type: genai.TypeArray,
-					Items: &genai.Schema{
-						Type: genai.TypeObject,
-						Properties: map[string]*genai.Schema{
-							"action": {
-								Type:     genai.TypeString,
-								Enum:     []string{"navigate", "click", "type", "press", "assert", "wait", "api_request"},
-							},
-							"description": {Type: genai.TypeString},
-							"selector":    {Type: genai.TypeString},
-							"selectorCandidates": {
-								Type:  genai.TypeArray,
-								Items: &genai.Schema{Type: genai.TypeString},
-							},
-							"apiMethod":     {Type: genai.TypeString, Enum: []string{"GET", "POST", "PUT", "DELETE", "PATCH"}},
-							"apiEndpoint":   {Type: genai.TypeString},
-							"apiPayload":    {Type: genai.TypeString},
-							"apiHeaders":    {Type: genai.TypeString},
-							"value":         {Type: genai.TypeString},
-							"assertionType": {Type: genai.TypeString},
-							"expectedValue": {Type: genai.TypeString},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	config := &genai.GenerateContentConfig{
-		Temperature:      genai.Ptr(float32(0.2)),
-		ResponseMIMEType: "application/json",
-		ResponseSchema:   automationSchema,
-	}
-
 	llmStart := time.Now()
-	resp, err := client.Models.GenerateContent(
-		ctx,
-		LLMModel,
-		genai.Text(prompt),
-		config,
-	)
+	resp, err := GenerateOpenAIText(ctx, OpenAILLMRequest{
+		Feature:     "test_generator",
+		Model:       TestGeneratorLLMModel,
+		Prompt:      prompt,
+		Temperature: 0.2,
+		JSONMode:    true,
+	})
 	llmDuration := time.Since(llmStart)
 
 	if err != nil {
-		return nil, fmt.Errorf("gemini API call failed: %w", err)
+		return nil, fmt.Errorf("OpenAI API call failed: %w", err)
 	}
 
 	// Track token usage
-	if resp != nil && resp.UsageMetadata != nil {
+	if resp != nil {
 		tracker.Log(ctx, tracker.TokenUsage{
 			Feature:      "test_generator",
-			Model:        LLMModel,
-			InputTokens:  resp.UsageMetadata.PromptTokenCount,
-			OutputTokens: resp.UsageMetadata.CandidatesTokenCount,
-			TotalTokens:  resp.UsageMetadata.TotalTokenCount,
+			Model:        resp.Model,
+			InputTokens:  resp.InputTokens,
+			OutputTokens: resp.OutputTokens,
+			TotalTokens:  resp.TotalTokens,
 			Duration:     llmDuration,
 		})
 	}
 
-	resStr := getResponseString(resp)
+	resStr := resp.Text
 	if resStr == "" {
-		return nil, fmt.Errorf("empty response from gemini")
+		return nil, fmt.Errorf("empty response from OpenAI")
 	}
 
 	var generatedAutomations []models.GeneratedAutomation
 	err = json.Unmarshal([]byte(resStr), &generatedAutomations)
 	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal gemini response: %w\nResponse was: %s", err, resStr)
+		return nil, fmt.Errorf("failed to unmarshal OpenAI response: %w\nResponse was: %s", err, resStr)
 	}
 
 	// Link them back to the original parsed cases and add UUIDs/Defaults
@@ -512,7 +456,7 @@ All Available Selectors in this file:
 %s
 
 ### RESPONSE FORMAT:
-Return ONLY a JSON array of automation test objects.`, 
+Return ONLY a JSON array of automation test objects.`,
 		authConfig.BaseURL, authConfig.LoginURL, authConfig.Username, authConfig.Password,
 		strings.Join(routeContexts, "\n\n"),
 		selectorSummary,
@@ -525,21 +469,21 @@ func buildFullSelectorSummary(catalog *ModuleCatalog) string {
 	var lines []string
 	lines = append(lines, "=== ALL AVAILABLE SELECTORS IN CODEBASE ===")
 	lines = append(lines, "")
-	
+
 	// Group by file for better organization
 	for filePath, selectors := range catalog.Selectors {
 		lines = append(lines, fmt.Sprintf("[%s]", filePath))
-		
+
 		// Group by selector type
 		typeGroups := map[string][]string{
-			"testid":     {},
-			"id":         {},
-			"aria-label": {},
+			"testid":      {},
+			"id":          {},
+			"aria-label":  {},
 			"placeholder": {},
-			"name":      {},
-			"text":      {},
+			"name":        {},
+			"text":        {},
 		}
-		
+
 		for _, sel := range selectors {
 			if sel.Testid != "" {
 				typeGroups["testid"] = append(typeGroups["testid"], fmt.Sprintf("[data-testid='%s']", sel.Testid))
@@ -560,7 +504,7 @@ func buildFullSelectorSummary(catalog *ModuleCatalog) string {
 				typeGroups["text"] = append(typeGroups["text"], fmt.Sprintf("text('%s')", sel.Text))
 			}
 		}
-		
+
 		for groupName, items := range typeGroups {
 			if len(items) > 0 {
 				lines = append(lines, fmt.Sprintf("  %s: %s", groupName, strings.Join(items, ", ")))
@@ -568,7 +512,7 @@ func buildFullSelectorSummary(catalog *ModuleCatalog) string {
 		}
 		lines = append(lines, "")
 	}
-	
+
 	return strings.Join(lines, "\n")
 }
 
@@ -590,23 +534,3 @@ func formatCodebaseContext(codebaseCtx *CodebaseContext) string {
 
 	return result
 }
-
-func getResponseString(resp *genai.GenerateContentResponse) string {
-	if resp == nil || len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil {
-		return ""
-	}
-	var b strings.Builder
-	for _, part := range resp.Candidates[0].Content.Parts {
-		if part.Text != "" {
-			b.WriteString(part.Text)
-		}
-	}
-	res := strings.TrimSpace(b.String())
-	res = strings.TrimPrefix(res, "'''json")
-	res = strings.TrimPrefix(res, "```json")
-	res = strings.TrimSuffix(res, "'''")
-	res = strings.TrimSuffix(res, "```")
-	return res
-}
-
-

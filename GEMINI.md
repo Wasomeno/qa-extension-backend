@@ -78,8 +78,8 @@ IF (User Request) IS DETECTED:
 - **Database/Cache:** Redis
 - **Integrations:**
   - GitLab API (`gitlab.com/gitlab-org/api/client-go`)
-  - OpenAI API (`github.com/openai/openai-go`)
-- **AI Framework:** LangChainGo (`github.com/tmc/langchaingo`)
+  - OpenAI-compatible API (`github.com/openai/openai-go`)
+- **AI Runtime:** OpenAI-compatible chat completions and tool calling
 
 ## Coding Standards
 

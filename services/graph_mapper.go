@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -18,7 +17,6 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	gitlab "gitlab.com/gitlab-org/api/client-go"
-	"google.golang.org/genai"
 )
 
 // =============================================================================
@@ -26,15 +24,13 @@ import (
 // =============================================================================
 
 const (
-	GraphMapCacheTTL = 24 * time.Hour
+	GraphMapCacheTTL  = 24 * time.Hour
 	GraphMapKeyPrefix = "graph_map"
-	
-	// LLM Model - change here to switch models
-	// Options: gemini-3.1-pro-preview, gemini-3-flash-preview, gemini-2.0-flash-exp
-	LLMModel = "gemini-3-flash-preview"
-	
+
+	GraphMapperLLMModel = ""
+
 	// File fetching - fetch ALL files for complete coverage
-	MaxLLMCallsPerCatalog = 3
+	MaxLLMCallsPerCatalog       = 3
 	SelectorConfidenceThreshold = 0.7
 )
 
@@ -44,17 +40,17 @@ const (
 
 // CoverageReport contains statistics about the knowledge graph generation
 type CoverageReport struct {
-	TotalRoutes          int                   `json:"totalRoutes"`
-	CoveredRoutes        int                   `json:"coveredRoutes"`
-	TotalModules         int                   `json:"totalModules"`
-	TotalSelectors       int                   `json:"totalSelectors"`
-	PagesWithSelectors   int                   `json:"pagesWithSelectors"`
-	PagesWithoutSelectors int                  `json:"pagesWithoutSelectors"`
-	InvalidSelectors     int                   `json:"invalidSelectors"`
-	LLMCalls             int                   `json:"llmCalls"`
-	GenerationTimeMs     int64                 `json:"generationTimeMs"`
-	ModuleStats          map[string]ModuleCoverage `json:"moduleStats"`
-	SelectorBreakdown    map[string]int        `json:"selectorBreakdown"` // testid, id, placeholder, etc.
+	TotalRoutes           int                       `json:"totalRoutes"`
+	CoveredRoutes         int                       `json:"coveredRoutes"`
+	TotalModules          int                       `json:"totalModules"`
+	TotalSelectors        int                       `json:"totalSelectors"`
+	PagesWithSelectors    int                       `json:"pagesWithSelectors"`
+	PagesWithoutSelectors int                       `json:"pagesWithoutSelectors"`
+	InvalidSelectors      int                       `json:"invalidSelectors"`
+	LLMCalls              int                       `json:"llmCalls"`
+	GenerationTimeMs      int64                     `json:"generationTimeMs"`
+	ModuleStats           map[string]ModuleCoverage `json:"moduleStats"`
+	SelectorBreakdown     map[string]int            `json:"selectorBreakdown"` // testid, id, placeholder, etc.
 }
 
 // ModuleCoverage contains coverage stats per module
@@ -79,7 +75,7 @@ func (m *GraphMapper) GenerateCoverageReport(
 		TotalModules:     len(catalog.Modules),
 		LLMCalls:         llmCalls,
 		GenerationTimeMs: generationTimeMs,
-		ModuleStats:     make(map[string]ModuleCoverage),
+		ModuleStats:      make(map[string]ModuleCoverage),
 	}
 
 	// Count selectors
@@ -107,12 +103,12 @@ func (m *GraphMapper) GenerateCoverageReport(
 				}
 			}
 		}
-		
+
 		coverage := 0.0
 		if moduleRoutes > 0 {
 			coverage = float64(selectorCount) / float64(moduleRoutes)
 		}
-		
+
 		report.ModuleStats[moduleKey] = ModuleCoverage{
 			TotalRoutes:   moduleRoutes,
 			CoveredRoutes: moduleRoutes,
@@ -130,7 +126,7 @@ func (r *CoverageReport) Log() {
 	log.Printf("    KNOWLEDGE GRAPH COVERAGE REPORT")
 	log.Printf("=============================================")
 	log.Printf("Total Routes Discovered:    %d", r.TotalRoutes)
-	log.Printf("Routes in Catalog:          %d (%.1f%%)", r.CoveredRoutes, 
+	log.Printf("Routes in Catalog:          %d (%.1f%%)", r.CoveredRoutes,
 		float64(r.CoveredRoutes)*100/float64(maxInt(r.TotalRoutes, 1)))
 	log.Printf("Total Modules:              %d", r.TotalModules)
 	log.Printf("Total Selectors Found:      %d", r.TotalSelectors)
@@ -141,7 +137,7 @@ func (r *CoverageReport) Log() {
 	log.Printf("---------------------------------------------")
 	log.Printf("Module Coverage:")
 	for moduleKey, stats := range r.ModuleStats {
-		log.Printf("  %s: %d routes, %d selectors (%.1f%%)", 
+		log.Printf("  %s: %d routes, %d selectors (%.1f%%)",
 			moduleKey, stats.TotalRoutes, stats.SelectorCount, stats.CoverageRatio*100)
 	}
 	log.Printf("=============================================")
@@ -189,20 +185,20 @@ func getModuleFromPath(path string) string {
 
 // ExtractedSelector represents a UI element that can be selected
 type ExtractedSelector struct {
-	ElementType  string   // button, input, div, etc.
-	Testid       string   // data-testid value (if exists)
-	ID           string   // id attribute (if exists)
-	Placeholder  string   // placeholder attribute (if exists)
-	AriaLabel    string   // aria-label attribute (if exists)
-	Text         string   // visible text content
-	Title        string   // title attribute (for tooltips)
-	Role         string   // role attribute (for accessibility)
-	Classes      []string // class names
-	Name         string   // name attribute (for form elements)
-	InputType    string   // type attribute (for inputs)
-	HTMLType     string   // htmlType attribute (for Ant Design buttons)
-	FilePath     string   // which file this was found in
-	LineNumber   int      // approximate line number
+	ElementType string   // button, input, div, etc.
+	Testid      string   // data-testid value (if exists)
+	ID          string   // id attribute (if exists)
+	Placeholder string   // placeholder attribute (if exists)
+	AriaLabel   string   // aria-label attribute (if exists)
+	Text        string   // visible text content
+	Title       string   // title attribute (for tooltips)
+	Role        string   // role attribute (for accessibility)
+	Classes     []string // class names
+	Name        string   // name attribute (for form elements)
+	InputType   string   // type attribute (for inputs)
+	HTMLType    string   // htmlType attribute (for Ant Design buttons)
+	FilePath    string   // which file this was found in
+	LineNumber  int      // approximate line number
 }
 
 // ExtractSelectorsFromFile scans a full source file and extracts all selectable elements
@@ -217,13 +213,13 @@ func (m *GraphMapper) ExtractSelectorsFromFile(content, filePath string) []Extra
 	ariaLabelRe := regexp.MustCompile(`aria-label\s*=\s*["']([^"']+)["']`)
 	nameRe := regexp.MustCompile(`\bname\s*=\s*["']([^"']+)["']`)
 	classRe := regexp.MustCompile(`className?\s*=\s*["']([^"']+)["']`)
-	
+
 	// Additional patterns for better coverage
 	titleRe := regexp.MustCompile(`\btitle\s*=\s*["']([^"']+)["']`)
 	roleRe := regexp.MustCompile(`\brole\s*=\s*["']([^"']+)["']`)
 	typeRe := regexp.MustCompile(`\btype\s*=\s*["']([^"']+)["']`)
 	htmlTypeRe := regexp.MustCompile(`\bhtmlType\s*=\s*["']([^"']+)["']`)
-	
+
 	// Ant Design component patterns
 	antComponentRe := regexp.MustCompile(`<(Button|Input|Select|DatePicker|Form\.Item|Table|Tabs|Tab|Tooltip|Modal|Drawer|Dropdown|Menu|checkbox|Checkbox|Radio|Radio\.Group|Switch|InputNumber|TreeSelect|Cascader|TextArea|Textarea)[^>]*>`)
 	antClosingRe := regexp.MustCompile(`</(Button|Input|Select|DatePicker|Form\.Item|Table|Tabs|Tab|Tooltip|Modal|Drawer|Dropdown|Menu|checkbox|Checkbox|Radio|Radio\.Group|Switch|InputNumber|TreeSelect|Cascader|TextArea|Textarea)`)
@@ -235,7 +231,7 @@ func (m *GraphMapper) ExtractSelectorsFromFile(content, filePath string) []Extra
 		if strings.Contains(line, "//") || strings.Contains(line, "/*") {
 			continue
 		}
-		
+
 		// Skip lines without JSX
 		if !strings.Contains(line, "<") {
 			continue
@@ -299,7 +295,7 @@ func (m *GraphMapper) ExtractSelectorsFromFile(content, filePath string) []Extra
 		if matches := roleRe.FindStringSubmatch(line); len(matches) > 1 {
 			sel.Role = matches[1]
 		}
-		
+
 		// Extract input type
 		if matches := typeRe.FindStringSubmatch(line); len(matches) > 1 {
 			sel.InputType = matches[1]
@@ -322,8 +318,8 @@ func (m *GraphMapper) ExtractSelectorsFromFile(content, filePath string) []Extra
 
 // hasSelector returns true if the selector has at least one identifying attribute
 func (s *ExtractedSelector) hasSelector() bool {
-	return s.Testid != "" || s.ID != "" || s.Placeholder != "" || 
-	       s.AriaLabel != "" || s.Name != "" || s.Title != "" || s.Role != ""
+	return s.Testid != "" || s.ID != "" || s.Placeholder != "" ||
+		s.AriaLabel != "" || s.Name != "" || s.Title != "" || s.Role != ""
 }
 
 // extractTextFromLine extracts visible text from a JSX line
@@ -341,7 +337,7 @@ func extractTextFromLine(line string) string {
 		}
 		result = result[:start] + result[start+end+1:]
 	}
-	
+
 	// Extract text between > and <
 	textMatch := regexp.MustCompile(`>([^<]+)<`).FindStringSubmatch(result)
 	if len(textMatch) > 1 {
@@ -448,20 +444,20 @@ func (s *ExtractedSelector) FormatSelectorForPrompt() string {
 
 // ModuleCatalog is the complete enriched knowledge map for a project/branch
 type ModuleCatalog struct {
-	ProjectID    string                     `json:"projectId"`
-	Branch       string                     `json:"branch"`
-	GeneratedAt  time.Time                  `json:"generatedAt"`
-	Modules      map[string]ModuleEntry     `json:"modules"`
-	RouteIndex   map[string]string          `json:"routeIndex"` // route → moduleKey
-	Selectors    map[string][]ExtractedSelector `json:"selectors"` // filePath → selectors
+	ProjectID   string                         `json:"projectId"`
+	Branch      string                         `json:"branch"`
+	GeneratedAt time.Time                      `json:"generatedAt"`
+	Modules     map[string]ModuleEntry         `json:"modules"`
+	RouteIndex  map[string]string              `json:"routeIndex"` // route → moduleKey
+	Selectors   map[string][]ExtractedSelector `json:"selectors"`  // filePath → selectors
 }
 
 // ModuleEntry represents a functional module in the application
 type ModuleEntry struct {
 	DisplayName    string                `json:"displayName"`
 	Description    string                `json:"description"`
-	Features       []string              `json:"features"`          // e.g. ["list", "create", "create", "delete", "search", "filter"]
-	NavigationPath []string              `json:"navigationPath"`   // e.g. ["Master Data", "Entity Districts"]
+	Features       []string              `json:"features"`       // e.g. ["list", "create", "create", "delete", "search", "filter"]
+	NavigationPath []string              `json:"navigationPath"` // e.g. ["Master Data", "Entity Districts"]
 	Routes         map[string]RouteEntry `json:"routes"`
 }
 
@@ -734,7 +730,7 @@ func (m *GraphMapper) fetchSourceFilesForEnrichment(
 		if !isPrioritized {
 			continue
 		}
-		
+
 		// Prioritize page.tsx files for route coverage
 		if strings.HasSuffix(path, "page.tsx") || strings.HasSuffix(path, "page.ts") {
 			pageFiles = append(pageFiles, path)
@@ -749,9 +745,9 @@ func (m *GraphMapper) fetchSourceFilesForEnrichment(
 
 	// Combine: pages first, then supporting files
 	allRelevant := append(pageFiles, otherFiles...)
-	
+
 	// FETCH ALL FILES - no limit for complete coverage
-	log.Printf("[GraphMapper] Fetching ALL %d source files (no limit) for complete selector extraction", 
+	log.Printf("[GraphMapper] Fetching ALL %d source files (no limit) for complete selector extraction",
 		len(allRelevant))
 
 	// Fetch each file with error tracking
@@ -768,7 +764,7 @@ func (m *GraphMapper) fetchSourceFilesForEnrichment(
 		}
 		sourceFiles[path] = content
 		fetchedCount++
-		
+
 		// Log progress
 		if fetchedCount%100 == 0 {
 			log.Printf("[GraphMapper] Progress: %d/%d files fetched", fetchedCount, len(allRelevant))
@@ -825,27 +821,12 @@ func (m *GraphMapper) enrichWithLLM(
 	selectorIndex map[string][]ExtractedSelector,
 ) (*ModuleCatalog, error) {
 
-	projectIDEnv := os.Getenv("GOOGLE_CLOUD_PROJECT")
-	location := os.Getenv("VERTEX_LOCATION")
-	if location == "" {
-		location = "us-central1"
-	}
-
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		Backend:  genai.BackendVertexAI,
-		Project:  projectIDEnv,
-		Location: location,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create genai client: %w", err)
-	}
-
 	// Build selector summary from the extracted selectors
 	selectorSummary := m.buildSelectorSummaryForPrompt(selectorIndex)
 
 	// First, group routes deterministically by module (first path segment)
 	moduleGroups := m.groupRoutesByModule(routeMap)
-	log.Printf("[GraphMapper] Grouped %d routes into %d modules deterministically", 
+	log.Printf("[GraphMapper] Grouped %d routes into %d modules deterministically",
 		len(routeMap), len(moduleGroups))
 
 	// Build the catalog with deterministic structure
@@ -862,11 +843,11 @@ func (m *GraphMapper) enrichWithLLM(
 	llmCallCount := 0
 	for moduleKey, routes := range moduleGroups {
 		moduleEntry := ModuleEntry{
-			DisplayName: m.formatModuleName(moduleKey),
-			Description: m.inferModuleDescription(moduleKey, routes),
-			Features:    m.inferModuleFeatures(routes),
+			DisplayName:    m.formatModuleName(moduleKey),
+			Description:    m.inferModuleDescription(moduleKey, routes),
+			Features:       m.inferModuleFeatures(routes),
 			NavigationPath: m.inferNavigationPath(moduleKey),
-			Routes:      make(map[string]RouteEntry),
+			Routes:         make(map[string]RouteEntry),
 		}
 
 		// Get selectors for routes in this module
@@ -880,14 +861,14 @@ func (m *GraphMapper) enrichWithLLM(
 				end = len(routes)
 			}
 			batch := routes[i:end]
-			
+
 			// Build route context for this batch
 			routeContexts := m.buildRouteContexts(batch, routeMap, moduleSelectors)
-			
+
 			// Call LLM for this batch
-			enrichedRoutes, err := m.enrichRoutesBatch(ctx, client, routeContexts, selectorSummary, i/batchSize)
+			enrichedRoutes, err := m.enrichRoutesBatch(ctx, routeContexts, selectorSummary, i/batchSize)
 			if err != nil {
-				log.Printf("[GraphMapper] Warning: LLM batch failed for %s batch %d: %v", 
+				log.Printf("[GraphMapper] Warning: LLM batch failed for %s batch %d: %v",
 					moduleKey, i/batchSize, err)
 				// Use fallback route entries
 				for _, route := range batch {
@@ -912,14 +893,14 @@ func (m *GraphMapper) enrichWithLLM(
 	var invalidSelectorCount int
 	catalog, invalidSelectorCount = m.validateAndFilterKeyElements(catalog, selectorIndex)
 	log.Printf("[GraphMapper] Total invalid selectors filtered: %d", invalidSelectorCount)
-	
+
 	return catalog, nil
 }
 
 // groupRoutesByModule deterministically groups routes by first path segment
 func (m *GraphMapper) groupRoutesByModule(routeMap map[string]string) map[string][]string {
 	modules := make(map[string][]string)
-	
+
 	for route := range routeMap {
 		parts := strings.Split(strings.TrimPrefix(route, "/"), "/")
 		if len(parts) > 0 && parts[0] != "" {
@@ -927,12 +908,12 @@ func (m *GraphMapper) groupRoutesByModule(routeMap map[string]string) map[string
 			modules[moduleKey] = append(modules[moduleKey], route)
 		}
 	}
-	
+
 	// Sort routes within each module
 	for _, routes := range modules {
 		sort.Strings(routes)
 	}
-	
+
 	return modules
 }
 
@@ -949,25 +930,25 @@ func (m *GraphMapper) formatModuleName(moduleKey string) string {
 func (m *GraphMapper) inferModuleDescription(moduleKey string, routes []string) string {
 	// Map common module keys to descriptions
 	descriptions := map[string]string{
-		"auth":          "Authentication and user session management",
-		"dashboard":     "Main dashboard with overview metrics and navigation",
-		"master-data":   "Master data management for core business entities",
-		"capex":         "Capital expenditure budget planning and management",
-		"opex":          "Operational expenditure budget management",
-		"invoice":       "Invoice processing and management",
-		"otc":           "Order to cash process management",
-		"tax-system":    "Tax compliance and reporting system",
+		"auth":           "Authentication and user session management",
+		"dashboard":      "Main dashboard with overview metrics and navigation",
+		"master-data":    "Master data management for core business entities",
+		"capex":          "Capital expenditure budget planning and management",
+		"opex":           "Operational expenditure budget management",
+		"invoice":        "Invoice processing and management",
+		"otc":            "Order to cash process management",
+		"tax-system":     "Tax compliance and reporting system",
 		"tax-monitoring": "Tax project monitoring and approval workflows",
-		"wbs":           "Work breakdown structure management",
-		"iam":           "Identity and access management",
-		"supplier":      "Supplier management and contracts",
-		"peminjaman":    "Asset borrowing and loan management",
+		"wbs":            "Work breakdown structure management",
+		"iam":            "Identity and access management",
+		"supplier":       "Supplier management and contracts",
+		"peminjaman":     "Asset borrowing and loan management",
 	}
-	
+
 	if desc, ok := descriptions[moduleKey]; ok {
 		return desc
 	}
-	
+
 	return fmt.Sprintf("%s module - %d routes", m.formatModuleName(moduleKey), len(routes))
 }
 
@@ -976,7 +957,7 @@ func (m *GraphMapper) inferModuleFeatures(routes []string) []string {
 	features := []string{"list", "view"}
 	hasCreate := false
 	hasEdit := false
-	
+
 	for _, route := range routes {
 		if strings.Contains(route, "/create") || strings.Contains(route, "/new") {
 			hasCreate = true
@@ -985,7 +966,7 @@ func (m *GraphMapper) inferModuleFeatures(routes []string) []string {
 			hasEdit = true
 		}
 	}
-	
+
 	if hasCreate {
 		features = append(features, "create")
 	}
@@ -993,7 +974,7 @@ func (m *GraphMapper) inferModuleFeatures(routes []string) []string {
 		features = append(features, "edit")
 	}
 	features = append(features, "search", "filter")
-	
+
 	return features
 }
 
@@ -1001,35 +982,35 @@ func (m *GraphMapper) inferModuleFeatures(routes []string) []string {
 func (m *GraphMapper) inferNavigationPath(moduleKey string) []string {
 	// Map to common navigation paths
 	navPaths := map[string][]string{
-		"auth":           {"Authentication"},
-		"dashboard":      {"Dashboard"},
-		"master-data":    {"Master Data"},
-		"capex":          {"CAPEX"},
-		"opex":           {"OPEX"},
-		"invoice":        {"Invoices"},
+		"auth":                 {"Authentication"},
+		"dashboard":            {"Dashboard"},
+		"master-data":          {"Master Data"},
+		"capex":                {"CAPEX"},
+		"opex":                 {"OPEX"},
+		"invoice":              {"Invoices"},
 		"invoice-noi-external": {"Invoices", "Non-PO External"},
 		"invoice-noi-internal": {"Invoices", "Non-PO Internal"},
-		"invoice-oi":     {"Invoices", "Operating"},
-		"otc":            {"OTC"},
-		"tax-system":     {"Tax System"},
-		"tax-monitoring":  {"Tax Monitoring"},
-		"wbs":            {"WBS"},
-		"iam":            {"IAM"},
-		"supplier":       {"Supplier"},
-		"peminjaman":     {"Loan Management"},
+		"invoice-oi":           {"Invoices", "Operating"},
+		"otc":                  {"OTC"},
+		"tax-system":           {"Tax System"},
+		"tax-monitoring":       {"Tax Monitoring"},
+		"wbs":                  {"WBS"},
+		"iam":                  {"IAM"},
+		"supplier":             {"Supplier"},
+		"peminjaman":           {"Loan Management"},
 	}
-	
+
 	if path, ok := navPaths[moduleKey]; ok {
 		return path
 	}
-	
+
 	return []string{m.formatModuleName(moduleKey)}
 }
 
 // getSelectorsForRoutes builds selector context for a set of routes
 func (m *GraphMapper) getSelectorsForRoutes(routes []string, routeMap map[string]string, selectorIndex map[string][]ExtractedSelector) map[string][]ExtractedSelector {
 	result := make(map[string][]ExtractedSelector)
-	
+
 	for _, route := range routes {
 		filePath, ok := routeMap[route]
 		if !ok {
@@ -1039,20 +1020,20 @@ func (m *GraphMapper) getSelectorsForRoutes(routes []string, routeMap map[string
 			result[route] = selectors
 		}
 	}
-	
+
 	return result
 }
 
 // buildRouteContexts creates route context strings for LLM
 func (m *GraphMapper) buildRouteContexts(routes []string, routeMap map[string]string, selectorIndex map[string][]ExtractedSelector) string {
 	var lines []string
-	
+
 	for _, route := range routes {
 		filePath := routeMap[route]
 		selectors := selectorIndex[filePath]
-		
+
 		line := fmt.Sprintf("Route: %s\nFile: %s", route, filePath)
-		
+
 		if len(selectors) > 0 {
 			var selLines []string
 			for _, sel := range selectors {
@@ -1076,15 +1057,15 @@ func (m *GraphMapper) buildRouteContexts(routes []string, routeMap map[string]st
 				line += "\nSelectors:\n" + strings.Join(selLines, "\n")
 			}
 		}
-		
+
 		lines = append(lines, line)
 	}
-	
+
 	return strings.Join(lines, "\n\n")
 }
 
 // enrichRoutesBatch calls LLM to get enriched route entries
-func (m *GraphMapper) enrichRoutesBatch(ctx context.Context, client *genai.Client, routeContexts string, selectorSummary string, batchIndex int) (map[string]RouteEntry, error) {
+func (m *GraphMapper) enrichRoutesBatch(ctx context.Context, routeContexts string, selectorSummary string, batchIndex int) (map[string]RouteEntry, error) {
 	prompt := fmt.Sprintf(`Analyze these routes and return JSON with route details.
 
 Routes:
@@ -1099,35 +1080,36 @@ Example format:
 
 Do NOT include trailing commas, do NOT wrap in code blocks, do NOT add extra text.`, routeContexts, selectorSummary)
 
-	config := &genai.GenerateContentConfig{
-		Temperature:      genai.Ptr(float32(0.1)), // Lower temperature for more predictable output
-		ResponseMIMEType: "application/json",
-	}
-
 	llmCallStart := time.Now()
-	resp, err := client.Models.GenerateContent(ctx, LLMModel, genai.Text(prompt), config)
+	resp, err := GenerateOpenAIText(ctx, OpenAILLMRequest{
+		Feature:     "graph_mapper",
+		Model:       GraphMapperLLMModel,
+		Prompt:      prompt,
+		Temperature: 0.1,
+		JSONMode:    true,
+	})
 	if err != nil {
 		return nil, err
 	}
 
 	// Track token usage
-	if resp != nil && resp.UsageMetadata != nil {
+	if resp != nil {
 		tracker.Log(ctx, tracker.TokenUsage{
 			Feature:      "graph_mapper",
-			Model:        LLMModel,
-			InputTokens:  resp.UsageMetadata.PromptTokenCount,
-			OutputTokens: resp.UsageMetadata.CandidatesTokenCount,
-			TotalTokens:  resp.UsageMetadata.TotalTokenCount,
+			Model:        resp.Model,
+			InputTokens:  resp.InputTokens,
+			OutputTokens: resp.OutputTokens,
+			TotalTokens:  resp.TotalTokens,
 			Duration:     time.Since(llmCallStart),
 			BatchIndex:   batchIndex,
 		})
 	}
 
-	responseText := extractResponseText(resp)
-	
+	responseText := extractResponseText(resp.Text)
+
 	// Robust JSON parsing with cleanup
 	cleanJSON := cleanupJSON(responseText)
-	
+
 	var result map[string]RouteEntry
 	if err := json.Unmarshal([]byte(cleanJSON), &result); err != nil {
 		// Try extracting JSON from response
@@ -1139,7 +1121,7 @@ Do NOT include trailing commas, do NOT wrap in code blocks, do NOT add extra tex
 		}
 		return nil, fmt.Errorf("failed to parse JSON: %w (response: %.200s...)", err, responseText)
 	}
-	
+
 	return result, nil
 }
 
@@ -1148,16 +1130,16 @@ func cleanupJSON(s string) string {
 	// Remove trailing commas before closing braces/brackets
 	// Match }, or ] at end or before }
 	s = regexp.MustCompile(`,\s*([}\]])`).ReplaceAllString(s, "$1")
-	
+
 	// Remove any trailing commas at the end
 	s = regexp.MustCompile(`,\s*$`).ReplaceAllString(s, "")
-	
+
 	// Remove any text before first { (in case LLM added intro text)
 	firstBrace := strings.Index(s, "{")
 	if firstBrace > 0 {
 		s = s[firstBrace:]
 	}
-	
+
 	return strings.TrimSpace(s)
 }
 
@@ -1169,7 +1151,7 @@ func (m *GraphMapper) createFallbackRouteEntry(route, filePath string, selectorI
 		KeyElements:      make(map[string]string),
 		AvailableActions: []string{"view"},
 	}
-	
+
 	// Try to add selectors from the file
 	if sels, ok := selectorIndex[filePath]; ok {
 		for _, sel := range sels {
@@ -1182,7 +1164,7 @@ func (m *GraphMapper) createFallbackRouteEntry(route, filePath string, selectorI
 			}
 		}
 	}
-	
+
 	return entry
 }
 
@@ -1190,7 +1172,7 @@ func (m *GraphMapper) createFallbackRouteEntry(route, filePath string, selectorI
 // Returns the filtered catalog and count of invalid selectors
 func (m *GraphMapper) validateAndFilterKeyElements(catalog *ModuleCatalog, selectorIndex map[string][]ExtractedSelector) (*ModuleCatalog, int) {
 	totalInvalid := 0
-	
+
 	// Build a set of all valid selector values for quick lookup
 	validSelectors := make(map[string]bool)
 	for _, selectors := range selectorIndex {
@@ -1223,17 +1205,17 @@ func (m *GraphMapper) validateAndFilterKeyElements(catalog *ModuleCatalog, selec
 		for routePath, route := range module.Routes {
 			validKeyElements := make(map[string]string)
 			invalidCount := 0
-			
+
 			for semanticName, selectorValue := range route.KeyElements {
 				if validSelectors[selectorValue] {
 					validKeyElements[semanticName] = selectorValue
 				} else {
 					// Check if it's a compound selector format
-					if strings.HasPrefix(selectorValue, "[data-testid='") || 
-					   strings.HasPrefix(selectorValue, "#") ||
-					   strings.HasPrefix(selectorValue, "[placeholder='") ||
-					   strings.HasPrefix(selectorValue, "[aria-label='") ||
-					   strings.HasPrefix(selectorValue, "text('") {
+					if strings.HasPrefix(selectorValue, "[data-testid='") ||
+						strings.HasPrefix(selectorValue, "#") ||
+						strings.HasPrefix(selectorValue, "[placeholder='") ||
+						strings.HasPrefix(selectorValue, "[aria-label='") ||
+						strings.HasPrefix(selectorValue, "text('") {
 						// Extract the value from the selector format
 						extracted := extractValueFromSelector(selectorValue)
 						if extracted != "" && validSelectors[extracted] {
@@ -1245,13 +1227,13 @@ func (m *GraphMapper) validateAndFilterKeyElements(catalog *ModuleCatalog, selec
 					log.Printf("[GraphMapper] ⚠️ Invalid selector '%s' for key '%s' in route %s", selectorValue, semanticName, routePath)
 				}
 			}
-			
+
 			if invalidCount > 0 {
-				log.Printf("[GraphMapper] Route %s: %d/%d keyElements were filtered out (not found in codebase)", 
+				log.Printf("[GraphMapper] Route %s: %d/%d keyElements were filtered out (not found in codebase)",
 					routePath, invalidCount, len(route.KeyElements))
 				totalInvalid += invalidCount
 			}
-			
+
 			route.KeyElements = validKeyElements
 			catalog.Modules[moduleKey].Routes[routePath] = route
 		}
@@ -1305,14 +1287,14 @@ func (m *GraphMapper) buildFilesSummaryForPrompt(sourceFiles map[string]string) 
 // This ensures the LLM only references selectors that actually exist in the codebase
 func (m *GraphMapper) buildSelectorSummaryForPrompt(selectorIndex map[string][]ExtractedSelector) string {
 	var lines []string
-	
+
 	lines = append(lines, "Available selectors grouped by file:")
 	lines = append(lines, "")
-	
+
 	// Group selectors by file
 	for filePath, selectors := range selectorIndex {
 		lines = append(lines, fmt.Sprintf("--- %s (%d elements) ---", filePath, len(selectors)))
-		
+
 		// Group by element type for readability
 		typeGroups := make(map[string][]string)
 		for _, sel := range selectors {
@@ -1322,13 +1304,13 @@ func (m *GraphMapper) buildSelectorSummaryForPrompt(selectorIndex map[string][]E
 			}
 			typeGroups[key] = append(typeGroups[key], sel.FormatSelectorForPrompt())
 		}
-		
+
 		for elemType, items := range typeGroups {
 			lines = append(lines, fmt.Sprintf("  %s: [%s]", elemType, strings.Join(items, ", ")))
 		}
 		lines = append(lines, "")
 	}
-	
+
 	// Add selector format reference
 	lines = append(lines, "")
 	lines = append(lines, "Selector formats you can use:")
@@ -1340,7 +1322,7 @@ func (m *GraphMapper) buildSelectorSummaryForPrompt(selectorIndex map[string][]E
 	lines = append(lines, "  - name='email' → [name='email']")
 	lines = append(lines, "  - Compound: button:has-text('Save')")
 	lines = append(lines, "  - Nth fallback: >> nth=0")
-	
+
 	return strings.Join(lines, "\n")
 }
 
@@ -1389,16 +1371,16 @@ func (m *GraphMapper) InvalidateCatalog(ctx context.Context, projectID, branch s
 // ListCachedCatalogs returns all cached knowledge graphs for a given project
 func (m *GraphMapper) ListCachedCatalogs(ctx context.Context, projectID string) ([]ModuleCatalog, error) {
 	pattern := fmt.Sprintf("%s:%s:*", GraphMapKeyPrefix, projectID)
-	
+
 	var cursor uint64
 	var catalogs []ModuleCatalog
-	
+
 	for {
 		keys, nextCursor, err := database.RedisClient.Scan(ctx, cursor, pattern, 100).Result()
 		if err != nil {
 			return nil, err
 		}
-		
+
 		for _, key := range keys {
 			val, err := database.RedisClient.Get(ctx, key).Result()
 			if err != nil {
@@ -1409,13 +1391,13 @@ func (m *GraphMapper) ListCachedCatalogs(ctx context.Context, projectID string) 
 				catalogs = append(catalogs, catalog)
 			}
 		}
-		
+
 		cursor = nextCursor
 		if cursor == 0 {
 			break
 		}
 	}
-	
+
 	return catalogs, nil
 }
 
@@ -1502,20 +1484,20 @@ func (c *ModuleCatalog) InferRouteFromName(testCaseName string, module *ModuleEn
 
 	// Action words that indicate the route type
 	actionWords := map[string]string{
-		"list":    "/list",
-		"create":  "/create",
-		"new":     "/create",
-		"add":     "/create",
-		"edit":    "/edit",
-		"update":  "/edit",
-		"delete":  "/delete",
-		"remove":  "/delete",
-		"view":    "/view",
-		"detail":  "/view",
-		"show":    "/view",
-		"search":  "/list",
-		"filter":  "/list",
-		"sort":    "/list",
+		"list":   "/list",
+		"create": "/create",
+		"new":    "/create",
+		"add":    "/create",
+		"edit":   "/edit",
+		"update": "/edit",
+		"delete": "/delete",
+		"remove": "/delete",
+		"view":   "/view",
+		"detail": "/view",
+		"show":   "/view",
+		"search": "/list",
+		"filter": "/list",
+		"sort":   "/list",
 	}
 
 	// First, try to find a route that matches the action
@@ -1662,7 +1644,7 @@ func (m *GraphMapper) catalogToKnowledgeGraph(catalog *ModuleCatalog) *models.Kn
 		},
 		RouteSummary:  make(map[string]models.RouteInfo),
 		SelectorIndex: make(map[string]models.SelectorEntry),
-		Stats: models.KnowledgeGraphStats{},
+		Stats:         models.KnowledgeGraphStats{},
 	}
 
 	for _, module := range catalog.Modules {
@@ -1747,37 +1729,28 @@ func inferActionFromName(name string) string {
 	return "click"
 }
 
-func extractResponseText(resp *genai.GenerateContentResponse) string {
-	if resp == nil || len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil {
-		return ""
-	}
-	var b strings.Builder
-	for _, part := range resp.Candidates[0].Content.Parts {
-		if part.Text != "" {
-			b.WriteString(part.Text)
-		}
-	}
-	res := strings.TrimSpace(b.String())
-	
-	// Handle markdown code blocks - strip outer ```json ... ``` 
+func extractResponseText(text string) string {
+	res := strings.TrimSpace(text)
+
+	// Handle markdown code blocks - strip outer ```json ... ```
 	res = strings.TrimPrefix(res, "```json")
 	res = strings.TrimPrefix(res, "```")
 	res = strings.TrimSuffix(res, "```")
 	res = strings.TrimSuffix(res, "'''")
-	
+
 	// Handle embedded code blocks inside the JSON (e.g., example selectors)
 	// Find the first { and last } to get the actual JSON boundaries
 	firstBrace := strings.Index(res, "{")
 	lastBrace := strings.LastIndex(res, "}")
-	
+
 	if firstBrace != -1 && lastBrace > firstBrace {
 		res = res[firstBrace : lastBrace+1]
 	}
-	
+
 	// Remove any remaining markdown formatting
 	res = strings.ReplaceAll(res, "\\`", "`")
 	res = strings.ReplaceAll(res, "```", "")
-	
+
 	return strings.TrimSpace(res)
 }
 
@@ -1786,18 +1759,18 @@ func extractJSONFromResponse(response string) string {
 	// Try to find JSON boundaries
 	firstBrace := strings.Index(response, "{")
 	lastBrace := strings.LastIndex(response, "}")
-	
+
 	if firstBrace == -1 || lastBrace == -1 || lastBrace <= firstBrace {
 		return response
 	}
-	
+
 	// Extract content between first { and last }
 	result := response[firstBrace : lastBrace+1]
-	
+
 	// Validate it's parseable
 	if len(result) < 10 {
 		return response
 	}
-	
+
 	return result
 }

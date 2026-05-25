@@ -15,20 +15,14 @@ import (
 	"sync"
 	"time"
 
-	"qa-extension-backend/client"
 	"qa-extension-backend/auth"
+	"qa-extension-backend/client"
 	"qa-extension-backend/database"
+	"qa-extension-backend/services"
 	"qa-extension-backend/tracker"
 
 	"github.com/gin-gonic/gin"
-	goGenai "google.golang.org/genai"
 	"github.com/sony/gobreaker"
-	"github.com/tmc/langchaingo/agents"
-	"github.com/tmc/langchaingo/callbacks"
-	"github.com/tmc/langchaingo/chains"
-	"github.com/tmc/langchaingo/llms/googleai"
-	"github.com/tmc/langchaingo/tools"
-	"github.com/tmc/langchaingo/tools/serpapi"
 	gitlab "gitlab.com/gitlab-org/api/client-go"
 	"golang.org/x/oauth2"
 )
@@ -39,68 +33,27 @@ func GenerateIssueFixingPrompt(ginContext *gin.Context) {
 
 func GenerateIssueFixingPromptWithAgent() {
 	ctx := context.Background()
-	apiKey := os.Getenv("GEMINI_API_KEY")
-	llm, err := googleai.New(ctx, googleai.WithAPIKey(apiKey), googleai.WithDefaultModel("gemini-3.1-flash-lite"))
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	searchTool, err := serpapi.New()
-	if err != nil {
-		log.Printf("Warning: SerpApi not configured. (%v)", err)
-	}
-
-	agentTools := []tools.Tool{searchTool}
-
-	// 3. Create Agent
-	agent := agents.NewOpenAIFunctionsAgent(llm, agentTools)
-
-	// 4. Create Executor with Logging
-	executor := agents.NewExecutor(
-		agent,
-		agents.WithCallbacksHandler(callbacks.LogHandler{}),
-	)
-
-	// 5. Run the Agent
-	// Scenario: Search for a concept, then check if the remote repo README mentions it.
 	query := "Search for the purpose of a 'CONTRIBUTING.md' file in open source. Then, read the 'README.md' file in the GitLab repository and suggest if I should add a contributing section based on the search results."
 
 	fmt.Printf("--- User Query: %s ---\n", query)
 
-	_, err = chains.Call(ctx, executor, map[string]interface{}{
-		"input": query,
+	resp, err := services.GenerateOpenAIText(ctx, services.OpenAILLMRequest{
+		Feature:     "issue_fixing_prompt_agent",
+		Prompt:      query,
+		Temperature: 0.2,
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
+	fmt.Println(resp.Text)
 }
 
 func SmartAutoCompleteIssueDescription(ginContext *gin.Context) {
 	// Token verification handled by middleware, but we can access it if needed
 	_ = ginContext.MustGet("token").(*oauth2.Token)
 
-	// geminiApiKey := os.Getenv("GEMINI_API_KEY")
-	projectID := os.Getenv("GOOGLE_CLOUD_PROJECT")
-	location := os.Getenv("VERTEX_LOCATION")
-	if location == "" {
-		location = "us-central1" // default location
-	}
-
 	ctx := context.Background()
-	
-	// Create client config
-	client, err := goGenai.NewClient(ctx, &goGenai.ClientConfig{
-		Backend: goGenai.BackendVertexAI,
-		Project: projectID,
-		Location: location,
-	})
-	if err != nil {
-		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create Gemini client: " + err.Error()})
-		ginContext.Abort()
-		return
-	}
-	model := "gemini-3.1-flash-lite"
-	
+
 	systemPrompt := `
 You are a Senior QA Engineer responsible for filing bug reports and feature requests in GitLab.
 Your goal is to take a rough user description and elaborate it into a professional, structured GitLab Issue.
@@ -135,20 +88,13 @@ Use the exact structure below:
 ## Technical Notes / Logs
 <Any relevant error codes, logical gaps, or context.>
 `
-
-	config := &goGenai.GenerateContentConfig{
-		SystemInstruction: &goGenai.Content{
-			Parts: []*goGenai.Part{{Text: systemPrompt}},
-		},
-	}
-
-	contents := []*goGenai.Content{
-		{
-			Parts: []*goGenai.Part{{Text: "i got an issue in the login page, in /auth/login. the form in there supposed to have an email and password validations. the current condition is there are no validations"}},
-		},
-	}
 	llmStart := time.Now()
-	resp, err := client.Models.GenerateContent(ctx, model, contents, config)
+	resp, err := services.GenerateOpenAIText(ctx, services.OpenAILLMRequest{
+		Feature:      "issue_autocomplete",
+		SystemPrompt: systemPrompt,
+		Prompt:       "i got an issue in the login page, in /auth/login. the form in there supposed to have an email and password validations. the current condition is there are no validations",
+		Temperature:  0.2,
+	})
 	llmDuration := time.Since(llmStart)
 	if err != nil {
 		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate content: " + err.Error()})
@@ -157,7 +103,7 @@ Use the exact structure below:
 	}
 
 	// Track token usage
-	if resp != nil && resp.UsageMetadata != nil {
+	if resp != nil {
 		// Extract user ID from context if available
 		userID := 0
 		if uid, exists := ginContext.Get("user_id"); exists {
@@ -167,29 +113,22 @@ Use the exact structure below:
 		}
 		tracker.Log(ctx, tracker.TokenUsage{
 			Feature:      "issue_autocomplete",
-			Model:        model,
-			InputTokens:  resp.UsageMetadata.PromptTokenCount,
-			OutputTokens: resp.UsageMetadata.CandidatesTokenCount,
-			TotalTokens:  resp.UsageMetadata.TotalTokenCount,
+			Model:        resp.Model,
+			InputTokens:  resp.InputTokens,
+			OutputTokens: resp.OutputTokens,
+			TotalTokens:  resp.TotalTokens,
 			UserID:       userID,
 			Duration:     llmDuration,
 		})
 	}
 
-	if len(resp.Candidates) == 0 {
-		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "No candidates returned from Gemini"})
+	if resp == nil || strings.TrimSpace(resp.Text) == "" {
+		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "No content returned from OpenAI"})
 		ginContext.Abort()
 		return
 	}
 
-	var description strings.Builder
-	for _, part := range resp.Candidates[0].Content.Parts {
-		if part.Text != "" {
-			description.WriteString(part.Text)
-		}
-	}
-
-	ginContext.JSON(http.StatusOK, gin.H{"message": "Issue completion Success", "issue_description": description.String()})
+	ginContext.JSON(http.StatusOK, gin.H{"message": "Issue completion Success", "issue_description": resp.Text})
 }
 
 // ============================================================================
@@ -221,26 +160,26 @@ type IssueWithChild struct {
 // IssueListItem - Lightweight structure optimized for list views
 // Excludes heavy fields like description, time_stats, task_completion_status, etc.
 type IssueListItem struct {
-	ID           int64                       `json:"id"`
-	IID          int64                       `json:"iid"`
-	Title        string                      `json:"title"`
-	State        string                      `json:"state"`
-	Confidential bool                        `json:"confidential"`
-	ProjectID    int64                       `json:"project_id"`
-	ProjectName  string                      `json:"project_name"`
-	Author       *gitlab.IssueAuthor         `json:"author"`
-	Assignees    []*gitlab.IssueAssignee     `json:"assignees"`
-	Labels       gitlab.Labels               `json:"labels"`
-	LabelDetails []*gitlab.LabelDetails      `json:"label_details,omitempty"`
-	Milestone    *gitlab.Milestone           `json:"milestone,omitempty"`
-	CreatedAt    *time.Time                  `json:"created_at"`
-	UpdatedAt    *time.Time                  `json:"updated_at"`
-	ClosedAt     *time.Time                  `json:"closed_at,omitempty"`
-	DueDate      *gitlab.ISOTime             `json:"due_date,omitempty"`
-	Weight       int64                       `json:"weight"`
-	Iteration    *gitlab.GroupIteration      `json:"iteration,omitempty"`
-	Epic         *gitlab.Epic                `json:"epic,omitempty"`
-	Child        ChildIssueInfo              `json:"child,omitempty"`
+	ID           int64                   `json:"id"`
+	IID          int64                   `json:"iid"`
+	Title        string                  `json:"title"`
+	State        string                  `json:"state"`
+	Confidential bool                    `json:"confidential"`
+	ProjectID    int64                   `json:"project_id"`
+	ProjectName  string                  `json:"project_name"`
+	Author       *gitlab.IssueAuthor     `json:"author"`
+	Assignees    []*gitlab.IssueAssignee `json:"assignees"`
+	Labels       gitlab.Labels           `json:"labels"`
+	LabelDetails []*gitlab.LabelDetails  `json:"label_details,omitempty"`
+	Milestone    *gitlab.Milestone       `json:"milestone,omitempty"`
+	CreatedAt    *time.Time              `json:"created_at"`
+	UpdatedAt    *time.Time              `json:"updated_at"`
+	ClosedAt     *time.Time              `json:"closed_at,omitempty"`
+	DueDate      *gitlab.ISOTime         `json:"due_date,omitempty"`
+	Weight       int64                   `json:"weight"`
+	Iteration    *gitlab.GroupIteration  `json:"iteration,omitempty"`
+	Epic         *gitlab.Epic            `json:"epic,omitempty"`
+	Child        ChildIssueInfo          `json:"child,omitempty"`
 }
 
 // ToIssueListItem converts a full IssueWithChild to lightweight IssueListItem
@@ -293,7 +232,7 @@ func (iwc *IssueWithChild) ToIssueListItem(includeFields map[string]bool) IssueL
 func parseFieldSelection(fieldsParam string, includeChildren bool) map[string]bool {
 	// Default: include all fields for backward compatibility
 	includeFields := make(map[string]bool)
-	
+
 	if fieldsParam == "" {
 		// No field selection = include all fields
 		includeFields["all"] = true
@@ -302,7 +241,7 @@ func parseFieldSelection(fieldsParam string, includeChildren bool) map[string]bo
 		}
 		return includeFields
 	}
-	
+
 	// Parse comma-separated fields
 	fields := strings.Split(fieldsParam, ",")
 	for _, field := range fields {
@@ -311,12 +250,12 @@ func parseFieldSelection(fieldsParam string, includeChildren bool) map[string]bo
 			includeFields[field] = true
 		}
 	}
-	
+
 	// Always include child if explicitly requested
 	if includeChildren {
 		includeFields["child"] = true
 	}
-	
+
 	return includeFields
 }
 
@@ -336,15 +275,15 @@ func GetIssues(ginContext *gin.Context) {
 	authorId := ginContext.Query("author_id")
 	state := ginContext.Query("state")
 	projectIds := ginContext.Query("project_ids")
-	
+
 	// NEW: Optimization parameters
-	viewType := ginContext.Query("view_type")           // "list" (default) or "detail"
+	viewType := ginContext.Query("view_type")               // "list" (default) or "detail"
 	includeChildren := ginContext.Query("include_children") // "true" or "false" (default: "false" for performance)
-	fieldsParam := ginContext.Query("fields")            // comma-separated fields to include
+	fieldsParam := ginContext.Query("fields")               // comma-separated fields to include
 
 	// Determine if we need child issue data (GraphQL is expensive!)
 	fetchChildren := includeChildren == "true" || (viewType == "detail" && includeChildren != "false")
-	
+
 	// Determine response type: "list" = lightweight, "detail" = full data
 	isListView := viewType != "detail"
 
@@ -546,12 +485,12 @@ func GetIssues(ginContext *gin.Context) {
 	if !fetchChildren {
 		ginContext.Header("X-View-Type", viewType)
 		ginContext.Header("X-Children-Fetched", "false")
-		
+
 		// Fast path: Only fetch project names from Redis cache
 		graphqlStart := time.Now()
-		
+
 		ctx := ginContext.Request.Context()
-		
+
 		// Collect unique project IDs
 		projectIDs := make(map[int64]bool)
 		for _, issue := range issues {
@@ -592,7 +531,7 @@ func GetIssues(ginContext *gin.Context) {
 		// Build lightweight response
 		for _, issue := range issues {
 			projectName := projectNameCache[issue.ProjectID]
-			
+
 			issuesWithChild = append(issuesWithChild, IssueWithChild{
 				IssueWithProject: IssueWithProject{
 					Issue:       issue,
@@ -610,7 +549,7 @@ func GetIssues(ginContext *gin.Context) {
 		// ====================================================================
 		ginContext.Header("X-View-Type", "detail")
 		ginContext.Header("X-Children-Fetched", "true")
-		
+
 		// 1. Concurrent GraphQL Batching with Semaphore
 		// GitLab has Max Query Complexity of ~250. Each issue with hierarchy widget uses ~14 complexity.
 		// Safe batch size: 250 / 14 ≈ 17. Using 10 to have more headroom under the limit.
@@ -668,7 +607,7 @@ func GetIssues(ginContext *gin.Context) {
 					gid := fmt.Sprintf("gid://gitlab/WorkItem/%d", issue.ID)
 					alias := fmt.Sprintf("item_%d", issue.ID)
 
-				queryBuilder.WriteString(fmt.Sprintf(`
+					queryBuilder.WriteString(fmt.Sprintf(`
 				%s: workItem(id: "%s") {
 					id
 					project {
@@ -687,88 +626,88 @@ func GetIssues(ginContext *gin.Context) {
 					}
 				}
 			`, alias, gid))
-			}
-			queryBuilder.WriteString("}")
-
-			respBody, errGQL := sendGraphQLRequest(ctx, graphqlEndpoint, token.AccessToken, queryBuilder.String(), map[string]interface{}{})
-
-			if errGQL == nil {
-				var rawResp struct {
-					Data   map[string]interface{} `json:"data"`
-					Errors []struct {
-						Message string `json:"message"`
-					} `json:"errors"`
 				}
+				queryBuilder.WriteString("}")
 
-				if err := json.Unmarshal(respBody, &rawResp); err == nil && len(rawResp.Errors) == 0 {
-					for alias, rawNode := range rawResp.Data {
-						data := AuxData{ChildItems: []ChildIssueItem{}}
+				respBody, errGQL := sendGraphQLRequest(ctx, graphqlEndpoint, token.AccessToken, queryBuilder.String(), map[string]interface{}{})
 
-						if nodeMap, ok := rawNode.(map[string]interface{}); ok {
-							// 1. Extract Project Name
-							if proj, ok := nodeMap["project"].(map[string]interface{}); ok {
-								if name, ok := proj["nameWithNamespace"].(string); ok {
-									data.ProjectName = name
+				if errGQL == nil {
+					var rawResp struct {
+						Data   map[string]interface{} `json:"data"`
+						Errors []struct {
+							Message string `json:"message"`
+						} `json:"errors"`
+					}
+
+					if err := json.Unmarshal(respBody, &rawResp); err == nil && len(rawResp.Errors) == 0 {
+						for alias, rawNode := range rawResp.Data {
+							data := AuxData{ChildItems: []ChildIssueItem{}}
+
+							if nodeMap, ok := rawNode.(map[string]interface{}); ok {
+								// 1. Extract Project Name
+								if proj, ok := nodeMap["project"].(map[string]interface{}); ok {
+									if name, ok := proj["nameWithNamespace"].(string); ok {
+										data.ProjectName = name
+									}
 								}
-							}
 
-							// 2. Extract Hierarchy
-							if widgets, ok := nodeMap["widgets"].([]interface{}); ok {
-								for _, w := range widgets {
-									if widgetMap, ok := w.(map[string]interface{}); ok {
-										if children, ok := widgetMap["children"].(map[string]interface{}); ok {
-											if count, ok := children["count"].(float64); ok {
-												data.ChildCount = int(count)
-											}
-											if nodes, ok := children["nodes"].([]interface{}); ok {
-												for _, n := range nodes {
-													if node, ok := n.(map[string]interface{}); ok {
-														childID, _ := node["id"].(string)
-														childIIDStr, _ := node["iid"].(string)
+								// 2. Extract Hierarchy
+								if widgets, ok := nodeMap["widgets"].([]interface{}); ok {
+									for _, w := range widgets {
+										if widgetMap, ok := w.(map[string]interface{}); ok {
+											if children, ok := widgetMap["children"].(map[string]interface{}); ok {
+												if count, ok := children["count"].(float64); ok {
+													data.ChildCount = int(count)
+												}
+												if nodes, ok := children["nodes"].([]interface{}); ok {
+													for _, n := range nodes {
+														if node, ok := n.(map[string]interface{}); ok {
+															childID, _ := node["id"].(string)
+															childIIDStr, _ := node["iid"].(string)
 
-														childIID, _ := strconv.Atoi(childIIDStr)
+															childIID, _ := strconv.Atoi(childIIDStr)
 
-														data.ChildItems = append(data.ChildItems, ChildIssueItem{
-															ID:  childID,
-															IID: childIID,
-														})
+															data.ChildItems = append(data.ChildItems, ChildIssueItem{
+																ID:  childID,
+																IID: childIID,
+															})
+														}
 													}
 												}
-											}
-											if data.ChildCount > 0 || len(data.ChildItems) > 0 {
-												break
+												if data.ChildCount > 0 || len(data.ChildItems) > 0 {
+													break
+												}
 											}
 										}
 									}
 								}
 							}
-						}
 
-						idStr := strings.TrimPrefix(alias, "item_")
-						idInt, _ := strconv.Atoi(idStr)
-						auxMap.Store(int64(idInt), data)
+							idStr := strings.TrimPrefix(alias, "item_")
+							idInt, _ := strconv.Atoi(idStr)
+							auxMap.Store(int64(idInt), data)
+						}
+					} else {
+						parseMu.Lock()
+						parseErrors = append(parseErrors, fmt.Sprintf("ParseError: %v", rawResp.Errors))
+						parseMu.Unlock()
 					}
 				} else {
 					parseMu.Lock()
-					parseErrors = append(parseErrors, fmt.Sprintf("ParseError: %v", rawResp.Errors))
+					parseErrors = append(parseErrors, fmt.Sprintf("ReqFailed: %v", errGQL))
 					parseMu.Unlock()
 				}
-			} else {
-				parseMu.Lock()
-				parseErrors = append(parseErrors, fmt.Sprintf("ReqFailed: %v", errGQL))
-				parseMu.Unlock()
-			}
-		}(func() []*gitlab.Issue {
-			end := i + BatchSize
-			if end > len(issues) {
-				end = len(issues)
-			}
-			return issues[i:end]
-		}())
-	}
+			}(func() []*gitlab.Issue {
+				end := i + BatchSize
+				if end > len(issues) {
+					end = len(issues)
+				}
+				return issues[i:end]
+			}())
+		}
 
-	parseWg.Wait()
-	ginContext.Header("X-Timing-GraphQL", time.Since(graphqlStart).String())
+		parseWg.Wait()
+		ginContext.Header("X-Timing-GraphQL", time.Since(graphqlStart).String())
 
 		// Add debug header if any errors occurred
 		if len(parseErrors) > 0 {
@@ -845,7 +784,7 @@ func GetIssues(ginContext *gin.Context) {
 	// 3. Response Transformation - Convert to lightweight format for list views
 	// ========================================================================
 	var response interface{} = issuesWithChild
-	
+
 	if isListView {
 		// Convert to lightweight format
 		lightweight := make([]IssueListItem, len(issuesWithChild))
@@ -853,7 +792,7 @@ func GetIssues(ginContext *gin.Context) {
 			lightweight[i] = issue.ToIssueListItem(includeFields)
 		}
 		response = lightweight
-		
+
 		// Cache the lightweight response separately
 		marshalStart := time.Now()
 		if data, err := json.Marshal(lightweight); err == nil {
@@ -1582,59 +1521,59 @@ func GetIssue(ginContext *gin.Context) {
 		projectName = project.NameWithNamespace
 	}
 
-    graphqlEndpoint := "https://gitlab.com/api/graphql"
-    if url := os.Getenv("GITLAB_BASE_URL"); url != "" {
-        graphqlEndpoint = strings.TrimRight(url, "/") + "/api/graphql"
-    }
+	graphqlEndpoint := "https://gitlab.com/api/graphql"
+	if url := os.Getenv("GITLAB_BASE_URL"); url != "" {
+		graphqlEndpoint = strings.TrimRight(url, "/") + "/api/graphql"
+	}
 
-    gid := fmt.Sprintf("gid://gitlab/WorkItem/%d", issue.ID)
-    query := "query($id: WorkItemID!) { workItem(id: $id) { widgets { ... on WorkItemWidgetHierarchy { children { count nodes { id iid } } } } } }"
-    variables := map[string]interface{}{ "id": gid }
+	gid := fmt.Sprintf("gid://gitlab/WorkItem/%d", issue.ID)
+	query := "query($id: WorkItemID!) { workItem(id: $id) { widgets { ... on WorkItemWidgetHierarchy { children { count nodes { id iid } } } } } }"
+	variables := map[string]interface{}{"id": gid}
 
-    var childInfo ChildIssueInfo
-    childInfo.Items = []ChildIssueItem{}
+	var childInfo ChildIssueInfo
+	childInfo.Items = []ChildIssueItem{}
 
-    respBody, errGQL := sendGraphQLRequest(ginContext, graphqlEndpoint, token.AccessToken, query, variables)
-    if errGQL == nil {
-        var rawResp struct {
-            Data struct {
-                WorkItem struct {
-                    Widgets []struct {
-                        Children struct {
-                            Count float64 `json:"count"`
-                            Nodes []struct {
-                                ID  string `json:"id"`
-                                IID string `json:"iid"`
-                            } `json:"nodes"`
-                        } `json:"children"`
-                    } `json:"widgets"`
-                } `json:"workItem"`
-            } `json:"data"`
-        }
-        if err := json.Unmarshal(respBody, &rawResp); err == nil {
-             if rawResp.Data.WorkItem.Widgets != nil {
-                 for _, w := range rawResp.Data.WorkItem.Widgets {
-                     if w.Children.Count > 0 || len(w.Children.Nodes) > 0 {
-                         childInfo.Amount = int(w.Children.Count)
-                         for _, n := range w.Children.Nodes {
-                             iidInt, _ := strconv.Atoi(n.IID)
-                             childInfo.Items = append(childInfo.Items, ChildIssueItem{
-                                 ID:  n.ID,
-                                 IID: iidInt,
-                             })
-                         }
-                     }
-                 }
-             }
-        }
-    }
+	respBody, errGQL := sendGraphQLRequest(ginContext, graphqlEndpoint, token.AccessToken, query, variables)
+	if errGQL == nil {
+		var rawResp struct {
+			Data struct {
+				WorkItem struct {
+					Widgets []struct {
+						Children struct {
+							Count float64 `json:"count"`
+							Nodes []struct {
+								ID  string `json:"id"`
+								IID string `json:"iid"`
+							} `json:"nodes"`
+						} `json:"children"`
+					} `json:"widgets"`
+				} `json:"workItem"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(respBody, &rawResp); err == nil {
+			if rawResp.Data.WorkItem.Widgets != nil {
+				for _, w := range rawResp.Data.WorkItem.Widgets {
+					if w.Children.Count > 0 || len(w.Children.Nodes) > 0 {
+						childInfo.Amount = int(w.Children.Count)
+						for _, n := range w.Children.Nodes {
+							iidInt, _ := strconv.Atoi(n.IID)
+							childInfo.Items = append(childInfo.Items, ChildIssueItem{
+								ID:  n.ID,
+								IID: iidInt,
+							})
+						}
+					}
+				}
+			}
+		}
+	}
 
 	result := IssueWithChild{
 		IssueWithProject: IssueWithProject{
 			Issue:       issue,
 			ProjectName: projectName,
 		},
-        Child: childInfo,
+		Child: childInfo,
 	}
 
 	ginContext.JSON(http.StatusOK, result)
@@ -1730,126 +1669,126 @@ func GetIssueLinks(ginContext *gin.Context) {
 }
 
 type CreateChildIssueRequest struct {
-    gitlab.CreateIssueOptions
-    ExistingChildIID *int `json:"existing_child_iid"`
+	gitlab.CreateIssueOptions
+	ExistingChildIID *int `json:"existing_child_iid"`
 }
 
 func CreateChildIssue(ginContext *gin.Context) {
-    token := ginContext.MustGet("token").(*oauth2.Token)
-    sessionID := ginContext.MustGet("session_id").(string)
+	token := ginContext.MustGet("token").(*oauth2.Token)
+	sessionID := ginContext.MustGet("session_id").(string)
 
-    tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-        return auth.UpdateSession(ctx, sessionID, t)
-    }
+	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
+		return auth.UpdateSession(ctx, sessionID, t)
+	}
 
-    gitlabClient, err := client.GetClient(ginContext, token, tokenSaver)
-    if err != nil {
-        ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create GitLab client: " + err.Error()})
-        ginContext.Abort()
-        return
-    }
+	gitlabClient, err := client.GetClient(ginContext, token, tokenSaver)
+	if err != nil {
+		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create GitLab client: " + err.Error()})
+		ginContext.Abort()
+		return
+	}
 
-    projectID := ginContext.Param("id")
-    parentIID, err := strconv.ParseInt(ginContext.Param("issue_id"), 10, 64)
-    if err != nil {
-        ginContext.JSON(http.StatusBadRequest, gin.H{"error": "Invalid parent issue ID"})
-        ginContext.Abort()
-        return
-    }
+	projectID := ginContext.Param("id")
+	parentIID, err := strconv.ParseInt(ginContext.Param("issue_id"), 10, 64)
+	if err != nil {
+		ginContext.JSON(http.StatusBadRequest, gin.H{"error": "Invalid parent issue ID"})
+		ginContext.Abort()
+		return
+	}
 
-    parentProjectID, _ := strconv.ParseInt(projectID, 10, 64)
+	parentProjectID, _ := strconv.ParseInt(projectID, 10, 64)
 
-    var request CreateChildIssueRequest
-    if err := ginContext.BindJSON(&request); err != nil {
-        ginContext.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-        ginContext.Abort()
-        return
-    }
+	var request CreateChildIssueRequest
+	if err := ginContext.BindJSON(&request); err != nil {
+		ginContext.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		ginContext.Abort()
+		return
+	}
 
-    var childIID int64
-    var childIssue *gitlab.Issue
+	var childIID int64
+	var childIssue *gitlab.Issue
 
-    if request.ExistingChildIID != nil {
-        childIID = int64(*request.ExistingChildIID)
-    } else {
-        if request.IssueType == nil {
-            request.IssueType = gitlab.Ptr("task")
-        }
-        newIssue, _, err := gitlabClient.Issues.CreateIssue(projectID, &request.CreateIssueOptions)
-        if err != nil {
-            ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create child issue: " + err.Error()})
-            return
-        }
-        childIID = int64(newIssue.IID)
-        childIssue = newIssue
-    }
+	if request.ExistingChildIID != nil {
+		childIID = int64(*request.ExistingChildIID)
+	} else {
+		if request.IssueType == nil {
+			request.IssueType = gitlab.Ptr("task")
+		}
+		newIssue, _, err := gitlabClient.Issues.CreateIssue(projectID, &request.CreateIssueOptions)
+		if err != nil {
+			ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create child issue: " + err.Error()})
+			return
+		}
+		childIID = int64(newIssue.IID)
+		childIssue = newIssue
+	}
 
-    errLink := linkChildTask(ginContext, token.AccessToken, parentIID, childIID, parentProjectID)
-    if errLink != nil {
-        status := "success_unlinked"
-        if request.ExistingChildIID != nil {
-            status = "failed"
-            ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to link existing issue: " + errLink.Error()})
-            return
-        }
-        ginContext.JSON(http.StatusCreated, gin.H{
-            "message": "Child issue created but failed to link",
-            "issue":   childIssue,
-            "status":  status,
-            "error":   errLink.Error(),
-        })
-        return
-    }
+	errLink := linkChildTask(ginContext, token.AccessToken, parentIID, childIID, parentProjectID)
+	if errLink != nil {
+		status := "success_unlinked"
+		if request.ExistingChildIID != nil {
+			status = "failed"
+			ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to link existing issue: " + errLink.Error()})
+			return
+		}
+		ginContext.JSON(http.StatusCreated, gin.H{
+			"message": "Child issue created but failed to link",
+			"issue":   childIssue,
+			"status":  status,
+			"error":   errLink.Error(),
+		})
+		return
+	}
 
-    if request.ExistingChildIID != nil {
-        ginContext.JSON(http.StatusOK, gin.H{"message": "Child issue linked successfully"})
-    } else {
-        ginContext.JSON(http.StatusCreated, gin.H{"message": "Child issue created and linked successfully", "issue": childIssue})
-    }
+	if request.ExistingChildIID != nil {
+		ginContext.JSON(http.StatusOK, gin.H{"message": "Child issue linked successfully"})
+	} else {
+		ginContext.JSON(http.StatusCreated, gin.H{"message": "Child issue created and linked successfully", "issue": childIssue})
+	}
 }
 
 func UnlinkChildIssue(ginContext *gin.Context) {
-    token := ginContext.MustGet("token").(*oauth2.Token)
-    sessionID := ginContext.MustGet("session_id").(string)
+	token := ginContext.MustGet("token").(*oauth2.Token)
+	sessionID := ginContext.MustGet("session_id").(string)
 
-    tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-        return auth.UpdateSession(ctx, sessionID, t)
-    }
+	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
+		return auth.UpdateSession(ctx, sessionID, t)
+	}
 
-    _, err := client.GetClient(ginContext, token, tokenSaver)
-    if err != nil {
-        ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create GitLab client: " + err.Error()})
-        ginContext.Abort()
-        return
-    }
+	_, err := client.GetClient(ginContext, token, tokenSaver)
+	if err != nil {
+		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create GitLab client: " + err.Error()})
+		ginContext.Abort()
+		return
+	}
 
-    projectIDStr := ginContext.Param("id")
-    projectID, _ := strconv.ParseInt(projectIDStr, 10, 64)
+	projectIDStr := ginContext.Param("id")
+	projectID, _ := strconv.ParseInt(projectIDStr, 10, 64)
 
-    childIID, err := strconv.ParseInt(ginContext.Param("child_id"), 10, 64)
-    if err != nil {
-        ginContext.JSON(http.StatusBadRequest, gin.H{"error": "Invalid child issue ID"})
-        ginContext.Abort()
-        return
-    }
+	childIID, err := strconv.ParseInt(ginContext.Param("child_id"), 10, 64)
+	if err != nil {
+		ginContext.JSON(http.StatusBadRequest, gin.H{"error": "Invalid child issue ID"})
+		ginContext.Abort()
+		return
+	}
 
-    errUnlink := unlinkChildTask(ginContext, token.AccessToken, childIID, projectID)
-    if errUnlink != nil {
-        ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to unlink child issue: " + errUnlink.Error()})
-        return
-    }
+	errUnlink := unlinkChildTask(ginContext, token.AccessToken, childIID, projectID)
+	if errUnlink != nil {
+		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to unlink child issue: " + errUnlink.Error()})
+		return
+	}
 
-    ginContext.Status(http.StatusNoContent)
+	ginContext.Status(http.StatusNoContent)
 }
 
 func unlinkChildTask(ctx context.Context, accessToken string, childIID int64, projectID int64) error {
-    graphqlEndpoint := "https://gitlab.com/api/graphql"
-    if url := os.Getenv("GITLAB_BASE_URL"); url != "" {
-        graphqlEndpoint = strings.TrimRight(url, "/") + "/api/graphql"
-    }
+	graphqlEndpoint := "https://gitlab.com/api/graphql"
+	if url := os.Getenv("GITLAB_BASE_URL"); url != "" {
+		graphqlEndpoint = strings.TrimRight(url, "/") + "/api/graphql"
+	}
 
-    projectGlobalID := fmt.Sprintf("gid://gitlab/Project/%d", projectID)
-    query := `
+	projectGlobalID := fmt.Sprintf("gid://gitlab/Project/%d", projectID)
+	query := `
         query($projectIds: [ID!]!, $childIID: String!) {
           projects(ids: $projectIds) {
             nodes {
@@ -1861,82 +1800,81 @@ func unlinkChildTask(ctx context.Context, accessToken string, childIID int64, pr
         }
     `
 
-    variables := map[string]interface{}{
-        "projectIds": []string{projectGlobalID},
-        "childIID":   fmt.Sprintf("%d", childIID),
-    }
+	variables := map[string]interface{}{
+		"projectIds": []string{projectGlobalID},
+		"childIID":   fmt.Sprintf("%d", childIID),
+	}
 
-    var respBody []byte
-    var errGraph error
-    respBody, errGraph = sendGraphQLRequest(ctx, graphqlEndpoint, accessToken, query, variables)
-    if errGraph != nil {
-        return fmt.Errorf("failed to query work item GID: %w", errGraph)
-    }
+	var respBody []byte
+	var errGraph error
+	respBody, errGraph = sendGraphQLRequest(ctx, graphqlEndpoint, accessToken, query, variables)
+	if errGraph != nil {
+		return fmt.Errorf("failed to query work item GID: %w", errGraph)
+	}
 
-    var queryResp struct {
-        Data struct {
-            Projects struct {
-                Nodes []struct {
-                    Child struct {
-                        Nodes []struct {
-                            ID string `json:"id"`
-                        } `json:"nodes"`
-                    } `json:"child"`
-                } `json:"nodes"`
-            } `json:"projects"`
-        } `json:"data"`
-        Errors []struct {
-            Message string `json:"message"`
-        } `json:"errors"`
-    }
+	var queryResp struct {
+		Data struct {
+			Projects struct {
+				Nodes []struct {
+					Child struct {
+						Nodes []struct {
+							ID string `json:"id"`
+						} `json:"nodes"`
+					} `json:"child"`
+				} `json:"nodes"`
+			} `json:"projects"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
 
-    if err := json.Unmarshal(respBody, &queryResp); err != nil {
-        return fmt.Errorf("failed to parse GraphQL response: %w", err)
-    }
-    if len(queryResp.Errors) > 0 {
-        return fmt.Errorf("graphql query error: %s", queryResp.Errors[0].Message)
-    }
+	if err := json.Unmarshal(respBody, &queryResp); err != nil {
+		return fmt.Errorf("failed to parse GraphQL response: %w", err)
+	}
+	if len(queryResp.Errors) > 0 {
+		return fmt.Errorf("graphql query error: %s", queryResp.Errors[0].Message)
+	}
 
-    if len(queryResp.Data.Projects.Nodes) == 0 || len(queryResp.Data.Projects.Nodes[0].Child.Nodes) == 0 {
-        return fmt.Errorf("child work item not found")
-    }
+	if len(queryResp.Data.Projects.Nodes) == 0 || len(queryResp.Data.Projects.Nodes[0].Child.Nodes) == 0 {
+		return fmt.Errorf("child work item not found")
+	}
 
-    childWorkItemID := queryResp.Data.Projects.Nodes[0].Child.Nodes[0].ID
+	childWorkItemID := queryResp.Data.Projects.Nodes[0].Child.Nodes[0].ID
 
-    mutation := `
+	mutation := `
         mutation($id: WorkItemID!) {
           workItemUpdate(input: {id: $id, hierarchyWidget: {parentId: null}}) {
             errors
           }
         }
     `
-    mutVars := map[string]interface{}{
-        "id": childWorkItemID,
-    }
+	mutVars := map[string]interface{}{
+		"id": childWorkItemID,
+	}
 
-    var mutRespBody []byte
-    var errMut error
-    mutRespBody, errMut = sendGraphQLRequest(ctx, graphqlEndpoint, accessToken, mutation, mutVars)
-    if errMut != nil {
-        return fmt.Errorf("failed to execute unlinked mutation: %w", errMut)
-    }
+	var mutRespBody []byte
+	var errMut error
+	mutRespBody, errMut = sendGraphQLRequest(ctx, graphqlEndpoint, accessToken, mutation, mutVars)
+	if errMut != nil {
+		return fmt.Errorf("failed to execute unlinked mutation: %w", errMut)
+	}
 
-    var mutResp struct {
-        Data struct {
-            WorkItemUpdate struct {
-                Errors []string `json:"errors"`
-            } `json:"workItemUpdate"`
-        } `json:"data"`
-    }
+	var mutResp struct {
+		Data struct {
+			WorkItemUpdate struct {
+				Errors []string `json:"errors"`
+			} `json:"workItemUpdate"`
+		} `json:"data"`
+	}
 
-    if err := json.Unmarshal(mutRespBody, &mutResp); err != nil {
-        return fmt.Errorf("failed to parse mutation response: %w", err)
-    }
+	if err := json.Unmarshal(mutRespBody, &mutResp); err != nil {
+		return fmt.Errorf("failed to parse mutation response: %w", err)
+	}
 
-    if len(mutResp.Data.WorkItemUpdate.Errors) > 0 {
-        return fmt.Errorf("work item update error: %v", mutResp.Data.WorkItemUpdate.Errors)
-    }
+	if len(mutResp.Data.WorkItemUpdate.Errors) > 0 {
+		return fmt.Errorf("work item update error: %v", mutResp.Data.WorkItemUpdate.Errors)
+	}
 
-    return nil
+	return nil
 }
-
