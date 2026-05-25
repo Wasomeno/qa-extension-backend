@@ -60,6 +60,26 @@ type ModelPrice struct {
 // Update this table when pricing changes.
 // Source: https://ai.google.dev/pricing (as of 2025)
 var ModelPricing = map[string]ModelPrice{
+	"gpt-4.1": {
+		InputPer1M:  2.00,
+		OutputPer1M: 8.00,
+	},
+	"gpt-4.1-mini": {
+		InputPer1M:  0.40,
+		OutputPer1M: 1.60,
+	},
+	"gpt-4.1-nano": {
+		InputPer1M:  0.10,
+		OutputPer1M: 0.40,
+	},
+	"gpt-4o": {
+		InputPer1M:  2.50,
+		OutputPer1M: 10.00,
+	},
+	"gpt-4o-mini": {
+		InputPer1M:  0.15,
+		OutputPer1M: 0.60,
+	},
 	"gemini-3.1-flash-lite": {
 		InputPer1M:  0.075,
 		OutputPer1M: 0.30,
@@ -285,5 +305,3 @@ func Log(ctx context.Context, usage TokenUsage) {
 		log.Printf("[TokenTracker] Redis write failed: %v", err)
 	}
 }
-
-

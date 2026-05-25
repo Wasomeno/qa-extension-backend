@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -16,9 +15,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/oauth2"
-	adkagent "google.golang.org/adk/agent"
-	"google.golang.org/adk/session"
-	"google.golang.org/genai"
 )
 
 func ListSessions(c *gin.Context) {
@@ -28,10 +24,7 @@ func ListSessions(c *gin.Context) {
 	// For now, we use "user" as default userID or we can try to get it from token/context if available
 	userID := "user"
 
-	resp, err := sessionService.List(ctx, &session.ListRequest{
-		AppName: "qa_extension",
-		UserID:  userID,
-	})
+	sessionsData, err := sessionService.List(ctx, userID)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list sessions: " + err.Error()})
@@ -45,39 +38,25 @@ func ListSessions(c *gin.Context) {
 	}
 
 	sessions := make([]sessionInfo, 0)
-	for _, sess := range resp.Sessions {
-		rs, ok := sess.(*agent.RedisSession)
-		if !ok {
-			continue
-		}
-
+	for _, sess := range sessionsData {
 		preview := ""
-		events := rs.Data.Events
-		if len(events) > 0 {
+		messages := sess.Messages
+		if len(messages) > 0 {
 			// Find the first user message for preview
-			for _, ev := range events {
-				// Check if this is a user message by checking the Author field
-				if ev.Author == "user" && ev.Content != nil {
-					// Extract text from Content.Parts
-					for _, part := range ev.Content.Parts {
-						if part.Text != "" {
-							preview = part.Text
-							if len(preview) > 100 {
-								preview = preview[:97] + "..."
-							}
-							break
-						}
+			for _, msg := range messages {
+				if msg.Role == "user" && msg.Content != "" {
+					preview = msg.Content
+					if len(preview) > 100 {
+						preview = preview[:97] + "..."
 					}
-					if preview != "" {
-						break
-					}
+					break
 				}
 			}
 		}
 
 		sessions = append(sessions, sessionInfo{
-			SessionID:      rs.Data.ID,
-			LastUpdateTime: rs.Data.LastUpdateTime,
+			SessionID:      sess.ID,
+			LastUpdateTime: sess.LastUpdateTime,
 			Preview:        preview,
 		})
 	}
@@ -87,9 +66,9 @@ func ListSessions(c *gin.Context) {
 
 // ChatMessage represents a single message in the chat history
 type ChatMessage struct {
-	Role      string   `json:"role"`       // "user" or "assistant"
-	Content   string   `json:"content"`    // The text content
-	Timestamp string   `json:"timestamp"`  // ISO 8601 timestamp
+	Role      string   `json:"role"`            // "user" or "assistant"
+	Content   string   `json:"content"`         // The text content
+	Timestamp string   `json:"timestamp"`       // ISO 8601 timestamp
 	Parts     []string `json:"parts,omitempty"` // Additional parts (for multimodal messages)
 }
 
@@ -104,63 +83,32 @@ func GetSession(c *gin.Context) {
 	ctx := c.Request.Context()
 	sessionService := agent.GetSessionService()
 
-	resp, err := sessionService.Get(ctx, &session.GetRequest{
-		AppName:   "qa_extension",
-		UserID:    "user",
-		SessionID: sessionID,
-	})
+	sess, err := sessionService.Get(ctx, sessionID)
 
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Session not found"})
 		return
 	}
 
-	rs, ok := resp.Session.(*agent.RedisSession)
-	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid session type"})
-		return
-	}
-
 	// Convert events to chat messages
 	messages := make([]ChatMessage, 0)
-	for _, ev := range rs.Data.Events {
-		if ev.Content == nil {
-			continue
-		}
-
-		// Determine role from Author
-		role := ev.Author
-		if role == "" {
-			role = "assistant"
-		}
-
-		// Extract text content from parts
-		var contentText string
-		var parts []string
-		for _, part := range ev.Content.Parts {
-			if part.Text != "" {
-				contentText += part.Text
-				parts = append(parts, part.Text)
-			}
-			// Note: For multimodal content (images), we could handle part.InlineData here
-		}
-
-		if contentText == "" {
+	for _, msg := range sess.Messages {
+		if msg.Content == "" {
 			continue
 		}
 
 		messages = append(messages, ChatMessage{
-			Role:      role,
-			Content:   contentText,
-			Timestamp: ev.Timestamp.Format(time.RFC3339),
-			Parts:     parts,
+			Role:      msg.Role,
+			Content:   msg.Content,
+			Timestamp: msg.Timestamp.Format(time.RFC3339),
+			Parts:     []string{msg.Content},
 		})
 	}
 
 	// Build response
 	response := gin.H{
-		"session_id":       rs.Data.ID,
-		"last_update_time": rs.Data.LastUpdateTime.Format(time.RFC3339),
+		"session_id":       sess.ID,
+		"last_update_time": sess.LastUpdateTime.Format(time.RFC3339),
 		"messages":         messages,
 		"message_count":    len(messages),
 	}
@@ -179,11 +127,7 @@ func DeleteSession(c *gin.Context) {
 	ctx := c.Request.Context()
 	sessionService := agent.GetSessionService()
 
-	err := sessionService.Delete(ctx, &session.DeleteRequest{
-		AppName:   "qa_extension",
-		UserID:    "user",
-		SessionID: sessionID,
-	})
+	err := sessionService.Delete(ctx, sessionID)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete session: " + err.Error()})
@@ -229,24 +173,9 @@ func ChatWithAgent(c *gin.Context) {
 
 	sessionService := agent.GetSessionService()
 
-	// Check if session exists, if not create it
-	_, err = sessionService.Get(ctx, &session.GetRequest{
-		AppName:   "qa_extension",
-		UserID:    userID,
-		SessionID: req.SessionID,
-	})
-
-	if err != nil {
-		// Attempt to create
-		_, err = sessionService.Create(ctx, &session.CreateRequest{
-			AppName:   "qa_extension",
-			UserID:    userID,
-			SessionID: req.SessionID,
-		})
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session: " + err.Error()})
-			return
-		}
+	if _, err = sessionService.GetOrCreate(ctx, req.SessionID, userID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session: " + err.Error()})
+		return
 	}
 
 	// Process input - check for slash commands
@@ -316,8 +245,7 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 		}
 	}
 
-	// Build content parts: text first, then any image attachments
-	parts := []*genai.Part{genai.NewPartFromText(input)}
+	attachments := make([]agent.AgentAttachment, 0, len(req.Attachments))
 	for _, att := range req.Attachments {
 		decoded, err := base64.StdEncoding.DecodeString(att.Data)
 		if err != nil {
@@ -329,12 +257,7 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 			mimeType = "image/png" // default fallback
 		}
 		log.Printf("[ChatWithAgent] Adding attachment: %s (%s, %d bytes)", att.Name, mimeType, len(decoded))
-		parts = append(parts, genai.NewPartFromBytes(decoded, mimeType))
-	}
-
-	content := &genai.Content{
-		Role:  genai.RoleUser,
-		Parts: parts,
+		attachments = append(attachments, agent.AgentAttachment{Name: att.Name, MimeType: mimeType, Data: decoded})
 	}
 
 	c.Header("Content-Type", "text/event-stream")
@@ -346,15 +269,9 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 	c.Writer.WriteHeaderNow()
 
 	// Create a background-ish context that inherits values but isn't canceled when the request ends.
-	agentCtx := context.WithoutCancel(c.Request.Context())
-
-	// Preserve context values from the original context (including GitLab token)
-	if val := c.Value("token"); val != nil {
-		agentCtx = context.WithValue(agentCtx, "token", val)
-	}
-	if val := c.Value("session_id"); val != nil {
-		agentCtx = context.WithValue(agentCtx, "auth_session_id", val)
-	}
+	agentCtx := context.WithoutCancel(ctx)
+	agentCtx = context.WithValue(agentCtx, "token", token)
+	agentCtx = context.WithValue(agentCtx, "session_id", req.SessionID)
 	agentCtx = context.WithValue(agentCtx, "agent_session_id", req.SessionID)
 
 	// Helper to send SSE events directly with guaranteed flush
@@ -394,51 +311,35 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 
 	// Run the agent
 	agentStart := time.Now()
-	var accumulatedResponse strings.Builder
-	var lastUsageMetadata *genai.GenerateContentResponseUsageMetadata
-	eventCh := r.Run(agentCtx, userID, req.SessionID, content, adkagent.RunConfig{})
-	
-	for event, err := range eventCh {
-		if err != nil {
-			if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "context canceled") {
-				log.Printf("[ChatWithAgent] Request aborted by client, exiting gracefully: %v", err)
+	eventCh := r.Run(agentCtx, agent.AgentRunRequest{
+		SessionID:   req.SessionID,
+		UserID:      userID,
+		Input:       input,
+		Attachments: attachments,
+	})
+
+	for event := range eventCh {
+		if event.Err != nil {
+			if strings.Contains(event.Err.Error(), "context canceled") {
+				log.Printf("[ChatWithAgent] Request aborted by client, exiting gracefully: %v", event.Err)
 				return
 			}
-			log.Printf("[ChatWithAgent] Agent execution error: %v", err)
-			sendEvent("error", gin.H{"message": err.Error()})
+			log.Printf("[ChatWithAgent] Agent execution error: %v", event.Err)
+			sendEvent("error", gin.H{"message": event.Err.Error()})
 			return
 		}
 
-		// Capture cumulative usage metadata
-		if event.UsageMetadata != nil {
-			lastUsageMetadata = event.UsageMetadata
-		}
-
-		// Accumulate text from ALL events that contain content parts
-		var chunkText string
-		if event.Content != nil {
-			for _, part := range event.Content.Parts {
-				if part.Text != "" {
-					chunkText += part.Text
-				}
-			}
-		}
-		if chunkText != "" {
-			accumulatedResponse.WriteString(chunkText)
-		}
-
-		if event.IsFinalResponse() {
-			finalResponse := accumulatedResponse.String()
+		if event.Final {
+			finalResponse := event.Content
 			log.Printf("[ChatWithAgent] Sending final response (total %d bytes)", len(finalResponse))
 
-			// Track token usage from agent execution
-			if lastUsageMetadata != nil {
+			if event.Usage != nil {
 				tracker.Log(agentCtx, tracker.TokenUsage{
 					Feature:      "qa_chat",
-					Model:        "gemini-3.1-flash-lite",
-					InputTokens:  lastUsageMetadata.PromptTokenCount,
-					OutputTokens: lastUsageMetadata.CandidatesTokenCount,
-					TotalTokens:  lastUsageMetadata.TotalTokenCount,
+					Model:        r.Model(),
+					InputTokens:  int32(event.Usage.InputTokens),
+					OutputTokens: int32(event.Usage.OutputTokens),
+					TotalTokens:  int32(event.Usage.TotalTokens),
 					SessionID:    req.SessionID,
 					Duration:     time.Since(agentStart),
 				})
@@ -448,24 +349,15 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 				"content":    finalResponse,
 				"session_id": req.SessionID,
 			})
-			
-			// Publish final event to Redis for unified stream consumers
 			agent.NewAgentEmitter(agentCtx, req.SessionID).Done("Agent completed")
 			return
-		} else {
-			// Extract text for progress update
-			progressText := chunkText
-			if progressText == "" {
-				progressText = "Agent is processing..."
-			}
-			
-			sendEvent("progress", gin.H{
-				"status":  "processing",
-				"message": progressText,
-			})
-			
-			// Publish progress event to Redis
-			agent.NewAgentEmitter(agentCtx, req.SessionID).Progress(progressText)
 		}
+
+		progressText := event.Message
+		if progressText == "" {
+			progressText = "Agent is processing..."
+		}
+		sendEvent("progress", gin.H{"status": "processing", "message": progressText})
+		agent.NewAgentEmitter(agentCtx, req.SessionID).Progress(progressText)
 	}
 }

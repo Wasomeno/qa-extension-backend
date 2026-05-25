@@ -13,9 +13,6 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
-	"google.golang.org/adk/agent"
-	"google.golang.org/adk/session"
-	"google.golang.org/genai"
 )
 
 // RunAgentForTestGenerationWithLLM runs the actual QA LLM agent to generate automations
@@ -48,19 +45,9 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input AutomationAgent
 
 	// Create session
 	sessionService := GetSessionService()
-	_, err = sessionService.Create(ctx, &session.CreateRequest{
-		AppName:   "qa_extension",
-		UserID:    userID,
-		SessionID: sessionID,
-	})
+	_, err = sessionService.Create(ctx, sessionID, userID, nil)
 	if err != nil {
 		log.Printf("[AgentGeneration] Session already exists or error: %v", err)
-	}
-
-	// Create the content message
-	content := &genai.Content{
-		Role:  genai.RoleUser,
-		Parts: []*genai.Part{{Text: prompt}},
 	}
 
 	// Store token in context for tools to access
@@ -71,43 +58,28 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input AutomationAgent
 
 	// Run the agent
 	agentStart := time.Now()
-	eventCh := runner.Run(agentCtx, userID, sessionID, content, agent.RunConfig{})
+	eventCh := runner.Run(agentCtx, AgentRunRequest{
+		SessionID: sessionID,
+		UserID:    userID,
+		Input:     prompt,
+	})
 
 	// Process events
 	var finalResponse string
-	var lastUsageMetadata *genai.GenerateContentResponseUsageMetadata
-	for event, err := range eventCh {
-		if err != nil {
-			log.Printf("[AgentGeneration] Agent error: %v", err)
+	var lastUsage *AgentUsage
+	for event := range eventCh {
+		if event.Err != nil {
+			log.Printf("[AgentGeneration] Agent error: %v", event.Err)
 			continue
 		}
-
-		if event == nil {
-			continue
+		if event.Usage != nil {
+			lastUsage = event.Usage
 		}
-
-		// Capture cumulative usage metadata (ADK carries it through events)
-		if event.UsageMetadata != nil {
-			lastUsageMetadata = event.UsageMetadata
+		if event.ToolName != "" {
+			log.Printf("[AgentGeneration] Tool event: %s (%s)", event.ToolName, event.Type)
 		}
-
-		// Check for final response
-		if event.IsFinalResponse() {
-			for _, part := range event.Content.Parts {
-				if part.Text != "" {
-					finalResponse += part.Text
-				}
-			}
-		}
-
-		// Log tool calls for debugging
-		for _, part := range event.Content.Parts {
-			if part.FunctionCall != nil {
-				log.Printf("[AgentGeneration] Tool call: %s", part.FunctionCall.Name)
-			}
-			if part.FunctionResponse != nil {
-				log.Printf("[AgentGeneration] Tool response: %s", part.FunctionResponse.Name)
-			}
+		if event.Final {
+			finalResponse = event.Content
 		}
 	}
 
@@ -116,13 +88,13 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input AutomationAgent
 	log.Printf("[AgentGeneration] Final response length: %d", len(finalResponse))
 
 	// Track token usage from agent execution
-	if lastUsageMetadata != nil {
+	if lastUsage != nil {
 		tracker.Log(agentCtx, tracker.TokenUsage{
 			Feature:      "test_generation_agent",
-			Model:        "gemini-3.1-flash-lite",
-			InputTokens:  lastUsageMetadata.PromptTokenCount,
-			OutputTokens: lastUsageMetadata.CandidatesTokenCount,
-			TotalTokens:  lastUsageMetadata.TotalTokenCount,
+			Model:        runner.Model(),
+			InputTokens:  int32(lastUsage.InputTokens),
+			OutputTokens: int32(lastUsage.OutputTokens),
+			TotalTokens:  int32(lastUsage.TotalTokens),
 			SessionID:    sessionID,
 			Duration:     agentDuration,
 		})

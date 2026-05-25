@@ -13,51 +13,13 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/functiontool"
 )
-
-func GetTestTools() []tool.Tool {
-	tools := []tool.Tool{}
-
-	tt1, _ := functiontool.New(functiontool.Config{
-		Name:        "listRecordedTests",
-		Description: "List all available recorded automation tests. You can optionally filter by projectID or issueID.",
-	}, listRecordedTests)
-	tools = append(tools, tt1)
-
-	tt2, _ := functiontool.New(functiontool.Config{
-		Name:        "runRecordedTest",
-		Description: "Run a recorded automation test by its ID. You can optionally provide 'overrides' to change input values (like email or password) during the test run.",
-	}, runRecordedTest)
-	tools = append(tools, tt2)
-
-	tt3, _ := functiontool.New(functiontool.Config{
-		Name:        "listTestScenarios",
-		Description: "List all uploaded test scenarios (XLSX documents).",
-	}, listTestScenarios)
-	tools = append(tools, tt3)
-
-	tt4, _ := functiontool.New(functiontool.Config{
-		Name:        "runTestScenario",
-		Description: "Run all generated tests for a specific test scenario. You can optionally filter by sheet names and choose between parallel or chained (sequential) execution.",
-	}, runTestScenario)
-	tools = append(tools, tt4)
-
-	tt5, _ := functiontool.New(functiontool.Config{
-		Name:        "runScenarioTestCase",
-		Description: "Run a specific test case from a scenario. If the test hasn't been generated yet, it will be generated on-the-fly.",
-	}, runScenarioTestCase)
-	tools = append(tools, tt5)
-
-	return tools
-}
 
 type ListTestScenariosResponse struct {
 	Scenarios []models.TestScenario `json:"scenarios"`
 }
 
-func listTestScenarios(ctx tool.Context, _ struct{}) (*ListTestScenariosResponse, error) {
+func listTestScenarios(ctx context.Context, _ struct{}) (*ListTestScenariosResponse, error) {
 	log.Printf("[AgentTool] listTestScenarios called")
 
 	var ids []string
@@ -97,7 +59,7 @@ type RunTestScenarioResponse struct {
 	Results []*models.TestResult `json:"results"`
 }
 
-func runTestScenario(ctx tool.Context, args RunTestScenarioArgs) (*RunTestScenarioResponse, error) {
+func runTestScenario(ctx context.Context, args RunTestScenarioArgs) (*RunTestScenarioResponse, error) {
 	log.Printf("[AgentTool] runTestScenario called with args: %+v", args)
 
 	val, err := database.RedisClient.Get(ctx, fmt.Sprintf("scenario:%s", args.ScenarioID)).Result()
@@ -211,7 +173,7 @@ type RunScenarioTestCaseArgs struct {
 	TestCaseID string `json:"testCaseID"`
 }
 
-func runScenarioTestCase(ctx tool.Context, args RunScenarioTestCaseArgs) (*models.TestResult, error) {
+func runScenarioTestCase(ctx context.Context, args RunScenarioTestCaseArgs) (*models.TestResult, error) {
 	log.Printf("[AgentTool] runScenarioTestCase called with args: %+v", args)
 
 	val, err := database.RedisClient.Get(ctx, fmt.Sprintf("scenario:%s", args.ScenarioID)).Result()
@@ -314,7 +276,7 @@ type ListRecordedTestsResponse struct {
 	Recordings []models.ManualRecordingSummary `json:"recordings"`
 }
 
-func listRecordedTests(ctx tool.Context, args ListRecordedTestsArgs) (*ListRecordedTestsResponse, error) {
+func listRecordedTests(ctx context.Context, args ListRecordedTestsArgs) (*ListRecordedTestsResponse, error) {
 	log.Printf("[AgentTool] listRecordedTests called with args: %+v", args)
 
 	events := NewAgentToolEmitter(ctx)
@@ -385,7 +347,7 @@ type RunRecordedTestArgs struct {
 	Overrides []InputOverride `json:"overrides,omitempty"`
 }
 
-func runRecordedTest(ctx tool.Context, args RunRecordedTestArgs) (*models.TestResult, error) {
+func runRecordedTest(ctx context.Context, args RunRecordedTestArgs) (*models.TestResult, error) {
 	log.Printf("[AgentTool] runRecordedTest called with args: %+v", args)
 
 	events := NewAgentToolEmitter(ctx)
@@ -473,7 +435,7 @@ func runRecordedTest(ctx tool.Context, args RunRecordedTestArgs) (*models.TestRe
 }
 
 // verifyRecordingOwnership checks if the current user is the creator of the recording
-func verifyRecordingOwnership(ctx tool.Context, recording *models.ManualRecording) error {
+func verifyRecordingOwnership(ctx context.Context, recording *models.ManualRecording) error {
 	token, _ := ctx.Value("token").(*oauth2.Token)
 	sessionID, _ := ctx.Value("session_id").(string)
 
@@ -494,7 +456,7 @@ func verifyRecordingOwnership(ctx tool.Context, recording *models.ManualRecordin
 }
 
 // verifyScenarioOwnership checks if the current user is the creator of the scenario
-func verifyScenarioOwnership(ctx tool.Context, scenario *models.TestScenario) error {
+func verifyScenarioOwnership(ctx context.Context, scenario *models.TestScenario) error {
 	token, _ := ctx.Value("token").(*oauth2.Token)
 	sessionID, _ := ctx.Value("session_id").(string)
 

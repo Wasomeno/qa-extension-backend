@@ -8,72 +8,9 @@ import (
 	"qa-extension-backend/client"
 	"strconv"
 
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/functiontool"
 	gitlab "gitlab.com/gitlab-org/api/client-go"
 	"golang.org/x/oauth2"
 )
-
-func GetGitLabTools() []tool.Tool {
-	tools := []tool.Tool{}
-	
-	t1, _ := functiontool.New(functiontool.Config{
-		Name: "listGitLabProjects",
-		Description: "List available GitLab projects. Call this without arguments to see all projects you have access to.",
-	}, listGitLabProjects)
-	tools = append(tools, t1)
-
-	t2, _ := functiontool.New(functiontool.Config{
-		Name: "createGitLabIssue",
-		Description: "Create a new issue in GitLab.",
-	}, createGitLabIssue)
-	tools = append(tools, t2)
-
-	t3, _ := functiontool.New(functiontool.Config{
-		Name: "listGitLabIssues",
-		Description: "List issues from a specific GitLab project. Requires projectId.",
-	}, listGitLabIssues)
-	tools = append(tools, t3)
-
-	t5, _ := functiontool.New(functiontool.Config{
-		Name: "listAllGitLabIssues",
-		Description: "List all issues assigned to you or created by you across all projects.",
-	}, listAllGitLabIssues)
-	tools = append(tools, t5)
-
-	t4, _ := functiontool.New(functiontool.Config{
-		Name: "updateGitLabIssue",
-		Description: "Update an existing issue in GitLab.",
-	}, updateGitLabIssue)
-	tools = append(tools, t4)
-
-	// New tools for code exploration
-	t6, _ := functiontool.New(functiontool.Config{
-		Name: "listGitLabRepositoryTree",
-		Description: "List the file and directory structure of a GitLab project repository at any branch/tag/commit. Use path='app' to see page routes, path='components' to see components. Use ref='feature-branch' to explore a specific branch.",
-	}, listGitLabRepositoryTree)
-	tools = append(tools, t6)
-
-	t7, _ := functiontool.New(functiontool.Config{
-		Name: "getGitLabFileContent",
-		Description: "Read the content of a file from GitLab at any branch/tag/commit. Use ref='feature-branch' to read from a specific branch. Use this to read React/Next.js components and pages to find selectors like data-testid, id, aria-label, class names.",
-	}, getGitLabFileContent)
-	tools = append(tools, t7)
-
-	t8, _ := functiontool.New(functiontool.Config{
-		Name: "searchGitLabCode",
-		Description: "Search for code/patterns in GitLab repository files at any branch/tag/commit. Use ref='feature-branch' to search a specific branch. Use this to find specific components, buttons, or selectors.",
-	}, searchGitLabCode)
-	tools = append(tools, t8)
-
-	t9, _ := functiontool.New(functiontool.Config{
-		Name: "listGitLabBranches",
-		Description: "List all branches in a GitLab project repository. Use this to discover available branches before navigating the repo at a specific branch.",
-	}, listGitLabBranches)
-	tools = append(tools, t9)
-
-	return tools
-}
 
 type ListProjectsArgs struct {
 	Search  string `json:"search"`
@@ -93,7 +30,7 @@ type ListProjectsResponse struct {
 	Projects []ProjectShortInfo `json:"projects"`
 }
 
-func listGitLabProjects(ctx tool.Context, args ListProjectsArgs) (*ListProjectsResponse, error) {
+func listGitLabProjects(ctx context.Context, args ListProjectsArgs) (*ListProjectsResponse, error) {
 	log.Printf("[AgentTool] listGitLabProjects called with args: %+v", args)
 
 	events := NewAgentToolEmitter(ctx)
@@ -155,7 +92,7 @@ type CreateIssueArgs struct {
 	Labels      []string `json:"labels"`
 }
 
-func createGitLabIssue(ctx tool.Context, args CreateIssueArgs) (*gitlab.Issue, error) {
+func createGitLabIssue(ctx context.Context, args CreateIssueArgs) (*gitlab.Issue, error) {
 	log.Printf("[AgentTool] createGitLabIssue called with args: %+v", args)
 
 	events := NewAgentToolEmitter(ctx)
@@ -210,7 +147,7 @@ type ListIssuesResponse struct {
 	Issues []IssueShortInfo `json:"issues"`
 }
 
-func listGitLabIssues(ctx tool.Context, args ListIssuesArgs) (*ListIssuesResponse, error) {
+func listGitLabIssues(ctx context.Context, args ListIssuesArgs) (*ListIssuesResponse, error) {
 	log.Printf("[AgentTool] listGitLabIssues called with args: %+v", args)
 
 	events := NewAgentToolEmitter(ctx)
@@ -261,7 +198,7 @@ type ListAllIssuesArgs struct {
 	State string `json:"state"`
 }
 
-func listAllGitLabIssues(ctx tool.Context, args ListAllIssuesArgs) (*ListIssuesResponse, error) {
+func listAllGitLabIssues(ctx context.Context, args ListAllIssuesArgs) (*ListIssuesResponse, error) {
 	log.Printf("[AgentTool] listAllGitLabIssues called with args: %+v", args)
 
 	events := NewAgentToolEmitter(ctx)
@@ -314,7 +251,7 @@ type UpdateIssueArgs struct {
 	Updates   map[string]any `json:"updates"`
 }
 
-func updateGitLabIssue(ctx tool.Context, args UpdateIssueArgs) (*gitlab.Issue, error) {
+func updateGitLabIssue(ctx context.Context, args UpdateIssueArgs) (*gitlab.Issue, error) {
 	log.Printf("[AgentTool] updateGitLabIssue called with args: %+v", args)
 
 	events := NewAgentToolEmitter(ctx)
@@ -384,7 +321,7 @@ type ListRepoTreeResponse struct {
 	Message string         `json:"message,omitempty"`
 }
 
-func listGitLabRepositoryTree(ctx tool.Context, args ListRepoTreeArgs) (*ListRepoTreeResponse, error) {
+func listGitLabRepositoryTree(ctx context.Context, args ListRepoTreeArgs) (*ListRepoTreeResponse, error) {
 	log.Printf("[AgentTool] listGitLabRepositoryTree called: project=%s, path=%s, ref=%s, recursive=%v", args.ProjectID, args.Path, args.Ref, args.Recursive)
 
 	glClient, err := getGitLabClient(ctx)
@@ -452,14 +389,14 @@ type GetFileContentArgs struct {
 }
 
 type FileContentResponse struct {
-	FilePath  string `json:"filePath"`
-	Content   string `json:"content"`
-	Size      int    `json:"size"`
-	Encoding  string `json:"encoding"`
-	Message   string `json:"message,omitempty"`
+	FilePath string `json:"filePath"`
+	Content  string `json:"content"`
+	Size     int    `json:"size"`
+	Encoding string `json:"encoding"`
+	Message  string `json:"message,omitempty"`
 }
 
-func getGitLabFileContent(ctx tool.Context, args GetFileContentArgs) (*FileContentResponse, error) {
+func getGitLabFileContent(ctx context.Context, args GetFileContentArgs) (*FileContentResponse, error) {
 	log.Printf("[AgentTool] getGitLabFileContent called: project=%s, file=%s", args.ProjectID, args.FilePath)
 
 	glClient, err := getGitLabClient(ctx)
@@ -525,7 +462,7 @@ type SearchCodeResponse struct {
 	Count   int            `json:"count"`
 }
 
-func searchGitLabCode(ctx tool.Context, args SearchCodeArgs) (*SearchCodeResponse, error) {
+func searchGitLabCode(ctx context.Context, args SearchCodeArgs) (*SearchCodeResponse, error) {
 	log.Printf("[AgentTool] searchGitLabCode called: project=%s, query=%s, ref=%s", args.ProjectID, args.Query, args.Ref)
 
 	glClient, err := getGitLabClient(ctx)
@@ -599,7 +536,7 @@ type ListBranchesResponse struct {
 	Count    int          `json:"count"`
 }
 
-func listGitLabBranches(ctx tool.Context, args ListBranchesArgs) (*ListBranchesResponse, error) {
+func listGitLabBranches(ctx context.Context, args ListBranchesArgs) (*ListBranchesResponse, error) {
 	log.Printf("[AgentTool] listGitLabBranches called: project=%s, search=%s", args.ProjectID, args.Search)
 
 	glClient, err := getGitLabClient(ctx)

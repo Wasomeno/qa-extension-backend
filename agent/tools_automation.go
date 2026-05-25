@@ -16,8 +16,6 @@ import (
 
 	gitlab "gitlab.com/gitlab-org/api/client-go"
 	"golang.org/x/oauth2"
-	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/functiontool"
 )
 
 // AuthConfig stores auth credentials for test generation
@@ -26,23 +24,6 @@ type AuthConfig struct {
 	LoginURL string `json:"loginUrl"`
 	Username string `json:"username"`
 	Password string `json:"password"`
-}
-
-// =============================================================================
-// TOOL REGISTRATION
-// =============================================================================
-
-// GetAutomationTools returns all automation test generation tools for the agent
-func GetAutomationTools() []tool.Tool {
-	tools := []tool.Tool{}
-
-	t1, _ := functiontool.New(functiontool.Config{
-		Name:        "save_automation_test",
-		Description: "Save a generated automation test to the database. The automation should have proper selectors, elementHints, and multiple steps (one per numbered step in the test case).",
-	}, saveAutomation)
-	tools = append(tools, t1)
-
-	return tools
 }
 
 // =============================================================================
@@ -90,7 +71,7 @@ type SaveAutomationOutput struct {
 	Message string `json:"message"`
 }
 
-func saveAutomation(ctx tool.Context, input SaveAutomationInput) (*SaveAutomationOutput, error) {
+func saveAutomation(ctx context.Context, input SaveAutomationInput) (*SaveAutomationOutput, error) {
 	log.Printf("[AgentTool] saveAutomation called: testCaseID=%s, steps=%d", input.TestCaseID, len(input.Steps))
 
 	steps := make([]models.RecordingStep, len(input.Steps))
@@ -207,7 +188,7 @@ type TestStepSummary struct {
 	Expected string `json:"expectedResult"`
 }
 
-func analyzeTestCase(ctx tool.Context, input AnalyzeTestCaseInput) (*AnalyzeTestCaseOutput, error) {
+func analyzeTestCase(ctx context.Context, input AnalyzeTestCaseInput) (*AnalyzeTestCaseOutput, error) {
 	log.Printf("[AutomationAgent] analyzeTestCase: scenario=%s, testCase=%s", input.ScenarioID, input.TestCaseID)
 
 	scenario, err := getScenarioFromRedis(input.ScenarioID)
@@ -310,7 +291,7 @@ type DecideFilesOutput struct {
 	Reasoning    string   `json:"reasoning"`
 }
 
-func decideFilesToFetch(ctx tool.Context, input DecideFilesInput) (*DecideFilesOutput, error) {
+func decideFilesToFetch(ctx context.Context, input DecideFilesInput) (*DecideFilesOutput, error) {
 	log.Printf("[AutomationAgent] decideFilesToFetch: routes=%v", input.TargetRoutes)
 
 	output := &DecideFilesOutput{
@@ -401,7 +382,7 @@ type FetchFilesOutput struct {
 	TotalTokens int           `json:"totalTokens"`
 }
 
-func fetchSourceFiles(ctx tool.Context, input FetchFilesInput) (*FetchFilesOutput, error) {
+func fetchSourceFiles(ctx context.Context, input FetchFilesInput) (*FetchFilesOutput, error) {
 	log.Printf("[AutomationAgent] fetchSourceFiles: %d files", len(input.FilePaths))
 
 	output := &FetchFilesOutput{
@@ -463,7 +444,7 @@ func fetchSingleFileFromGitLab(glClient *gitlab.Client, projectID, branch, fileP
 	return string(contentBytes), nil
 }
 
-func getGitLabClientFromContext(ctx tool.Context) (*gitlab.Client, error) {
+func getGitLabClientFromContext(ctx context.Context) (*gitlab.Client, error) {
 	token, ok := ctx.Value("token").(*oauth2.Token)
 	if !ok {
 		return nil, fmt.Errorf("unauthorized: missing GitLab token in context")
@@ -496,7 +477,7 @@ type ExtractSelectorsOutput struct {
 	Warnings  []string                  `json:"warnings"`
 }
 
-func extractSelectorsFromFiles(ctx tool.Context, input ExtractSelectorsInput) (*ExtractSelectorsOutput, error) {
+func extractSelectorsFromFiles(ctx context.Context, input ExtractSelectorsInput) (*ExtractSelectorsOutput, error) {
 	log.Printf("[AutomationAgent] extractSelectorsFromFiles: %d files", len(input.Files))
 
 	output := &ExtractSelectorsOutput{
@@ -671,7 +652,7 @@ type BuildAutomationOutput struct {
 	Issues     []string                    `json:"issues"`
 }
 
-func buildAutomationSteps(ctx tool.Context, input BuildAutomationInput) (*BuildAutomationOutput, error) {
+func buildAutomationSteps(ctx context.Context, input BuildAutomationInput) (*BuildAutomationOutput, error) {
 	log.Printf("[AutomationAgent] buildAutomationSteps: testCase=%s, selectors=%d", input.TestCaseID, len(input.Selectors))
 
 	output := &BuildAutomationOutput{
@@ -1124,7 +1105,7 @@ type GenerateAutomationOutput struct {
 	StepsUsed  int                         `json:"stepsUsed"`
 }
 
-func generateAutomationForTestCase(ctx tool.Context, input GenerateAutomationInput) (*GenerateAutomationOutput, error) {
+func generateAutomationForTestCase(ctx context.Context, input GenerateAutomationInput) (*GenerateAutomationOutput, error) {
 	log.Printf("[AutomationAgent] generateAutomationForTestCase: %s / %s", input.ScenarioID, input.TestCaseID)
 
 	// Step 1: Analyze
@@ -1926,7 +1907,7 @@ func cleanUrlToRoute(url string) string {
 	return "/" + url
 }
 
-func generateAutomationsForScenario(ctx tool.Context, input GenerateAutomationsInput) (*GenerateAutomationsOutput, error) {
+func generateAutomationsForScenario(ctx context.Context, input GenerateAutomationsInput) (*GenerateAutomationsOutput, error) {
 	log.Printf("[AutomationAgent] generateAutomationsForScenario (tool): %s", input.ScenarioID)
 
 	output := &GenerateAutomationsOutput{
