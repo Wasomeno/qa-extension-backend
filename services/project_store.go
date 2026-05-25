@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -12,12 +13,14 @@ import (
 	"qa-extension-backend/internal/models"
 
 	"github.com/google/uuid"
+	gitlab "gitlab.com/gitlab-org/api/client-go"
 )
 
 const (
-	appProjectsSetKey       = "app_projects"
-	appProjectKeyPrefix     = "app_project"
-	appProjectActivityLimit = 200
+	appProjectsSetKey             = "app_projects"
+	appProjectKeyPrefix           = "app_project"
+	appProjectActivityLimit       = 200
+	appProjectScenarioSyncTimeout = 15 * time.Minute
 
 	// MaxProjectTestContextBytes limits the size of project-level test context markdown.
 	MaxProjectTestContextBytes = 200 * 1024
@@ -25,6 +28,71 @@ const (
 	// DefaultPromptTestContextBytes limits how much context is injected into an LLM prompt.
 	DefaultPromptTestContextBytes = 12 * 1024
 )
+
+// StartMarkdownScenarioSyncJob imports markdown scenarios in the background.
+// It intentionally uses a context that is detached from the HTTP request so
+// proxy/client disconnects do not cancel LLM description generation or Redis writes.
+func StartMarkdownScenarioSyncJob(glClient *gitlab.Client, project *models.AppProject, actorID int) {
+	if glClient == nil || project == nil {
+		return
+	}
+	projectCopy := *project
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), appProjectScenarioSyncTimeout)
+		defer cancel()
+
+		log.Printf("[ProjectCreation] background scenario sync started projectID=%s specsRepoID=%d actorID=%d timeout=%s", projectCopy.ID, projectCopy.SpecsRepoID, actorID, appProjectScenarioSyncTimeout)
+		publishProjectScenarioSyncEvent(ctx, projectCopy.ID, "start", "Scenario import started", nil)
+		_ = AppendAppProjectActivity(ctx, projectCopy.ID, models.AppProjectActivity{
+			ID:        uuid.NewString(),
+			ProjectID: projectCopy.ID,
+			ActorID:   actorID,
+			Action:    models.AppProjectActivityScenarioSyncStarted,
+			CreatedAt: time.Now(),
+		})
+
+		imported, err := SyncMarkdownTestScenarios(ctx, glClient, &projectCopy, actorID)
+		if err != nil {
+			log.Printf("[ProjectCreation] background scenario sync failed projectID=%s error=%v", projectCopy.ID, err)
+			publishProjectScenarioSyncEvent(ctx, projectCopy.ID, "error", "Scenario import failed: "+err.Error(), &database.StreamErrorInfo{Code: "scenario_sync_failed", Details: err.Error()})
+			_ = AppendAppProjectActivity(context.Background(), projectCopy.ID, models.AppProjectActivity{
+				ID:        uuid.NewString(),
+				ProjectID: projectCopy.ID,
+				ActorID:   actorID,
+				Action:    models.AppProjectActivityScenarioSyncFailed,
+				Changes: map[string]models.AppProjectChange{
+					"error": {Old: nil, New: err.Error()},
+				},
+				CreatedAt: time.Now(),
+			})
+			return
+		}
+
+		log.Printf("[ProjectCreation] background scenario sync completed projectID=%s imported=%d", projectCopy.ID, len(imported))
+		publishProjectScenarioSyncEvent(ctx, projectCopy.ID, "done", fmt.Sprintf("Scenario import completed (%d imported)", len(imported)), nil)
+		_ = AppendAppProjectActivity(ctx, projectCopy.ID, models.AppProjectActivity{
+			ID:        uuid.NewString(),
+			ProjectID: projectCopy.ID,
+			ActorID:   actorID,
+			Action:    models.AppProjectActivityScenarioSyncCompleted,
+			Changes: map[string]models.AppProjectChange{
+				"importedCount": {Old: nil, New: len(imported)},
+			},
+			CreatedAt: time.Now(),
+		})
+	}()
+}
+
+func publishProjectScenarioSyncEvent(ctx context.Context, projectID, stage, message string, errInfo *database.StreamErrorInfo) {
+	_ = database.PublishStreamEvent(ctx, database.StreamEvent{
+		Type:         "generation",
+		ResourceType: "project",
+		ResourceID:   projectID,
+		Stage:        stage,
+		Message:      message,
+		ErrorInfo:    errInfo,
+	})
+}
 
 // CreateAppProject stores a public QA project and records its creation.
 func CreateAppProject(ctx context.Context, req models.CreateAppProjectRequest, actorID int) (*models.AppProject, error) {
@@ -375,12 +443,12 @@ func isContextStopWord(term string) bool {
 // ExtractBaseURLFromTestContext parses the project test context markdown and returns
 // the base URL if one is defined. It supports two formats:
 //
-//   ## Base URL
-//   https://staging.example.com
+//	## Base URL
+//	https://staging.example.com
 //
 // or an inline line:
 //
-//   base url: https://staging.example.com
+//	base url: https://staging.example.com
 func ExtractBaseURLFromTestContext(markdown string) string {
 	if markdown == "" {
 		return ""

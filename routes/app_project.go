@@ -50,19 +50,12 @@ func CreateAppProject(c *gin.Context) {
 	log.Printf("[ProjectCreation] created projectID=%s name=%q actorID=%d", project.ID, project.Name, actorID)
 
 	importedCount := 0
+	syncStarted := false
 	glClient, hasGitLab := gitLabClientFromContext(c)
 	if hasGitLab {
-		log.Printf("[ProjectCreation] syncing markdown scenarios projectID=%s specsRepoID=%d actorID=%d", project.ID, project.SpecsRepoID, actorID)
-		imported, syncErr := services.SyncMarkdownTestScenarios(c.Request.Context(), glClient, project, actorID)
-		if syncErr != nil {
-			log.Printf("[ProjectCreation] scenario sync warning projectID=%s error=%v", project.ID, syncErr)
-			issueRepoName := fetchRepoName(glClient, project.IssueRepoID)
-			specsRepoName := fetchRepoName(glClient, project.SpecsRepoID)
-			c.JSON(http.StatusCreated, gin.H{"project": project.ToResponse(issueRepoName, specsRepoName), "scenariosImported": importedCount, "warning": syncErr.Error()})
-			return
-		}
-		importedCount = len(imported)
-		log.Printf("[ProjectCreation] scenario sync complete projectID=%s imported=%d", project.ID, importedCount)
+		log.Printf("[ProjectCreation] starting background markdown scenario sync projectID=%s specsRepoID=%d actorID=%d", project.ID, project.SpecsRepoID, actorID)
+		services.StartMarkdownScenarioSyncJob(glClient, project, actorID)
+		syncStarted = true
 	} else {
 		log.Printf("[ProjectCreation] skipping scenario sync projectID=%s reason=missing_gitlab_token", project.ID)
 	}
@@ -73,8 +66,8 @@ func CreateAppProject(c *gin.Context) {
 		issueRepoName = fetchRepoName(glClient, project.IssueRepoID)
 		specsRepoName = fetchRepoName(glClient, project.SpecsRepoID)
 	}
-	log.Printf("[ProjectCreation] complete projectID=%s imported=%d", project.ID, importedCount)
-	c.JSON(http.StatusCreated, gin.H{"project": project.ToResponse(issueRepoName, specsRepoName), "scenariosImported": importedCount})
+	log.Printf("[ProjectCreation] complete projectID=%s imported=%d syncStarted=%t", project.ID, importedCount, syncStarted)
+	c.JSON(http.StatusCreated, gin.H{"project": project.ToResponse(issueRepoName, specsRepoName), "scenariosImported": importedCount, "scenarioSyncStarted": syncStarted})
 }
 
 func ListAppProjects(c *gin.Context) {

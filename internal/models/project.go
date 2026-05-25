@@ -90,9 +90,12 @@ type UpdateProjectTestContextRequest struct {
 type AppProjectActivityAction string
 
 const (
-	AppProjectActivityCreated AppProjectActivityAction = "created"
-	AppProjectActivityUpdated AppProjectActivityAction = "updated"
-	AppProjectActivityDeleted AppProjectActivityAction = "deleted"
+	AppProjectActivityCreated               AppProjectActivityAction = "created"
+	AppProjectActivityUpdated               AppProjectActivityAction = "updated"
+	AppProjectActivityDeleted               AppProjectActivityAction = "deleted"
+	AppProjectActivityScenarioSyncStarted   AppProjectActivityAction = "scenario_sync_started"
+	AppProjectActivityScenarioSyncCompleted AppProjectActivityAction = "scenario_sync_completed"
+	AppProjectActivityScenarioSyncFailed    AppProjectActivityAction = "scenario_sync_failed"
 )
 
 // AppProjectChange stores old/new values for an audited project field change.
