@@ -50,10 +50,11 @@ type AgentRunner interface {
 
 // OpenAIAgentRunner executes an agent loop with OpenAI chat completions and function tools.
 type OpenAIAgentRunner struct {
-	client openai.Client
-	model  string
-	store  *RedisSessionService
-	tools  *ToolRegistry
+	client          openai.Client
+	model           string
+	instructionRole string
+	store           *RedisSessionService
+	tools           *ToolRegistry
 }
 
 func GetQARunner(ctx context.Context) (AgentRunner, error) {
@@ -69,12 +70,23 @@ func GetQARunner(ctx context.Context) (AgentRunner, error) {
 	if baseURL := os.Getenv("OPENAI_BASE_URL"); baseURL != "" {
 		opts = append(opts, option.WithBaseURL(baseURL))
 	}
+	instructionRole := os.Getenv("OPENAI_INSTRUCTION_ROLE")
+	if instructionRole == "" {
+		instructionRole = "system"
+		if strings.Contains(os.Getenv("OPENAI_BASE_URL"), "crof.ai") {
+			// Crof/Kimi currently returns 500 when some system prompts are combined
+			// with tool-result messages. A user-role instruction preamble avoids that
+			// provider bug while keeping the OpenAI default as system.
+			instructionRole = "user"
+		}
+	}
 
 	return &OpenAIAgentRunner{
-		client: openai.NewClient(opts...),
-		model:  model,
-		store:  GetSessionService(),
-		tools:  NewQAToolRegistry(),
+		client:          openai.NewClient(opts...),
+		model:           model,
+		instructionRole: instructionRole,
+		store:           GetSessionService(),
+		tools:           NewQAToolRegistry(),
 	}, nil
 }
 
@@ -117,7 +129,7 @@ func (r *OpenAIAgentRunner) run(ctx context.Context, req AgentRunRequest, ch cha
 
 	var lastUsage *AgentUsage
 	for iteration := 0; iteration < maxOpenAIToolIterations; iteration++ {
-		messages := buildOpenAIChatMessages(sess.Messages)
+		messages := buildOpenAIChatMessages(r.instructionRole, sess.Messages)
 		resp, err := r.createChatCompletion(ctx, messages)
 		if err != nil {
 			return err
@@ -248,8 +260,15 @@ func (r *OpenAIAgentRunner) createChatCompletion(ctx context.Context, messages [
 	return &resp, nil
 }
 
-func buildOpenAIChatMessages(messages []AgentMessage) []openAIChatMessage {
-	out := []openAIChatMessage{{Role: "system", Content: SYSTEM_INSTRUCTION}}
+func buildOpenAIChatMessages(instructionRole string, messages []AgentMessage) []openAIChatMessage {
+	if instructionRole == "" {
+		instructionRole = "system"
+	}
+	instructionContent := SYSTEM_INSTRUCTION
+	if instructionRole == "user" {
+		instructionContent = "System instructions:\n" + SYSTEM_INSTRUCTION + "\n\nFollow these instructions for all subsequent messages."
+	}
+	out := []openAIChatMessage{{Role: instructionRole, Content: instructionContent}}
 	for _, msg := range messages {
 		switch msg.Role {
 		case "user":

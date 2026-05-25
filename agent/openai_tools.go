@@ -112,32 +112,24 @@ func schemaFromType(t reflect.Type) map[string]any {
 	}
 
 	properties := make(map[string]any)
-	required := make([]string, 0)
 
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		if field.PkgPath != "" { // unexported
 			continue
 		}
-		name, omitempty, skip := jsonFieldName(field)
+		name, _, skip := jsonFieldName(field)
 		if skip {
 			continue
 		}
 		properties[name] = schemaForField(field.Type)
-		if !omitempty {
-			required = append(required, name)
-		}
 	}
 
-	schema := map[string]any{
+	return map[string]any{
 		"type":                 "object",
 		"properties":           properties,
 		"additionalProperties": false,
 	}
-	if len(required) > 0 {
-		schema["required"] = required
-	}
-	return schema
 }
 
 func jsonFieldName(field reflect.StructField) (name string, omitempty bool, skip bool) {
