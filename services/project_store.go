@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	gitlab "gitlab.com/gitlab-org/api/client-go"
+	"golang.org/x/oauth2"
 )
 
 const (
@@ -29,10 +30,11 @@ const (
 	DefaultPromptTestContextBytes = 12 * 1024
 )
 
-// StartMarkdownScenarioSyncJob imports markdown scenarios in the background.
+// StartMarkdownScenarioSyncJob imports markdown scenarios in the background and then
+// auto-generates test cases for all imported scenarios via the LLM agent.
 // It intentionally uses a context that is detached from the HTTP request so
 // proxy/client disconnects do not cancel LLM description generation or Redis writes.
-func StartMarkdownScenarioSyncJob(glClient *gitlab.Client, project *models.AppProject, actorID int) {
+func StartMarkdownScenarioSyncJob(glClient *gitlab.Client, project *models.AppProject, actorID int, token *oauth2.Token) {
 	if glClient == nil || project == nil {
 		return
 	}
@@ -68,8 +70,22 @@ func StartMarkdownScenarioSyncJob(glClient *gitlab.Client, project *models.AppPr
 			return
 		}
 
-		log.Printf("[ProjectCreation] background scenario sync completed projectID=%s imported=%d", projectCopy.ID, len(imported))
-		publishProjectScenarioSyncEvent(ctx, projectCopy.ID, "done", fmt.Sprintf("Scenario import completed (%d imported)", len(imported)), nil)
+		log.Printf("[ProjectCreation] background scenario import completed projectID=%s imported=%d, starting auto-generation", projectCopy.ID, len(imported))
+
+		// Publish progress event for transition from import to generation
+		PublishGenerationProgress(ctx, projectCopy.ID,
+			fmt.Sprintf("Imported %d scenarios. Generating test cases...", len(imported)),
+			0, len(imported), "")
+
+		// Run auto-generation for all imported scenarios
+		if token != nil && len(imported) > 0 {
+			RunProjectAutoGeneration(ctx, &projectCopy, imported, token, actorID)
+		}
+
+		// Publish final done event with both import and generation summary
+		doneMsg := fmt.Sprintf("Scenario import completed (%d imported)", len(imported))
+		log.Printf("[ProjectCreation] background scenario sync fully completed projectID=%s imported=%d", projectCopy.ID, len(imported))
+		publishProjectScenarioSyncEvent(ctx, projectCopy.ID, "done", doneMsg, nil)
 		_ = AppendAppProjectActivity(ctx, projectCopy.ID, models.AppProjectActivity{
 			ID:        uuid.NewString(),
 			ProjectID: projectCopy.ID,

@@ -54,7 +54,9 @@ func CreateAppProject(c *gin.Context) {
 	glClient, hasGitLab := gitLabClientFromContext(c)
 	if hasGitLab {
 		log.Printf("[ProjectCreation] starting background markdown scenario sync projectID=%s specsRepoID=%d actorID=%d", project.ID, project.SpecsRepoID, actorID)
-		services.StartMarkdownScenarioSyncJob(glClient, project, actorID)
+		token, _ := c.Get("token")
+		oauthToken, _ := token.(*oauth2.Token)
+		services.StartMarkdownScenarioSyncJob(glClient, project, actorID, oauthToken)
 		syncStarted = true
 	} else {
 		log.Printf("[ProjectCreation] skipping scenario sync projectID=%s reason=missing_gitlab_token", project.ID)
