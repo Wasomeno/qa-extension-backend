@@ -145,6 +145,7 @@ func main() {
 
 		// File uploads
 		protected.POST("/projects/:id/uploads", routes.UploadFile)
+		protected.GET("/files/proxy", routes.ProxyFile)
 
 		// Project-scoped GitLab issue and board operations use the project's issueRepoId.
 		protected.GET("/projects/:id/labels", routes.WithIssueRepo(routes.GetProjectLabels))

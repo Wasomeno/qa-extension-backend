@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"qa-extension-backend/client"
@@ -16,6 +17,8 @@ import (
 	"qa-extension-backend/internal/models"
 	"qa-extension-backend/services"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	gitlab "gitlab.com/gitlab-org/api/client-go"
@@ -392,4 +395,52 @@ func UploadFile(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"url": url})
+}
+
+// ProxyFile streams a file from R2 storage with proper inline headers,
+// bypassing the .r2.dev domain which always forces Content-Disposition: attachment.
+// Accepts a "url" query parameter pointing to the R2 public URL.
+func ProxyFile(c *gin.Context) {
+	fileURL := c.Query("url")
+	if fileURL == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "url query parameter is required"})
+		return
+	}
+
+	r2, err := client.NewR2Client()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "storage not configured"})
+		return
+	}
+
+	// Extract the object key from the public URL by stripping the public URL prefix
+	parsedURL, err := url.Parse(fileURL)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid url"})
+		return
+	}
+
+	key := strings.TrimPrefix(parsedURL.Path, "/")
+
+	obj, err := r2.S3Client.GetObject(c.Request.Context(), &s3.GetObjectInput{
+		Bucket: aws.String(r2.BucketName),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to fetch file: %v", err)})
+		return
+	}
+	defer obj.Body.Close()
+
+	contentType := "application/octet-stream"
+	if obj.ContentType != nil {
+		contentType = *obj.ContentType
+	}
+
+	c.Header("Content-Type", contentType)
+	c.Header("Content-Disposition", "inline")
+	c.Header("Cache-Control", "public, max-age=31536000, immutable")
+	c.Status(http.StatusOK)
+
+	io.Copy(c.Writer, obj.Body)
 }

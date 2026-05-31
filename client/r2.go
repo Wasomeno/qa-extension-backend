@@ -59,10 +59,11 @@ func (r *R2Client) UploadFile(ctx context.Context, filePath string, key string, 
 	defer file.Close()
 
 	_, err = r.S3Client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:      aws.String(r.BucketName),
-		Key:         aws.String(key),
-		Body:        file,
-		ContentType: aws.String(contentType),
+		Bucket:             aws.String(r.BucketName),
+		Key:                aws.String(key),
+		Body:               file,
+		ContentType:        aws.String(contentType),
+		ContentDisposition: aws.String("inline"),
 	})
 	if err != nil {
 		return "", err
