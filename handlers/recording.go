@@ -28,6 +28,7 @@ func routeRecordingProjectID(c *gin.Context) string {
 	if strings.Contains(c.FullPath(), "/projects/:id/") {
 		return c.Param("id")
 	}
+
 	return c.Param("project_id")
 }
 
@@ -35,6 +36,7 @@ func routeRecordingID(c *gin.Context) string {
 	if id := c.Param("recording_id"); id != "" {
 		return id
 	}
+	fmt.Fprintf(c.Writer, "data: %s\n\n")
 	return c.Param("id")
 }
 
