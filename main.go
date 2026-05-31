@@ -143,6 +143,9 @@ func main() {
 		protected.GET("/projects/:id/activity", routes.ListAppProjectActivity)
 		protected.GET("/projects/:id/dashboard", routes.GetProjectDashboard)
 
+		// File uploads
+		protected.POST("/projects/:id/uploads", routes.UploadFile)
+
 		// Project-scoped GitLab issue and board operations use the project's issueRepoId.
 		protected.GET("/projects/:id/labels", routes.WithIssueRepo(routes.GetProjectLabels))
 		protected.GET("/projects/:id/issues", routes.WithIssueRepo(routes.GetProjectIssues))

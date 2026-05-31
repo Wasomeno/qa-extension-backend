@@ -2,8 +2,12 @@ package routes
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"qa-extension-backend/client"
 	"strconv"
 	"strings"
@@ -13,6 +17,7 @@ import (
 	"qa-extension-backend/services"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	gitlab "gitlab.com/gitlab-org/api/client-go"
 	"golang.org/x/oauth2"
 )
@@ -323,4 +328,68 @@ func setGinParam(c *gin.Context, key string, value string) {
 		}
 	}
 	c.Params = append(c.Params, gin.Param{Key: key, Value: value})
+}
+
+// UploadFile handles file uploads to R2 storage for a given project.
+// Accepts a multipart form with a "file" field.
+// Returns the public URL of the uploaded file.
+func UploadFile(c *gin.Context) {
+	projectID := c.Param("id")
+	if projectID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "project id is required"})
+		return
+	}
+
+	if err := c.Request.ParseMultipartForm(64 << 20); err != nil { // 64 MB max
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to parse multipart form"})
+		return
+	}
+
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file is required"})
+		return
+	}
+	defer file.Close()
+
+	r2, err := client.NewR2Client()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "storage is not configured"})
+		return
+	}
+
+	tmp, err := os.CreateTemp("", "project-upload-*")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create temp file"})
+		return
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := io.Copy(tmp, file); err != nil {
+		tmp.Close()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read uploaded file"})
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to close temp file"})
+		return
+	}
+
+	ext := filepath.Ext(header.Filename)
+	cleanName := strings.ReplaceAll(strings.TrimSuffix(header.Filename, ext), " ", "_")
+	key := fmt.Sprintf("project-uploads/%s/%s-%s%s", projectID, cleanName, uuid.NewString(), ext)
+
+	contentType := header.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	url, err := r2.UploadFile(c.Request.Context(), tmpPath, key, contentType)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to upload file: %v", err)})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"url": url})
 }
