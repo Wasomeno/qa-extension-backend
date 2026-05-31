@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -432,15 +433,20 @@ func ProxyFile(c *gin.Context) {
 	}
 	defer obj.Body.Close()
 
+	// Resolve content type: prefer S3 object metadata, fallback to extension detection
 	contentType := "application/octet-stream"
-	if obj.ContentType != nil {
+	if obj.ContentType != nil && *obj.ContentType != "" && *obj.ContentType != "application/octet-stream" {
 		contentType = *obj.ContentType
+	} else {
+		if detected := mime.TypeByExtension(filepath.Ext(parsedURL.Path)); detected != "" {
+			contentType = detected
+		}
 	}
 
-	c.Header("Content-Type", contentType)
-	c.Header("Content-Disposition", "inline")
-	c.Header("Cache-Control", "public, max-age=31536000, immutable")
-	c.Status(http.StatusOK)
+	// Build Content-Disposition with filename so browsers display it properly
+	filename := filepath.Base(parsedURL.Path)
 
-	io.Copy(c.Writer, obj.Body)
+	c.Header("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, filename))
+	c.Header("Cache-Control", "public, max-age=31536000, immutable")
+	c.DataFromReader(http.StatusOK, *obj.ContentLength, contentType, obj.Body, nil)
 }
