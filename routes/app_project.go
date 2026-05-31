@@ -411,9 +411,6 @@ func ProxyFile(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "url query parameter is required"})
 		return
 	}
-	// Caller-provided hint (e.g. stored contentType from the evidence record).
-	// Used as final fallback when R2 metadata and extension detection both fail.
-	hintType := c.Query("content_type")
 
 	r2, err := client.NewR2Client()
 	if err != nil {
@@ -448,8 +445,6 @@ func ProxyFile(c *gin.Context) {
 	} else {
 		if detected := mime.TypeByExtension(filepath.Ext(parsedURL.Path)); detected != "" {
 			contentType = detected
-		} else if hintType != "" && hintType != "application/octet-stream" {
-			contentType = hintType
 		}
 	}
 
