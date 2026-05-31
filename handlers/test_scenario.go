@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -1447,8 +1448,12 @@ func uploadManualEvidence(ctx context.Context, r2 *client.R2Client, projectID st
 	cleanName := strings.ReplaceAll(filepath.Base(name), " ", "_")
 	key := fmt.Sprintf("manual-evidence/%s/%s/%s/%s/%s", projectID, scenarioID, tcID, resultID, cleanName)
 	contentType := header.Header.Get("Content-Type")
-	if contentType == "" {
-		contentType = "application/octet-stream"
+	if contentType == "" || contentType == "application/octet-stream" {
+		if detected := mime.TypeByExtension(filepath.Ext(name)); detected != "" {
+			contentType = detected
+		} else if contentType == "" {
+			contentType = "application/octet-stream"
+		}
 	}
 	return r2.UploadFile(ctx, tmpPath, key, contentType)
 }

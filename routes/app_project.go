@@ -385,8 +385,12 @@ func UploadFile(c *gin.Context) {
 	key := fmt.Sprintf("project-uploads/%s/%s-%s%s", projectID, cleanName, uuid.NewString(), ext)
 
 	contentType := header.Header.Get("Content-Type")
-	if contentType == "" {
-		contentType = "application/octet-stream"
+	if contentType == "" || contentType == "application/octet-stream" {
+		if detected := mime.TypeByExtension(filepath.Ext(header.Filename)); detected != "" {
+			contentType = detected
+		} else if contentType == "" {
+			contentType = "application/octet-stream"
+		}
 	}
 
 	url, err := r2.UploadFile(c.Request.Context(), tmpPath, key, contentType)
@@ -407,6 +411,9 @@ func ProxyFile(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "url query parameter is required"})
 		return
 	}
+	// Caller-provided hint (e.g. stored contentType from the evidence record).
+	// Used as final fallback when R2 metadata and extension detection both fail.
+	hintType := c.Query("content_type")
 
 	r2, err := client.NewR2Client()
 	if err != nil {
@@ -433,20 +440,28 @@ func ProxyFile(c *gin.Context) {
 	}
 	defer obj.Body.Close()
 
-	// Resolve content type: prefer S3 object metadata, fallback to extension detection
+	// Resolve content type: prefer S3 object metadata, fallback to extension detection,
+	// then the caller-provided hint, and finally application/octet-stream.
 	contentType := "application/octet-stream"
 	if obj.ContentType != nil && *obj.ContentType != "" && *obj.ContentType != "application/octet-stream" {
 		contentType = *obj.ContentType
 	} else {
 		if detected := mime.TypeByExtension(filepath.Ext(parsedURL.Path)); detected != "" {
 			contentType = detected
+		} else if hintType != "" && hintType != "application/octet-stream" {
+			contentType = hintType
 		}
 	}
 
 	// Build Content-Disposition with filename so browsers display it properly
 	filename := filepath.Base(parsedURL.Path)
 
+	var contentLength int64 = -1
+	if obj.ContentLength != nil {
+		contentLength = *obj.ContentLength
+	}
+
 	c.Header("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, filename))
 	c.Header("Cache-Control", "public, max-age=31536000, immutable")
-	c.DataFromReader(http.StatusOK, *obj.ContentLength, contentType, obj.Body, nil)
+	c.DataFromReader(http.StatusOK, contentLength, contentType, obj.Body, nil)
 }
