@@ -141,6 +141,7 @@ func main() {
 		protected.PATCH("/projects/:id/test-context", routes.UpdateProjectTestContext)
 		protected.DELETE("/projects/:id", routes.DeleteAppProject)
 		protected.GET("/projects/:id/activity", routes.ListAppProjectActivity)
+		protected.GET("/projects/:id/dashboard", routes.GetProjectDashboard)
 
 		// Project-scoped GitLab issue and board operations use the project's issueRepoId.
 		protected.GET("/projects/:id/labels", routes.WithIssueRepo(routes.GetProjectLabels))
@@ -199,7 +200,6 @@ func main() {
 		protected.GET("/token-usage", routes.GetTokenUsage)
 		protected.GET("/token-usage/summary", routes.GetTokenUsageSummary)
 		protected.GET("/token-usage/call/:request_id", routes.GetTokenCallDetail)
-		protected.GET("/dashboard", routes.GetDashboardStats)
 		protected.GET("/debug/notes/:project_id/:issue_iid", routes.DebugIssueNotes)
 	}
 

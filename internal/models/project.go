@@ -138,3 +138,31 @@ type Namespace struct {
 	AvatarURL string `json:"avatarUrl,omitempty"`
 	WebURL    string `json:"webUrl,omitempty"`
 }
+
+// ─────────────────────────────────────────────
+// Project Dashboard
+// ─────────────────────────────────────────────
+
+// ProjectPassRate represents the test pass rate over a time window.
+type ProjectPassRate struct {
+	Value       *float64 `json:"value"`       // percentage 0-100, or null if no runs
+	Trend       string   `json:"trend"`       // "up" | "down" | "flat"
+	TrendLabel  string   `json:"trendLabel"`  // e.g. "Last 7 days"
+}
+
+// ProjectIssuesToday shows issue activity for the current day.
+type ProjectIssuesToday struct {
+	Opened int    `json:"opened"`
+	Closed int    `json:"closed"`
+	Status string `json:"status"` // "success" | "warning" | "neutral"
+}
+
+// ProjectDashboardResponse is the response for GET /projects/:id/dashboard.
+type ProjectDashboardResponse struct {
+	OpenIssues    int                `json:"openIssues"`
+	TestScenarios int                `json:"testScenarios"`
+	Recordings    int                `json:"recordings"`
+	FixSessions   int                `json:"fixSessions"`
+	PassRate      *ProjectPassRate   `json:"passRate"`
+	IssuesToday   ProjectIssuesToday `json:"issuesToday"`
+}
