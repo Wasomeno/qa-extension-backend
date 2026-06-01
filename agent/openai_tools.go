@@ -86,6 +86,24 @@ func NewQAToolRegistry() *ToolRegistry {
 	return r
 }
 
+// NewScenarioToolRegistry creates a tool registry for the scenario-discussion agent
+// with only GitLab-related tools — no recording, running, or automation tools.
+func NewScenarioToolRegistry() *ToolRegistry {
+	r := NewToolRegistry()
+
+	registerTypedTool(r, "listGitLabProjects", "List available GitLab projects. Call this without arguments to see all projects the authenticated user can access.", listGitLabProjects)
+	registerTypedTool(r, "createGitLabIssue", "Create a new issue in a GitLab project.", createGitLabIssue)
+	registerTypedTool(r, "listGitLabIssues", "List issues from a specific GitLab project. Requires projectId.", listGitLabIssues)
+	registerTypedTool(r, "listAllGitLabIssues", "List all GitLab issues assigned to or created by the authenticated user across all projects.", listAllGitLabIssues)
+	registerTypedTool(r, "updateGitLabIssue", "Update an existing GitLab issue title, description, or state.", updateGitLabIssue)
+	registerTypedTool(r, "listGitLabRepositoryTree", "List files and directories in a GitLab repository.", listGitLabRepositoryTree)
+	registerTypedTool(r, "getGitLabFileContent", "Read a file from a GitLab repository.", getGitLabFileContent)
+	registerTypedTool(r, "searchGitLabCode", "Search code or patterns in a GitLab repository.", searchGitLabCode)
+	registerTypedTool(r, "listGitLabBranches", "List branches in a GitLab project repository.", listGitLabBranches)
+
+	return r
+}
+
 func registerTypedTool[T any, R any](r *ToolRegistry, name, description string, fn func(context.Context, T) (R, error)) {
 	r.Register(AgentTool{
 		Name:        name,

@@ -55,6 +55,7 @@ type OpenAIAgentRunner struct {
 	instructionRole string
 	store           *RedisSessionService
 	tools           *ToolRegistry
+	systemInstruction string
 }
 
 func GetQARunner(ctx context.Context) (AgentRunner, error) {
@@ -80,15 +81,48 @@ func GetQARunner(ctx context.Context) (AgentRunner, error) {
 			instructionRole = "user"
 		}
 	}
-
 	return &OpenAIAgentRunner{
-		client:          openai.NewClient(opts...),
-		model:           model,
-		instructionRole: instructionRole,
-		store:           GetSessionService(),
-		tools:           NewQAToolRegistry(),
+		client:            openai.NewClient(opts...),
+		model:             model,
+		instructionRole:   instructionRole,
+		store:             GetSessionService(),
+		tools:             NewQAToolRegistry(),
+		systemInstruction: SYSTEM_INSTRUCTION,
 	}, nil
 }
+
+// GetScenarioRunner creates an AgentRunner for scenario-discussion sessions.
+// It uses a different system instruction and only GitLab tools.
+func GetScenarioRunner(ctx context.Context) (AgentRunner, error) {
+	model := os.Getenv("OPENAI_MODEL")
+	if model == "" {
+		model = "gpt-4.1-mini"
+	}
+
+	opts := []option.RequestOption{}
+	if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" {
+		opts = append(opts, option.WithAPIKey(apiKey))
+	}
+	if baseURL := os.Getenv("OPENAI_BASE_URL"); baseURL != "" {
+		opts = append(opts, option.WithBaseURL(baseURL))
+	}
+	instructionRole := os.Getenv("OPENAI_INSTRUCTION_ROLE")
+	if instructionRole == "" {
+		instructionRole = "system"
+		if strings.Contains(os.Getenv("OPENAI_BASE_URL"), "crof.ai") {
+			instructionRole = "user"
+		}
+	}
+
+	return &OpenAIAgentRunner{
+		client:            openai.NewClient(opts...),
+		model:             model,
+		instructionRole:   instructionRole,
+		store:             GetScenarioSessionService(),
+		tools:             NewScenarioToolRegistry(),
+		systemInstruction: SCENARIO_SYSTEM_INSTRUCTION,
+	}, nil
+ }
 
 func (r *OpenAIAgentRunner) Model() string { return r.model }
 
@@ -129,7 +163,7 @@ func (r *OpenAIAgentRunner) run(ctx context.Context, req AgentRunRequest, ch cha
 
 	var lastUsage *AgentUsage
 	for iteration := 0; iteration < maxOpenAIToolIterations; iteration++ {
-		messages := buildOpenAIChatMessages(r.instructionRole, sess.Messages)
+		messages := buildOpenAIChatMessages(r.instructionRole, r.systemInstruction, sess.Messages)
 		resp, err := r.createChatCompletion(ctx, messages)
 		if err != nil {
 			return err
@@ -273,13 +307,16 @@ func openAIReasoningEffort(baseURL string) string {
 	return ""
 }
 
-func buildOpenAIChatMessages(instructionRole string, messages []AgentMessage) []openAIChatMessage {
+func buildOpenAIChatMessages(instructionRole, systemInstruction string, messages []AgentMessage) []openAIChatMessage {
 	if instructionRole == "" {
 		instructionRole = "system"
 	}
-	instructionContent := SYSTEM_INSTRUCTION
+	if systemInstruction == "" {
+		systemInstruction = SYSTEM_INSTRUCTION
+	}
+	instructionContent := systemInstruction
 	if instructionRole == "user" {
-		instructionContent = "System instructions:\n" + SYSTEM_INSTRUCTION + "\n\nFollow these instructions for all subsequent messages."
+		instructionContent = "System instructions:\n" + systemInstruction + "\n\nFollow these instructions for all subsequent messages."
 	}
 	out := []openAIChatMessage{{Role: instructionRole, Content: instructionContent}}
 	for _, msg := range messages {
