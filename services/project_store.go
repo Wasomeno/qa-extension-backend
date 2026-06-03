@@ -279,36 +279,15 @@ func GetProjectTestContext(ctx context.Context, projectID string) (string, error
 func ProjectTestContextTemplate() string {
 	return strings.TrimSpace(`# Project Test Context
 
-## Test Users
-- Admin user:
-  - email:
-  - password:
-  - role: admin
-- Regular user:
-  - email:
-  - password:
-  - role: user
+## Base URL
+https://your-app.com
 
-## Authentication
-- Login endpoint:
-- Token/header format:
+## Login Endpoint
+- POST https://your-app.com/api/auth/login
 
-## Common Fixtures
-- Existing entities that tests can rely on:
-- How to create required data:
-
-## Business Rules
-- Important permissions, validations, and workflow rules:
-
-## API Notes
-- Base URL:
-- Relevant endpoints and request/response details:
-
-## E2E Selectors and UI Notes
-- Stable selectors, labels, routes, and UI behavior:
-
-## Known Edge Cases
-- Cases the automation generator should explicitly cover:
+## Users
+- email: admin@example.com | password: secret | role: admin
+- email: user@example.com  | password: secret | role: user
 `)
 }
 
