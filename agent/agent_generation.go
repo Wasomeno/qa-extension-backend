@@ -43,16 +43,19 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input AutomationAgent
 		return nil, fmt.Errorf("failed to create agent runner: %w", err)
 	}
 
+	// Use a fresh context with a per-call timeout so a stale parent (e.g. expired
+	// appProjectScenarioSyncTimeout) never kills individual agent calls.
+	agentCtx, agentCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer agentCancel()
+	agentCtx = context.WithValue(agentCtx, "token", token)
+	agentCtx = context.WithValue(agentCtx, "session_id", sessionID)
+
 	// Create session
 	sessionService := GetSessionService()
-	_, err = sessionService.Create(ctx, sessionID, userID, nil)
+	_, err = sessionService.Create(agentCtx, sessionID, userID, nil)
 	if err != nil {
 		log.Printf("[AgentGeneration] Session already exists or error: %v", err)
 	}
-
-	// Store token in context for tools to access
-	agentCtx := context.WithValue(ctx, "token", token)
-	agentCtx = context.WithValue(agentCtx, "session_id", sessionID)
 
 	log.Printf("[AgentGeneration] Starting agent execution for scenario %s", input.ScenarioID)
 

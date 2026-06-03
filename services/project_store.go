@@ -21,7 +21,7 @@ const (
 	appProjectsSetKey             = "app_projects"
 	appProjectKeyPrefix           = "app_project"
 	appProjectActivityLimit       = 200
-	appProjectScenarioSyncTimeout = 15 * time.Minute
+	appProjectScenarioSyncTimeout = 4 * time.Hour
 
 	// MaxProjectTestContextBytes limits the size of project-level test context markdown.
 	MaxProjectTestContextBytes = 200 * 1024
@@ -85,8 +85,9 @@ func StartMarkdownScenarioSyncJob(glClient *gitlab.Client, project *models.AppPr
 		// Publish final done event with both import and generation summary
 		doneMsg := fmt.Sprintf("Scenario import completed (%d imported)", len(imported))
 		log.Printf("[ProjectCreation] background scenario sync fully completed projectID=%s imported=%d", projectCopy.ID, len(imported))
-		publishProjectScenarioSyncEvent(ctx, projectCopy.ID, "done", doneMsg, nil)
-		_ = AppendAppProjectActivity(ctx, projectCopy.ID, models.AppProjectActivity{
+		// Use context.Background() so the terminal event always fires even if ctx expired.
+		publishProjectScenarioSyncEvent(context.Background(), projectCopy.ID, "done", doneMsg, nil)
+		_ = AppendAppProjectActivity(context.Background(), projectCopy.ID, models.AppProjectActivity{
 			ID:        uuid.NewString(),
 			ProjectID: projectCopy.ID,
 			ActorID:   actorID,
