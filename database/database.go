@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"time"
 	"qa-extension-backend/internal/models"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -23,8 +23,8 @@ func InitRedis() error {
 
 	RedisClient = redis.NewClient(&redis.Options{
 		Addr:     redisAddr,
-		Password: "", // no password set
-		DB:       0,  // use default DB
+		Password: "",  // no password set
+		DB:       0,   // use default DB
 		PoolSize: 100, // Connection pool - prevents connection exhaustion
 	})
 
@@ -37,12 +37,12 @@ func SaveTestResult(ctx context.Context, result *models.TestResult) error {
 	if err != nil {
 		return err
 	}
-	
+
 	resultID := fmt.Sprintf("result:%s:%d", result.TestID, time.Now().Unix())
 	if err := RedisClient.Set(ctx, resultID, data, 0).Err(); err != nil {
 		return err
 	}
-	
+
 	// Add to results list for the test
 	return RedisClient.LPush(ctx, fmt.Sprintf("results:%s", result.TestID), resultID).Err()
 }
@@ -98,7 +98,7 @@ func GetCachedWorkItemData(ctx context.Context, issueID int64) (childCount int, 
 	if err != nil {
 		return 0, nil, false
 	}
-	
+
 	var cached struct {
 		ChildCount int      `json:"childCount"`
 		ChildItems []string `json:"childItems"`
@@ -114,7 +114,7 @@ func SetCachedWorkItemData(ctx context.Context, issueID int64, childCount int, c
 	key := fmt.Sprintf("workitem:children:%d", issueID)
 	cachedData := struct {
 		ChildCount int    `json:"childCount"`
-		ChildJSON string `json:"childJSON"`
+		ChildJSON  string `json:"childJSON"`
 	}{
 		ChildCount: childCount,
 		ChildJSON:  childItemsJSON,
@@ -227,24 +227,25 @@ func InvalidateBoardCache(ctx context.Context, projectID string) {
 // StreamEvent represents a unified SSE event for all long-running operations.
 // Follows AG-UI-inspired event patterns for agent-to-frontend real-time communication.
 type StreamEvent struct {
-	Type         string          `json:"type"`                    // "generation" | "execution" | "agent"
-	ResourceType string          `json:"resourceType,omitempty"`  // "scenario" | "recording" | "session"
-	ResourceID   string          `json:"resourceId,omitempty"`    // ID of the resource being operated on
-	Stage        string          `json:"stage"`                   // "start", "progress", "done", "error"
-	Message      string          `json:"message"`                 // Human-readable contextual message
-	StepInfo     *StreamStepInfo `json:"stepInfo,omitempty"`      // For execution step progress
-	ErrorInfo    *StreamErrorInfo `json:"errorInfo,omitempty"`    // Structured error details
-	CorrelationID string         `json:"correlationId,omitempty"` // Links all events in a single operation
-	Timestamp    string          `json:"timestamp"`               // RFC3339 timestamp
+	Type          string           `json:"type"`                    // "generation" | "execution" | "agent"
+	ResourceType  string           `json:"resourceType,omitempty"`  // "scenario" | "recording" | "session"
+	ResourceID    string           `json:"resourceId,omitempty"`    // ID of the resource being operated on
+	Stage         string           `json:"stage"`                   // "start", "progress", "done", "error"
+	Message       string           `json:"message"`                 // Human-readable contextual message
+	StepInfo      *StreamStepInfo  `json:"stepInfo,omitempty"`      // For execution step progress
+	ImportStatus  any              `json:"importStatus,omitempty"`  // Structured project scenario import status
+	ErrorInfo     *StreamErrorInfo `json:"errorInfo,omitempty"`     // Structured error details
+	CorrelationID string           `json:"correlationId,omitempty"` // Links all events in a single operation
+	Timestamp     string           `json:"timestamp"`               // RFC3339 timestamp
 }
 
 // StreamStepInfo describes progress within a multi-step operation (e.g. test execution)
 type StreamStepInfo struct {
-	CurrentStep int    `json:"currentStep"`            // 1-indexed
-	TotalSteps  int    `json:"totalSteps"`             // Total steps in the operation
-	StepName    string `json:"stepName"`               // Short description of current step
-	Action      string `json:"action,omitempty"`       // e.g. "navigate", "click", "type"
-	Progress    int    `json:"progress,omitempty"`     // 0-100 percentage
+	CurrentStep int    `json:"currentStep"`        // 1-indexed
+	TotalSteps  int    `json:"totalSteps"`         // Total steps in the operation
+	StepName    string `json:"stepName"`           // Short description of current step
+	Action      string `json:"action,omitempty"`   // e.g. "navigate", "click", "type"
+	Progress    int    `json:"progress,omitempty"` // 0-100 percentage
 }
 
 // StreamErrorInfo provides structured error details
