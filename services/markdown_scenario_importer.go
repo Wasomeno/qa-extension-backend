@@ -42,6 +42,7 @@ func SyncMarkdownTestScenarios(ctx context.Context, glClient *gitlab.Client, pro
 		branch = repo.DefaultBranch
 	}
 	log.Printf("[ProjectCreation] markdown sync start projectID=%s specsRepoID=%s branch=%s path=%s", project.ID, specsRepoID, branch, defaultTestScenarioDir)
+	_, _ = BeginScenarioImportSyncing(ctx, project.ID, "Syncing specs repository")
 
 	listOpts := &gitlab.ListTreeOptions{
 		Path:        gitlab.Ptr(defaultTestScenarioDir),
@@ -56,10 +57,13 @@ func SyncMarkdownTestScenarios(ctx context.Context, glClient *gitlab.Client, pro
 			if resp != nil && resp.StatusCode == http.StatusNotFound {
 				// A project without docs/test-scenarios is valid and simply has no scenarios.
 				log.Printf("[ProjectCreation] markdown sync no scenario directory projectID=%s specsRepoID=%s path=%s", project.ID, specsRepoID, defaultTestScenarioDir)
+				_, _ = SetScenarioImportDiscovered(ctx, project.ID, []models.ScenarioImportFeedItem{})
 				return []models.TestScenario{}, nil
 			}
 			log.Printf("[ProjectCreation] markdown sync list failed projectID=%s specsRepoID=%s error=%v", project.ID, specsRepoID, err)
-			return nil, fmt.Errorf("failed to list %s in specs repo %s: %w", defaultTestScenarioDir, specsRepoID, err)
+			syncErr := fmt.Errorf("failed to list %s in specs repo %s: %w", defaultTestScenarioDir, specsRepoID, err)
+			_, _ = FailScenarioImport(ctx, project.ID, syncErr)
+			return nil, syncErr
 		}
 		nodes = append(nodes, pageNodes...)
 		if resp == nil || resp.NextPage == 0 {
@@ -77,24 +81,43 @@ func SyncMarkdownTestScenarios(ctx context.Context, glClient *gitlab.Client, pro
 	sort.Slice(mdNodes, func(i, j int) bool { return mdNodes[i].Path < mdNodes[j].Path })
 	log.Printf("[ProjectCreation] markdown sync discovered projectID=%s totalNodes=%d markdownFiles=%d", project.ID, len(nodes), len(mdNodes))
 
+	feed := make([]models.ScenarioImportFeedItem, 0, len(mdNodes))
+	for _, node := range mdNodes {
+		feed = append(feed, models.ScenarioImportFeedItem{
+			Title:      scenarioTitleFromPath(node.Path),
+			SourcePath: node.Path,
+			Status:     models.ScenarioImportItemPending,
+		})
+	}
+	_, _ = SetScenarioImportDiscovered(ctx, project.ID, feed)
+
 	imported := make([]models.TestScenario, 0, len(mdNodes))
 	seenPaths := make(map[string]bool, len(mdNodes))
-	for _, node := range mdNodes {
+	for idx, node := range mdNodes {
+		titleHint := scenarioTitleFromPath(node.Path)
+		_, _ = MarkScenarioImporting(ctx, project.ID, node.Path, titleHint, idx+1, len(mdNodes))
 		log.Printf("[ProjectCreation] importing markdown scenario projectID=%s path=%s sha=%s", project.ID, node.Path, node.ID)
 		file, _, err := glClient.RepositoryFiles.GetFile(specsRepoID, node.Path, &gitlab.GetFileOptions{Ref: gitlab.Ptr(branch)})
 		if err != nil {
 			log.Printf("[ProjectCreation] failed to read markdown scenario projectID=%s path=%s error=%v", project.ID, node.Path, err)
-			return nil, fmt.Errorf("failed to read %s: %w", node.Path, err)
+			readErr := fmt.Errorf("failed to read %s: %w", node.Path, err)
+			_, _ = MarkScenarioImportItemError(ctx, project.ID, node.Path, titleHint, readErr.Error())
+			_, _ = FailScenarioImport(ctx, project.ID, readErr)
+			return nil, readErr
 		}
 		content, err := base64.StdEncoding.DecodeString(file.Content)
 		if err != nil {
 			log.Printf("[ProjectCreation] failed to decode markdown scenario projectID=%s path=%s error=%v", project.ID, node.Path, err)
-			return nil, fmt.Errorf("failed to decode %s: %w", node.Path, err)
+			decodeErr := fmt.Errorf("failed to decode %s: %w", node.Path, err)
+			_, _ = MarkScenarioImportItemError(ctx, project.ID, node.Path, titleHint, decodeErr.Error())
+			_, _ = FailScenarioImport(ctx, project.ID, decodeErr)
+			return nil, decodeErr
 		}
 
 		scenario, ok := BuildScenarioFromMarkdown(node.Path, string(content), project, actorID)
 		if !ok {
 			log.Printf("[ProjectCreation] skipped markdown scenario projectID=%s path=%s reason=parse_failed", project.ID, node.Path)
+			_, _ = MarkScenarioImportItemError(ctx, project.ID, node.Path, titleHint, "Failed to parse markdown test scenario")
 			continue
 		}
 		scenario.ID = deterministicID("scn", project.ID, node.Path)
@@ -121,8 +144,12 @@ func SyncMarkdownTestScenarios(ctx context.Context, glClient *gitlab.Client, pro
 
 		if err := SaveImportedScenario(ctx, &scenario); err != nil {
 			log.Printf("[ProjectCreation] failed to save imported scenario projectID=%s scenarioID=%s path=%s error=%v", project.ID, scenario.ID, node.Path, err)
+			_, _ = MarkScenarioImportItemError(ctx, project.ID, node.Path, scenario.Title, err.Error())
+			_, _ = FailScenarioImport(ctx, project.ID, err)
 			return nil, err
 		}
+		testCaseCount := scenarioTestCaseCount(scenario)
+		_, _ = MarkScenarioImported(ctx, project.ID, node.Path, scenario.ID, scenario.Title, testCaseCount)
 		log.Printf("[ProjectCreation] imported scenario saved projectID=%s scenarioID=%s path=%s title=%q", project.ID, scenario.ID, node.Path, scenario.Title)
 		seenPaths[node.Path] = true
 		imported = append(imported, scenario)
@@ -130,11 +157,29 @@ func SyncMarkdownTestScenarios(ctx context.Context, glClient *gitlab.Client, pro
 
 	if err := deleteRemovedMarkdownScenarios(ctx, project.ID, seenPaths); err != nil {
 		log.Printf("[ProjectCreation] markdown sync cleanup failed projectID=%s error=%v", project.ID, err)
+		_, _ = FailScenarioImport(ctx, project.ID, err)
 		return nil, err
 	}
 
+	_, _ = CompleteScenarioImport(ctx, project.ID)
 	log.Printf("[ProjectCreation] markdown sync complete projectID=%s imported=%d", project.ID, len(imported))
 	return imported, nil
+}
+
+func scenarioTitleFromPath(path string) string {
+	title := cleanScenarioTitle(strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)))
+	if title == "" {
+		return path
+	}
+	return title
+}
+
+func scenarioTestCaseCount(scenario models.TestScenario) int {
+	count := 0
+	for _, section := range scenario.Sections {
+		count += len(section.TestCases)
+	}
+	return count
 }
 
 func mergeExistingScenarioState(ctx context.Context, scenario *models.TestScenario) {

@@ -92,6 +92,7 @@ func main() {
 		protected.POST("/projects/:id/recordings/:recording_id/run", handlers.RunRecording)
 
 		protected.POST("/projects/:id/test-scenarios/sync", routes.SyncAppProjectTestScenarios)
+		protected.GET("/projects/:id/test-scenarios/import-status", routes.GetAppProjectTestScenarioImportStatus)
 		protected.GET("/projects/:id/test-scenarios", handlers.ListScenarios)
 		protected.GET("/projects/:id/test-scenarios/:scenario_id", handlers.GetScenario)
 		protected.PATCH("/projects/:id/test-scenarios/:scenario_id", handlers.UpdateScenario)

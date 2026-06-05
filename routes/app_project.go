@@ -251,12 +251,35 @@ func SyncAppProjectTestScenarios(c *gin.Context) {
 		return
 	}
 	actorID, _ := identity.GetCurrentUserID(c)
-	imported, err := services.SyncMarkdownTestScenarios(c.Request.Context(), glClient, project, actorID)
+	status, err := services.BeginScenarioImportSyncing(c.Request.Context(), project.ID, "Syncing specs repository")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"scenarios": imported, "count": len(imported)})
+
+	projectCopy := *project
+	go func() {
+		ctx := context.Background()
+		if _, err := services.SyncMarkdownTestScenarios(ctx, glClient, &projectCopy, actorID); err != nil {
+			log.Printf("[ProjectScenarioSync] async import failed projectID=%s error=%v", projectCopy.ID, err)
+		}
+	}()
+
+	c.JSON(http.StatusAccepted, gin.H{"started": true, "status": status})
+}
+
+func GetAppProjectTestScenarioImportStatus(c *gin.Context) {
+	project, err := services.GetAppProject(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+		return
+	}
+	status, err := services.GetScenarioImportStatus(c.Request.Context(), project.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, status)
 }
 
 func gitLabClientFromContext(c *gin.Context) (*gitlab.Client, bool) {
