@@ -1279,7 +1279,7 @@ func setGeneratedE2ERepo(scenario *models.TestScenario, targetIDs []string, fron
 	}
 }
 
-// CreateManualTestResult stores a manual execution result and uploads evidence to R2.
+// CreateManualTestResult stores a manual execution result and optionally uploads evidence to R2.
 func CreateManualTestResult(c *gin.Context) {
 	scenarioID := routeScenarioID(c)
 	tcID := c.Param("tcId")
@@ -1319,34 +1319,32 @@ func CreateManualTestResult(c *gin.Context) {
 		return
 	}
 
-	r2, err := client.NewR2Client()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "R2 storage is not configured"})
-		return
-	}
-
 	files := c.Request.MultipartForm.File["evidence"]
 	files = append(files, c.Request.MultipartForm.File["evidence[]"]...)
-	if len(files) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "at least one evidence file is required"})
-		return
-	}
 
 	resultID := uuid.NewString()
 	evidence := make([]models.ManualEvidenceFile, 0, len(files))
-	for _, header := range files {
-		url, err := uploadManualEvidence(ctx, r2, scenario.ProjectID, scenarioID, tcID, resultID, header.Filename, header)
+	if len(files) > 0 {
+		r2, err := client.NewR2Client()
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to upload evidence: %v", err)})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "R2 storage is not configured"})
 			return
 		}
-		evidence = append(evidence, models.ManualEvidenceFile{
-			Name:        header.Filename,
-			URL:         url,
-			ContentType: header.Header.Get("Content-Type"),
-			Size:        header.Size,
-			UploadedAt:  time.Now(),
-		})
+
+		for _, header := range files {
+			url, err := uploadManualEvidence(ctx, r2, scenario.ProjectID, scenarioID, tcID, resultID, header.Filename, header)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to upload evidence: %v", err)})
+				return
+			}
+			evidence = append(evidence, models.ManualEvidenceFile{
+				Name:        header.Filename,
+				URL:         url,
+				ContentType: header.Header.Get("Content-Type"),
+				Size:        header.Size,
+				UploadedAt:  time.Now(),
+			})
+		}
 	}
 
 	testerID, _ := identity.GetCurrentUserID(c)
