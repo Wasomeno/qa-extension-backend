@@ -105,7 +105,7 @@ func RunTest(ctx context.Context, run *models.TestRun) (result *models.TestResul
 			Height: 1080,
 		},
 		// CRITICAL: Hide headless browser detection
-		UserAgent: playwright.String("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
+		UserAgent: playwright.String("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"),
 		// Set locale and timezone for consistent rendering
 		Locale:        playwright.String("en-US"),
 		TimezoneId:    playwright.String("Asia/Jakarta"),
@@ -479,7 +479,7 @@ func RunTestsChained(ctx context.Context, runs []models.TestRun) []*models.TestR
 			Height: 1080,
 		},
 		// CRITICAL: Hide headless browser detection
-		UserAgent: playwright.String("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
+		UserAgent: playwright.String("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"),
 		Locale:        playwright.String("en-US"),
 		TimezoneId:    playwright.String("Asia/Jakarta"),
 		HasTouch:      playwright.Bool(false),
