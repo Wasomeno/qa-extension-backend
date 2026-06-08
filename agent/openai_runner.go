@@ -14,8 +14,6 @@ import (
 	"github.com/openai/openai-go/option"
 )
 
-const maxOpenAIToolIterations = 20
-
 // AgentRunRequest is the input for an OpenAI-backed agent invocation.
 type AgentRunRequest struct {
 	SessionID   string
@@ -50,11 +48,11 @@ type AgentRunner interface {
 
 // OpenAIAgentRunner executes an agent loop with OpenAI chat completions and function tools.
 type OpenAIAgentRunner struct {
-	client          openai.Client
-	model           string
-	instructionRole string
-	store           *RedisSessionService
-	tools           *ToolRegistry
+	client            openai.Client
+	model             string
+	instructionRole   string
+	store             *RedisSessionService
+	tools             *ToolRegistry
 	systemInstruction string
 }
 
@@ -122,7 +120,7 @@ func GetScenarioRunner(ctx context.Context) (AgentRunner, error) {
 		tools:             NewScenarioToolRegistry(),
 		systemInstruction: SCENARIO_SYSTEM_INSTRUCTION,
 	}, nil
- }
+}
 
 func (r *OpenAIAgentRunner) Model() string { return r.model }
 
@@ -162,7 +160,7 @@ func (r *OpenAIAgentRunner) run(ctx context.Context, req AgentRunRequest, ch cha
 	}
 
 	var lastUsage *AgentUsage
-	for iteration := 0; iteration < maxOpenAIToolIterations; iteration++ {
+	for {
 		messages := buildOpenAIChatMessages(r.instructionRole, r.systemInstruction, sess.Messages)
 		resp, err := r.createChatCompletion(ctx, messages)
 		if err != nil {
@@ -228,8 +226,6 @@ func (r *OpenAIAgentRunner) run(ctx context.Context, req AgentRunRequest, ch cha
 			return fmt.Errorf("failed to save tool messages: %w", err)
 		}
 	}
-
-	return fmt.Errorf("agent exceeded maximum tool iterations (%d)", maxOpenAIToolIterations)
 }
 
 type openAIChatRequest struct {
