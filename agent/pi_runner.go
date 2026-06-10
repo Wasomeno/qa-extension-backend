@@ -18,11 +18,22 @@ import (
 )
 
 const (
-	defaultPiTimeout = 10 * time.Minute
+	defaultPiTimeout = 30 * time.Minute
 	piDefaultBranch  = "main"
 	piRPCTimeout     = 30 * time.Second
 	piBinaryName     = "pi"
 )
+
+// piTimeout returns the configured timeout, falling back to defaultPiTimeout.
+// Override with FIX_AGENT_TIMEOUT_MINUTES env var.
+func piTimeout() time.Duration {
+	if v := os.Getenv("FIX_AGENT_TIMEOUT_MINUTES"); v != "" {
+		if mins, err := time.ParseDuration(v + "m"); err == nil && mins > 0 {
+			return mins
+		}
+	}
+	return defaultPiTimeout
+}
 
 // slugify converts a string to a lowercase, dash-separated format suitable for branch names
 func slugify(s string) string {
@@ -299,9 +310,7 @@ func RunFixWithPi(ctx context.Context, issueProjectID int, issueIID int, repoPro
 
 	workDir := filepath.Join(os.TempDir(), "qa-fix-pi-"+sessionID)
 
-	// Set timeout
-	timeout := defaultPiTimeout
-	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
+	timeoutCtx, cancel := context.WithTimeout(ctx, piTimeout())
 	defer cancel()
 
 	// Emit initial event with all steps
@@ -597,7 +606,7 @@ func runPiRPC(ctx context.Context, workDir, issueTitle, issueDesc, additionalCon
 
 	// Step 3: Wait for agent to complete
 	log.Printf("[PiRunner] Waiting for agent to complete...")
-	agentEndErr := client.waitForAgentEnd(ctx, 10*time.Minute)
+	agentEndErr := client.waitForAgentEnd(ctx, piTimeout())
 	if agentEndErr != nil {
 		log.Printf("[PiRunner] Wait for agent_end failed: %v", agentEndErr)
 	}
@@ -703,7 +712,7 @@ func runPiRPCWithSummary(ctx context.Context, workDir, issueTitle, issueDesc, ad
 
 	// Step 3: Wait for agent to complete
 	log.Printf("[PiRunner] Waiting for agent to complete...")
-	agentEndErr := client.waitForAgentEnd(ctx, 10*time.Minute)
+	agentEndErr := client.waitForAgentEnd(ctx, piTimeout())
 	if agentEndErr != nil {
 		log.Printf("[PiRunner] Wait for agent_end failed: %v", agentEndErr)
 	}
