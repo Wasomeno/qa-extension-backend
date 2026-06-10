@@ -295,11 +295,9 @@ func RunTest(ctx context.Context, run *models.TestRun) (result *models.TestResul
 
 			result.StepResults = append(result.StepResults, stepResult)
 
-			// If it's a timeout or serious error, stop immediately
-			if result.Status == "timeout" || result.Status == "failed" {
-				events.Error(fmt.Sprintf("Test failed at Step %d/%d: %s", currentStep, totalSteps, step.Description))
-				return result, nil
-			}
+			// Stop executing further steps on failure/timeout, but fall through
+			// to the video upload block below instead of returning early.
+			events.Error(fmt.Sprintf("Test failed at Step %d/%d: %s", currentStep, totalSteps, step.Description))
 			break
 		}
 
