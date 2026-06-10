@@ -17,25 +17,12 @@ FROM mcr.microsoft.com/playwright:v1.57.0-jammy
 
 WORKDIR /app
 
-# Install Node.js (required for Claude Code CLI)
-RUN apt-get update && apt-get install -y curl && \
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y nodejs && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# Install Claude Code CLI
-RUN npm install -g @anthropic-ai/claude-code
-
-# Create a non-root user for Claude Code (it refuses --dangerously-skip-permissions as root)
+# Create a non-root user to run the app
 RUN groupadd -r appuser && useradd -r -g appuser -d /home/appuser -m -s /bin/bash appuser
 
-# Create .ssh directory for appuser with proper permissions
-# Add Server B host key so SSH doesn't prompt for verification
-ARG SSH_REMOTE_HOST=136.115.249.188
-RUN mkdir -p /home/appuser/.ssh && \
-    chmod 700 /home/appuser/.ssh && \
-    ssh-keyscan -H "$SSH_REMOTE_HOST" > /home/appuser/.ssh/known_hosts && \
-    chown -R appuser:appuser /home/appuser/.ssh
+# Install Pi CLI binary
+# See https://pi.ai/docs for installation instructions
+# COPY --from=... or RUN curl ... to install the pi binary into /usr/local/bin/pi
 
 # Copy the compiled Go binary
 COPY --from=builder /app/main .
