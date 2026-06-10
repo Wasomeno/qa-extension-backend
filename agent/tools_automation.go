@@ -12,11 +12,23 @@ import (
 	"qa-extension-backend/services"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	gitlab "gitlab.com/gitlab-org/api/client-go"
 	"golang.org/x/oauth2"
 )
+
+// scenarioWriteMu prevents concurrent read-modify-write races when multiple agents
+// save automations for test cases belonging to the same scenario simultaneously.
+var scenarioWriteMu sync.Map
+
+func withScenarioLock(scenarioID string, fn func() error) error {
+	mu, _ := scenarioWriteMu.LoadOrStore(scenarioID, &sync.Mutex{})
+	mu.(*sync.Mutex).Lock()
+	defer mu.(*sync.Mutex).Unlock()
+	return fn()
+}
 
 // AuthConfig stores auth credentials for test generation
 type AuthConfig struct {
@@ -106,42 +118,44 @@ func saveAutomation(ctx context.Context, input SaveAutomationInput) (*SaveAutoma
 		}
 	}
 
-	// Update the scenario's AutomationTest directly
-	bgCtx := context.Background()
-	scenario, err := getScenarioFromRedis(input.ScenarioID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load scenario: %w", err)
-	}
+	// withScenarioLock serializes all concurrent saveAutomation calls for the same
+	// scenario so that concurrent agents don't overwrite each other's results.
+	var found bool
+	if err := withScenarioLock(input.ScenarioID, func() error {
+		scenario, err := getScenarioFromRedis(input.ScenarioID)
+		if err != nil {
+			return fmt.Errorf("failed to load scenario: %w", err)
+		}
 
-	found := false
-	for i := range scenario.Sections {
-		for j := range scenario.Sections[i].TestCases {
-			tc := &scenario.Sections[i].TestCases[j]
-			if tc.ID == input.TestCaseID {
-				tc.AutomationTest = &models.AutomationTest{
-					ID:        fmt.Sprintf("auto-%s", input.TestCaseID),
-					Name:      input.Name,
-					Framework: input.Framework,
-					Status:    models.AutomationStatusIdle,
-					Steps:     steps,
+		for i := range scenario.Sections {
+			for j := range scenario.Sections[i].TestCases {
+				tc := &scenario.Sections[i].TestCases[j]
+				if tc.ID == input.TestCaseID {
+					tc.AutomationTest = &models.AutomationTest{
+						ID:        fmt.Sprintf("auto-%s", input.TestCaseID),
+						Name:      input.Name,
+						Framework: input.Framework,
+						Status:    models.AutomationStatusIdle,
+						Steps:     steps,
+					}
+					found = true
+					break
 				}
-				found = true
+			}
+			if found {
 				break
 			}
 		}
-		if found {
-			break
+
+		if !found {
+			return fmt.Errorf("test case %s not found in scenario %s", input.TestCaseID, input.ScenarioID)
 		}
-	}
 
-	if !found {
-		return nil, fmt.Errorf("test case %s not found in scenario %s", input.TestCaseID, input.ScenarioID)
-	}
-
-	scenario.UpdatedAt = time.Now()
-	scenario.ComputeStats()
-	if err := saveScenarioToRedis(bgCtx, scenario); err != nil {
-		return nil, fmt.Errorf("failed to save scenario: %w", err)
+		scenario.UpdatedAt = time.Now()
+		scenario.ComputeStats()
+		return saveScenarioToRedis(context.Background(), scenario)
+	}); err != nil {
+		return nil, err
 	}
 
 	log.Printf("[AgentTool] saveAutomation success: scenario=%s testCase=%s steps=%d", input.ScenarioID, input.TestCaseID, len(steps))

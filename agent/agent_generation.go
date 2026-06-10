@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 )
 
@@ -34,7 +35,7 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input AutomationAgent
 	if len(scenarioShortID) > 8 {
 		scenarioShortID = scenarioShortID[:8]
 	}
-	sessionID := fmt.Sprintf("gen_%s_%d", scenarioShortID, time.Now().Unix())
+	sessionID := fmt.Sprintf("gen_%s_%s", scenarioShortID, uuid.NewString()[:8])
 	userID := "test_generator"
 
 	// Get the QA runner
