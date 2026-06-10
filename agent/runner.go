@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -290,7 +289,8 @@ func RunTest(ctx context.Context, run *models.TestRun) (result *models.TestResul
 			// Take screenshot on failure
 			screenshot, _ := page.Screenshot()
 			if screenshot != nil {
-				stepResult.Screenshot = base64.StdEncoding.EncodeToString(screenshot)
+				key := fmt.Sprintf("screenshots/%s-step-%d-failure.png", run.ID, i)
+				stepResult.Screenshot = uploadScreenshot(ctx, screenshot, key)
 			}
 
 			result.StepResults = append(result.StepResults, stepResult)
@@ -305,7 +305,8 @@ func RunTest(ctx context.Context, run *models.TestRun) (result *models.TestResul
 		if step.Action == "navigate" {
 			screenshot, _ := page.Screenshot()
 			if screenshot != nil {
-				stepResult.Screenshot = base64.StdEncoding.EncodeToString(screenshot)
+				key := fmt.Sprintf("screenshots/%s-step-%d-navigate.png", run.ID, i)
+				stepResult.Screenshot = uploadScreenshot(ctx, screenshot, key)
 			}
 		}
 
@@ -602,15 +603,17 @@ func RunTestsChained(ctx context.Context, runs []models.TestRun) []*models.TestR
 
 				// Take screenshot on failure and store in step results
 				screenshot, _ := page.Screenshot()
+				screenshotURL := ""
 				if screenshot != nil {
-					stepResult := models.TestStepResult{
-						StepIndex:  stepIdx,
-						Status:     "failure",
-						Error:      err.Error(),
-						Screenshot: base64.StdEncoding.EncodeToString(screenshot),
-					}
-					result.StepResults = append(result.StepResults, stepResult)
+					key := fmt.Sprintf("screenshots/%s-step-%d-failure.png", rec.ID, stepIdx)
+					screenshotURL = uploadScreenshot(ctx, screenshot, key)
 				}
+				result.StepResults = append(result.StepResults, models.TestStepResult{
+					StepIndex:  stepIdx,
+					Status:     "failure",
+					Error:      err.Error(),
+					Screenshot: screenshotURL,
+				})
 				break // Stop executing steps for THIS specific test
 			}
 		}
@@ -686,6 +689,22 @@ func RunTestsChained(ctx context.Context, runs []models.TestRun) []*models.TestR
 	events.Done("Chained execution complete: %d passed, %d failed out of %d total", passed, failed, total)
 
 	return results
+}
+
+// uploadScreenshot uploads raw PNG bytes to R2 and returns the public URL.
+// Falls back to an empty string if R2 is not configured or the upload fails.
+func uploadScreenshot(ctx context.Context, data []byte, key string) string {
+	r2, err := client.NewR2Client()
+	if err != nil {
+		log.Printf("[Runner] R2 not configured, skipping screenshot upload: %v", err)
+		return ""
+	}
+	url, err := r2.UploadBytes(ctx, data, key, "image/png")
+	if err != nil {
+		log.Printf("[Runner] Failed to upload screenshot: %v", err)
+		return ""
+	}
+	return url
 }
 
 func executeStep(page playwright.Page, step models.RecordingStep) error {
