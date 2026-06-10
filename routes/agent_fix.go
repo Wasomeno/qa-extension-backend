@@ -78,7 +78,7 @@ func FixIssueWithAgent(c *gin.Context) {
 		RepoProjectID     *int   `json:"repo_project_id"`
 		TargetBranch      string `json:"target_branch"`
 		AdditionalContext string `json:"additional_context"`
-		Runner            string `json:"runner"` // "claude" (default) or "pi"
+		Runner            string `json:"runner"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -132,41 +132,10 @@ func FixIssueWithAgent(c *gin.Context) {
 		return
 	}
 
-	// Generate unique session ID
 	sessionID := fmt.Sprintf("fix_%d_%d_%s", req.ProjectID, req.IssueIID, uuid.New().String()[:8])
-
-	// Initialize steps with pending status
-	initialSteps := make([]agent.FixStep, len(agent.DefaultFixSteps))
-	for i, step := range agent.DefaultFixSteps {
-		initialSteps[i] = agent.FixStep{
-			ID:          step.ID,
-			Title:       step.Title,
-			Description: step.Description,
-			Status:      agent.FixStepStatusPending,
-		}
-	}
-
-	// Save initial session state to Redis
-	session := FixSession{
-		SessionID:         sessionID,
-		Runner:            runner,
-		AppProjectID:      appProjectID,
-		AppProjectName:    appProjectName,
-		ProjectID:         req.ProjectID,
-		RepoProjectID:     repoProjectID,
-		IssueIID:          req.IssueIID,
-		TargetBranch:      targetBranch,
-		AdditionalContext: req.AdditionalContext,
-		Status:            "initialized",
-		Message:           fmt.Sprintf("Starting %s fix agent...", runner),
-		Steps:             initialSteps,
-		CurrentStep:       -1,
-		CreatedAt:         time.Now().Format(time.RFC3339),
-		UpdatedAt:         time.Now().Format(time.RFC3339),
-	}
+	session := newFixSession(sessionID, runner, appProjectID, appProjectName, req.ProjectID, repoProjectID, req.IssueIID, targetBranch, req.AdditionalContext)
 	saveFixSession(session)
 
-	// Return immediately with session ID
 	c.JSON(http.StatusAccepted, gin.H{
 		"message":   fmt.Sprintf("%s fix agent started", runner),
 		"sessionId": sessionID,
@@ -174,66 +143,141 @@ func FixIssueWithAgent(c *gin.Context) {
 		"session":   session,
 	})
 
-	// Run fix agent in background
+	go launchFixAgent(oauthToken, session)
+}
+
+// RetryFixSession handles POST /agent/fix-sessions/:session_id/retry
+// Creates a new fix session with the same params as the original and re-runs the agent.
+func RetryFixSession(c *gin.Context) {
+	sessionID := c.Param("session_id")
+	if sessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "session_id is required"})
+		return
+	}
+
+	orig, err := getFixSession(sessionID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+		return
+	}
+	if c.FullPath() != "" && strings.Contains(c.FullPath(), "/projects/:id/") && orig.AppProjectID != c.Param("id") {
+		c.JSON(http.StatusNotFound, gin.H{"error": "session not found in project"})
+		return
+	}
+	if orig.Status != "error" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("session status is '%s', only failed sessions can be retried", orig.Status)})
+		return
+	}
+
+	token, ok := c.Get("token")
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+		return
+	}
+	oauthToken, ok := token.(*oauth2.Token)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+		return
+	}
+
+	newSessionID := fmt.Sprintf("fix_%d_%d_%s", orig.ProjectID, orig.IssueIID, uuid.New().String()[:8])
+	session := newFixSession(newSessionID, orig.Runner, orig.AppProjectID, orig.AppProjectName, orig.ProjectID, orig.RepoProjectID, orig.IssueIID, orig.TargetBranch, orig.AdditionalContext)
+	saveFixSession(session)
+
+	c.JSON(http.StatusAccepted, gin.H{
+		"message":          fmt.Sprintf("retrying fix for issue #%d", orig.IssueIID),
+		"sessionId":        newSessionID,
+		"previousSessionId": sessionID,
+		"runner":           session.Runner,
+		"session":          session,
+	})
+
+	go launchFixAgent(oauthToken, session)
+}
+
+// newFixSession constructs a fresh FixSession with all steps in pending state.
+func newFixSession(sessionID, runner, appProjectID, appProjectName string, projectID, repoProjectID, issueIID int, targetBranch, additionalContext string) FixSession {
+	steps := make([]agent.FixStep, len(agent.DefaultFixSteps))
+	for i, step := range agent.DefaultFixSteps {
+		steps[i] = agent.FixStep{
+			ID:          step.ID,
+			Title:       step.Title,
+			Description: step.Description,
+			Status:      agent.FixStepStatusPending,
+		}
+	}
+	return FixSession{
+		SessionID:         sessionID,
+		Runner:            runner,
+		AppProjectID:      appProjectID,
+		AppProjectName:    appProjectName,
+		ProjectID:         projectID,
+		RepoProjectID:     repoProjectID,
+		IssueIID:          issueIID,
+		TargetBranch:      targetBranch,
+		AdditionalContext: additionalContext,
+		Status:            "initialized",
+		Message:           fmt.Sprintf("Starting %s fix agent...", runner),
+		Steps:             steps,
+		CurrentStep:       -1,
+		CreatedAt:         time.Now().Format(time.RFC3339),
+		UpdatedAt:         time.Now().Format(time.RFC3339),
+	}
+}
+
+// launchFixAgent runs the fix agent in a background goroutine and streams events back to Redis.
+func launchFixAgent(oauthToken *oauth2.Token, session FixSession) {
+	bgCtx := context.WithValue(context.Background(), "token", oauthToken)
+	events := agent.NewAgentEmitter(bgCtx, session.SessionID)
+
+	eventCh := make(chan agent.FixEvent, 64)
 	go func() {
-		bgCtx := context.WithValue(context.Background(), "token", oauthToken)
-		events := agent.NewAgentEmitter(bgCtx, sessionID)
+		for fixEvent := range eventCh {
+			session.Status = fixEvent.Stage
+			session.Message = fixEvent.Message
+			session.UpdatedAt = time.Now().Format(time.RFC3339)
 
-		eventCh := make(chan agent.FixEvent, 64)
-		go func() {
-			for fixEvent := range eventCh {
-				// Update session state in Redis
-				session.Status = fixEvent.Stage
-				session.Message = fixEvent.Message
-				session.UpdatedAt = time.Now().Format(time.RFC3339)
-
-				// Update steps if provided
-				if len(fixEvent.Steps) > 0 {
-					session.Steps = fixEvent.Steps
-				}
-				if fixEvent.CurrentStep >= 0 {
-					session.CurrentStep = fixEvent.CurrentStep
-				}
-
-				// Update session info if provided
-				if fixEvent.SessionInfo != nil {
-					session.ProjectName = fixEvent.SessionInfo.ProjectName
-					session.IssueTitle = fixEvent.SessionInfo.IssueTitle
-					session.IssueURL = fixEvent.SessionInfo.IssueURL
-				}
-
-				if fixEvent.Stage == "done" {
-					session.Status = "done"
-					session.MRURL = fixEvent.MRURL
-				}
-				if fixEvent.Stage == "error" {
-					session.Status = "error"
-					session.Error = fixEvent.Error
-				}
-
-				saveFixSession(session)
-
-				// Publish to Redis pub/sub for SSE
-				switch fixEvent.Stage {
-				case "done":
-					events.Done("%s | MR: %s", fixEvent.Message, fixEvent.MRURL)
-				case "error":
-					events.Error(fixEvent.Error)
-				default:
-					events.Progress(fixEvent.Message)
-				}
+			if len(fixEvent.Steps) > 0 {
+				session.Steps = fixEvent.Steps
 			}
-		}()
+			if fixEvent.CurrentStep >= 0 {
+				session.CurrentStep = fixEvent.CurrentStep
+			}
+			if fixEvent.SessionInfo != nil {
+				session.ProjectName = fixEvent.SessionInfo.ProjectName
+				session.IssueTitle = fixEvent.SessionInfo.IssueTitle
+				session.IssueURL = fixEvent.SessionInfo.IssueURL
+			}
+			if fixEvent.Stage == "done" {
+				session.Status = "done"
+				session.MRURL = fixEvent.MRURL
+			}
+			if fixEvent.Stage == "error" {
+				session.Status = "error"
+				session.Error = fixEvent.Error
+			}
 
-		log.Printf("[FixRoute] Starting %s fix agent: session=%s issue project=%d, issue_iid=%d, repo project=%d, target_branch=%s",
-			runner, sessionID, req.ProjectID, req.IssueIID, repoProjectID, targetBranch)
+			saveFixSession(session)
 
-		events.Start("Starting %s fix for issue #%d in project %d...", runner, req.IssueIID, req.ProjectID)
-
-		agent.RunFixAgent(bgCtx, runner, req.ProjectID, req.IssueIID, repoProjectID, targetBranch, req.AdditionalContext, eventCh)
-
-		log.Printf("[FixRoute] Fix agent completed: session=%s", sessionID)
+			switch fixEvent.Stage {
+			case "done":
+				events.Done("%s | MR: %s", fixEvent.Message, fixEvent.MRURL)
+			case "error":
+				events.Error(fixEvent.Error)
+			default:
+				events.Progress(fixEvent.Message)
+			}
+		}
 	}()
+
+	log.Printf("[FixRoute] Starting %s fix agent: session=%s issue project=%d, issue_iid=%d, repo project=%d, target_branch=%s",
+		session.Runner, session.SessionID, session.ProjectID, session.IssueIID, session.RepoProjectID, session.TargetBranch)
+
+	events.Start("Starting %s fix for issue #%d in project %d...", session.Runner, session.IssueIID, session.ProjectID)
+
+	agent.RunFixAgent(bgCtx, session.Runner, session.ProjectID, session.IssueIID, session.RepoProjectID, session.TargetBranch, session.AdditionalContext, eventCh)
+
+	log.Printf("[FixRoute] Fix agent completed: session=%s", session.SessionID)
 }
 
 // GetFixStatus handles GET /agent/fix-status/:session_id
