@@ -22,6 +22,7 @@ services:
       - GITLAB_BASE_URL=${GITLAB_BASE_URL:-https://gitlab.com}
       - GITLAB_APPLICATION_ID=${GITLAB_APPLICATION_ID}
       - GITLAB_SECRET=${GITLAB_SECRET}
+    user: root
     expose:
       - "3000"
     depends_on:
