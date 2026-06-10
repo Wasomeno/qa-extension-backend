@@ -116,15 +116,9 @@ func FixIssueWithAgent(c *gin.Context) {
 		targetBranch = "main"
 	}
 
-	// Default to "claude" if runner not specified
 	runner := req.Runner
 	if runner == "" {
-		runner = "claude"
-	}
-	// Validate runner value
-	if runner != "claude" && runner != "pi" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid runner value, must be 'claude' or 'pi'"})
-		return
+		runner = "pi"
 	}
 
 	token, ok := c.Get("token")
