@@ -524,7 +524,6 @@ func runPiRPC(ctx context.Context, workDir, issueTitle, issueDesc, additionalCon
 	// Build arguments for RPC mode
 	args := []string{
 		"--mode", "rpc",
-		"--cwd", workDir,
 	}
 
 	// Add model if specified
@@ -630,7 +629,6 @@ func runPiRPCWithSummary(ctx context.Context, workDir, issueTitle, issueDesc, ad
 	// Build arguments for RPC mode
 	args := []string{
 		"--mode", "rpc",
-		"--cwd", workDir,
 	}
 
 	// Add model if specified

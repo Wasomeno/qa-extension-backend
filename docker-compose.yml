@@ -29,6 +29,7 @@ services:
       - redis
     volumes:
       - /root/.local/share/pi-node:/root/.local/share/pi-node:ro
+      - /root/.pi:/root/.pi:ro
     networks:
       - dokploy-network
 
