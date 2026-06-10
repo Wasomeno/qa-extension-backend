@@ -11,6 +11,10 @@ services:
       - APP_ENV=${APP_ENV}
       - COOKIE_DOMAIN=${COOKIE_DOMAIN}
       - GITLAB_REDIRECT_URI=${GITLAB_REDIRECT_URI}
+      # Pi fix agent configuration
+      - PI_BINARY_PATH=/root/.local/share/pi-node/node-v22.22.3-linux-x64/bin/pi
+      - PI_MODEL=${PI_MODEL:-}
+      - FIX_AGENT_TIMEOUT_MINUTES=${FIX_AGENT_TIMEOUT_MINUTES:-30}
       # Claude Code API configuration
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-}
@@ -23,7 +27,7 @@ services:
     depends_on:
       - redis
     volumes:
-      - /root/.local/share/pi-node/node-v22.22.3-linux-x64/bin/pi:/usr/local/bin/pi:ro
+      - /root/.local/share/pi-node:/root/.local/share/pi-node:ro
     networks:
       - dokploy-network
 
