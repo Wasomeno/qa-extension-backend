@@ -1670,7 +1670,7 @@ func mapResultStatus(s string) models.AutomationRunStatus {
 	switch s {
 	case "passed":
 		return models.AutomationStatusPass
-	case "failed":
+	case "failed", "timeout":
 		return models.AutomationStatusFail
 	default:
 		return models.AutomationStatusIdle
