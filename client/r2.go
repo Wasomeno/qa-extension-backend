@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -62,6 +63,27 @@ func (r *R2Client) UploadFile(ctx context.Context, filePath string, key string, 
 		Bucket:             aws.String(r.BucketName),
 		Key:                aws.String(key),
 		Body:               file,
+		ContentType:        aws.String(contentType),
+		ContentDisposition: aws.String("inline"),
+	})
+	if err != nil {
+		return "", err
+	}
+
+	if r.PublicURL != "" {
+		publicURL := strings.TrimSuffix(r.PublicURL, "/")
+		cleanKey := strings.TrimPrefix(key, "/")
+		return fmt.Sprintf("%s/%s", publicURL, cleanKey), nil
+	}
+
+	return key, nil
+}
+
+func (r *R2Client) UploadBytes(ctx context.Context, data []byte, key string, contentType string) (string, error) {
+	_, err := r.S3Client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:             aws.String(r.BucketName),
+		Key:                aws.String(key),
+		Body:               bytes.NewReader(data),
 		ContentType:        aws.String(contentType),
 		ContentDisposition: aws.String("inline"),
 	})
