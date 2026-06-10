@@ -147,7 +147,7 @@ func FixIssueWithAgent(c *gin.Context) {
 }
 
 // RetryFixSession handles POST /agent/fix-sessions/:session_id/retry
-// Creates a new fix session with the same params as the original and re-runs the agent.
+// Resets the existing session back to initialized state and reruns the fix agent.
 func RetryFixSession(c *gin.Context) {
 	sessionID := c.Param("session_id")
 	if sessionID == "" {
@@ -155,17 +155,17 @@ func RetryFixSession(c *gin.Context) {
 		return
 	}
 
-	orig, err := getFixSession(sessionID)
+	session, err := getFixSession(sessionID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
 	}
-	if c.FullPath() != "" && strings.Contains(c.FullPath(), "/projects/:id/") && orig.AppProjectID != c.Param("id") {
+	if c.FullPath() != "" && strings.Contains(c.FullPath(), "/projects/:id/") && session.AppProjectID != c.Param("id") {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found in project"})
 		return
 	}
-	if orig.Status != "error" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("session status is '%s', only failed sessions can be retried", orig.Status)})
+	if session.Status != "error" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("session status is '%s', only failed sessions can be retried", session.Status)})
 		return
 	}
 
@@ -180,19 +180,33 @@ func RetryFixSession(c *gin.Context) {
 		return
 	}
 
-	newSessionID := fmt.Sprintf("fix_%d_%d_%s", orig.ProjectID, orig.IssueIID, uuid.New().String()[:8])
-	session := newFixSession(newSessionID, orig.Runner, orig.AppProjectID, orig.AppProjectName, orig.ProjectID, orig.RepoProjectID, orig.IssueIID, orig.TargetBranch, orig.AdditionalContext)
-	saveFixSession(session)
+	// Reset session state in-place
+	steps := make([]agent.FixStep, len(agent.DefaultFixSteps))
+	for i, step := range agent.DefaultFixSteps {
+		steps[i] = agent.FixStep{
+			ID:          step.ID,
+			Title:       step.Title,
+			Description: step.Description,
+			Status:      agent.FixStepStatusPending,
+		}
+	}
+	session.Status = "initialized"
+	session.Message = fmt.Sprintf("Retrying %s fix agent...", session.Runner)
+	session.Steps = steps
+	session.CurrentStep = -1
+	session.Error = ""
+	session.MRURL = ""
+	session.UpdatedAt = time.Now().Format(time.RFC3339)
+	saveFixSession(*session)
 
 	c.JSON(http.StatusAccepted, gin.H{
-		"message":          fmt.Sprintf("retrying fix for issue #%d", orig.IssueIID),
-		"sessionId":        newSessionID,
-		"previousSessionId": sessionID,
-		"runner":           session.Runner,
-		"session":          session,
+		"message":   fmt.Sprintf("retrying fix for issue #%d", session.IssueIID),
+		"sessionId": session.SessionID,
+		"runner":    session.Runner,
+		"session":   session,
 	})
 
-	go launchFixAgent(oauthToken, session)
+	go launchFixAgent(oauthToken, *session)
 }
 
 // newFixSession constructs a fresh FixSession with all steps in pending state.
