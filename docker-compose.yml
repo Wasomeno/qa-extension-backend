@@ -22,6 +22,8 @@ services:
       - "3000"
     depends_on:
       - redis
+    volumes:
+      - /root/.local/share/pi-node/node-v22.22.3-linux-x64/bin/pi:/usr/local/bin/pi:ro
     networks:
       - dokploy-network
 
