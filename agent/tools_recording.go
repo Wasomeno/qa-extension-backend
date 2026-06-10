@@ -119,10 +119,6 @@ func runTestScenario(ctx context.Context, args RunTestScenarioArgs) (*RunTestSce
 		}
 		// Save to Redis
 		_ = database.SaveTestResult(ctx, res)
-		// Strip screenshots
-		for i := range res.StepResults {
-			res.StepResults[i].Screenshot = ""
-		}
 		// Update the scenario's AutomationTest inline with the run result
 		for si := range scenario.Sections {
 			for ti := range scenario.Sections[si].TestCases {
@@ -132,14 +128,12 @@ func runTestScenario(ctx context.Context, args RunTestScenarioArgs) (*RunTestSce
 					scenario.Sections[si].TestCases[ti].AutomationTest.LastRunAt = time.Now().Format(time.RFC3339)
 					scenario.Sections[si].TestCases[ti].AutomationTest.RunDurationMs = res.RunDurationMs
 					scenario.Sections[si].TestCases[ti].AutomationTest.VideoURL = res.VideoURL
-					scenario.Sections[si].TestCases[ti].AutomationTest.StepResults = res.StepResults
 					scenario.Sections[si].TestCases[ti].AutomationTest.Log = res.Log
 					scenario.Sections[si].TestCases[ti].AutomationTest.ErrorMessage = ""
-					scenario.Sections[si].TestCases[ti].AutomationTest.FailedStepIndex = nil
-					if res.Status == "failed" && len(res.StepResults) > 0 {
+					mergeStepResults(scenario.Sections[si].TestCases[ti].AutomationTest, res.StepResults)
+					if res.Status == "failed" {
 						for _, sr := range res.StepResults {
 							if sr.Status == "failure" {
-								scenario.Sections[si].TestCases[ti].AutomationTest.FailedStepIndex = &sr.StepIndex
 								scenario.Sections[si].TestCases[ti].AutomationTest.ErrorMessage = sr.Error
 								break
 							}
@@ -165,6 +159,21 @@ func mapResultStatus(s string) models.AutomationRunStatus {
 		return models.AutomationStatusFail
 	default:
 		return models.AutomationStatusIdle
+	}
+}
+
+func mergeStepResults(at *models.AutomationTest, stepResults []models.TestStepResult) {
+	for i := range at.Steps {
+		at.Steps[i].ResultStatus = ""
+		at.Steps[i].ResultError = ""
+		at.Steps[i].ResultScreenshot = ""
+	}
+	for _, sr := range stepResults {
+		if sr.StepIndex < len(at.Steps) {
+			at.Steps[sr.StepIndex].ResultStatus = sr.Status
+			at.Steps[sr.StepIndex].ResultError = sr.Error
+			at.Steps[sr.StepIndex].ResultScreenshot = sr.Screenshot
+		}
 	}
 }
 
@@ -231,9 +240,6 @@ func runScenarioTestCase(ctx context.Context, args RunScenarioTestCaseArgs) (*mo
 	}
 
 	_ = database.SaveTestResult(ctx, result)
-	for i := range result.StepResults {
-		result.StepResults[i].Screenshot = ""
-	}
 
 	// Update the scenario's AutomationTest inline with the run result
 	for si := range scenario.Sections {
@@ -244,14 +250,12 @@ func runScenarioTestCase(ctx context.Context, args RunScenarioTestCaseArgs) (*mo
 				scenario.Sections[si].TestCases[ti].AutomationTest.LastRunAt = time.Now().Format(time.RFC3339)
 				scenario.Sections[si].TestCases[ti].AutomationTest.RunDurationMs = result.RunDurationMs
 				scenario.Sections[si].TestCases[ti].AutomationTest.VideoURL = result.VideoURL
-				scenario.Sections[si].TestCases[ti].AutomationTest.StepResults = result.StepResults
 				scenario.Sections[si].TestCases[ti].AutomationTest.Log = result.Log
 				scenario.Sections[si].TestCases[ti].AutomationTest.ErrorMessage = ""
-				scenario.Sections[si].TestCases[ti].AutomationTest.FailedStepIndex = nil
-				if result.Status == "failed" && len(result.StepResults) > 0 {
+				mergeStepResults(scenario.Sections[si].TestCases[ti].AutomationTest, result.StepResults)
+				if result.Status == "failed" {
 					for _, sr := range result.StepResults {
 						if sr.Status == "failure" {
-							scenario.Sections[si].TestCases[ti].AutomationTest.FailedStepIndex = &sr.StepIndex
 							scenario.Sections[si].TestCases[ti].AutomationTest.ErrorMessage = sr.Error
 							break
 						}
@@ -416,8 +420,6 @@ func runRecordedTest(ctx context.Context, args RunRecordedTestArgs) (*models.Tes
 	_ = database.SaveTestResult(ctx, result)
 
 	// Strip screenshots before returning to agent to save tokens
-	// The agent primarily needs the status, errors, and video URL.
-	// Base64 screenshots are too heavy for the LLM context.
 	for i := range result.StepResults {
 		result.StepResults[i].Screenshot = ""
 	}

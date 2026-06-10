@@ -1637,14 +1637,24 @@ func RunScenarioTestCase(c *gin.Context) {
 						scenario.Sections[si].TestCases[ti].AutomationTest.Status = mapResultStatus(result.Status)
 						scenario.Sections[si].TestCases[ti].AutomationTest.RunDurationMs = result.RunDurationMs
 						scenario.Sections[si].TestCases[ti].AutomationTest.VideoURL = result.VideoURL
-						scenario.Sections[si].TestCases[ti].AutomationTest.StepResults = result.StepResults
 						scenario.Sections[si].TestCases[ti].AutomationTest.Log = result.Log
 						scenario.Sections[si].TestCases[ti].AutomationTest.ErrorMessage = ""
-						scenario.Sections[si].TestCases[ti].AutomationTest.FailedStepIndex = nil
-						if result.Status == "failed" && len(result.StepResults) > 0 {
+						at := scenario.Sections[si].TestCases[ti].AutomationTest
+						for i := range at.Steps {
+							at.Steps[i].ResultStatus = ""
+							at.Steps[i].ResultError = ""
+							at.Steps[i].ResultScreenshot = ""
+						}
+						for _, sr := range result.StepResults {
+							if sr.StepIndex < len(at.Steps) {
+								at.Steps[sr.StepIndex].ResultStatus = sr.Status
+								at.Steps[sr.StepIndex].ResultError = sr.Error
+								at.Steps[sr.StepIndex].ResultScreenshot = sr.Screenshot
+							}
+						}
+						if result.Status == "failed" {
 							for _, sr := range result.StepResults {
 								if sr.Status == "failure" {
-									scenario.Sections[si].TestCases[ti].AutomationTest.FailedStepIndex = &sr.StepIndex
 									scenario.Sections[si].TestCases[ti].AutomationTest.ErrorMessage = sr.Error
 									break
 								}

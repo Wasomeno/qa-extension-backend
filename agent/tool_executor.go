@@ -797,9 +797,6 @@ func runTestScenarioDirect(ctx context.Context, args map[string]any) (*RunTestSc
 			failed++
 		}
 		_ = database.SaveTestResult(ctx, res)
-		for i := range res.StepResults {
-			res.StepResults[i].Screenshot = ""
-		}
 		// Update the scenario's AutomationTest inline with the run result
 		for si := range scenario.Sections {
 			for ti := range scenario.Sections[si].TestCases {
@@ -809,14 +806,12 @@ func runTestScenarioDirect(ctx context.Context, args map[string]any) (*RunTestSc
 					scenario.Sections[si].TestCases[ti].AutomationTest.LastRunAt = time.Now().Format(time.RFC3339)
 					scenario.Sections[si].TestCases[ti].AutomationTest.RunDurationMs = res.RunDurationMs
 					scenario.Sections[si].TestCases[ti].AutomationTest.VideoURL = res.VideoURL
-					scenario.Sections[si].TestCases[ti].AutomationTest.StepResults = res.StepResults
 					scenario.Sections[si].TestCases[ti].AutomationTest.Log = res.Log
 					scenario.Sections[si].TestCases[ti].AutomationTest.ErrorMessage = ""
-					scenario.Sections[si].TestCases[ti].AutomationTest.FailedStepIndex = nil
-					if res.Status == "failed" && len(res.StepResults) > 0 {
+					mergeStepResults(scenario.Sections[si].TestCases[ti].AutomationTest, res.StepResults)
+					if res.Status == "failed" {
 						for _, sr := range res.StepResults {
 							if sr.Status == "failure" {
-								scenario.Sections[si].TestCases[ti].AutomationTest.FailedStepIndex = &sr.StepIndex
 								scenario.Sections[si].TestCases[ti].AutomationTest.ErrorMessage = sr.Error
 								break
 							}
@@ -885,9 +880,6 @@ func runScenarioTestCaseDirect(ctx context.Context, args map[string]any) (*model
 	}
 
 	_ = database.SaveTestResult(ctx, result)
-	for i := range result.StepResults {
-		result.StepResults[i].Screenshot = ""
-	}
 
 	// Update the scenario's AutomationTest inline with the run result
 	for si := range scenario.Sections {
@@ -898,14 +890,12 @@ func runScenarioTestCaseDirect(ctx context.Context, args map[string]any) (*model
 				scenario.Sections[si].TestCases[ti].AutomationTest.LastRunAt = time.Now().Format(time.RFC3339)
 				scenario.Sections[si].TestCases[ti].AutomationTest.RunDurationMs = result.RunDurationMs
 				scenario.Sections[si].TestCases[ti].AutomationTest.VideoURL = result.VideoURL
-				scenario.Sections[si].TestCases[ti].AutomationTest.StepResults = result.StepResults
 				scenario.Sections[si].TestCases[ti].AutomationTest.Log = result.Log
 				scenario.Sections[si].TestCases[ti].AutomationTest.ErrorMessage = ""
-				scenario.Sections[si].TestCases[ti].AutomationTest.FailedStepIndex = nil
-				if result.Status == "failed" && len(result.StepResults) > 0 {
+				mergeStepResults(scenario.Sections[si].TestCases[ti].AutomationTest, result.StepResults)
+				if result.Status == "failed" {
 					for _, sr := range result.StepResults {
 						if sr.Status == "failure" {
-							scenario.Sections[si].TestCases[ti].AutomationTest.FailedStepIndex = &sr.StepIndex
 							scenario.Sections[si].TestCases[ti].AutomationTest.ErrorMessage = sr.Error
 							break
 						}
