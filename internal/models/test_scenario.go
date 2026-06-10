@@ -127,13 +127,11 @@ type AutomationTest struct {
 	Prompt          string              `json:"prompt,omitempty"`
 	LastRunAt       string              `json:"lastRunAt,omitempty"`
 	RunDurationMs   int64               `json:"runDurationMs,omitempty"`
-	Steps           []RecordingStep     `json:"steps,omitempty"`
-	VideoURL        string              `json:"videoUrl,omitempty"`
-	ScreenshotURL   string              `json:"screenshotUrl,omitempty"`
-	StepResults     []TestStepResult    `json:"stepResults,omitempty"`
-	Log             string              `json:"log,omitempty"`
-	ErrorMessage    string              `json:"errorMessage,omitempty"`
-	FailedStepIndex *int                `json:"failedStepIndex,omitempty"`
+	Steps         []RecordingStep     `json:"steps,omitempty"`
+	VideoURL      string              `json:"videoUrl,omitempty"`
+	ScreenshotURL string              `json:"screenshotUrl,omitempty"`
+	Log           string              `json:"log,omitempty"`
+	ErrorMessage  string              `json:"errorMessage,omitempty"`
 }
 
 // TestStepV2 is a single step within a test case

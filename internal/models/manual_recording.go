@@ -15,16 +15,21 @@ type RecordingStep struct {
 	SelectorCandidates []string     `json:"selectorCandidates"`
 	XPath              string       `json:"xpath,omitempty"`
 	XPathCandidates    []string     `json:"xpathCandidates,omitempty"`
-	
+
 	// API specific fields
 	ApiMethod          string       `json:"apiMethod,omitempty"`
 	ApiEndpoint        string       `json:"apiEndpoint,omitempty"`
 	ApiPayload         string       `json:"apiPayload,omitempty"`
 	ApiHeaders         string       `json:"apiHeaders,omitempty"`
-	
+
 	Value              string       `json:"value,omitempty"`
 	AssertionType      string       `json:"assertionType,omitempty"`
 	ExpectedValue      string       `json:"expectedValue,omitempty"`
+
+	// Execution result fields (populated after running)
+	ResultStatus     string `json:"resultStatus,omitempty"`
+	ResultError      string `json:"resultError,omitempty"`
+	ResultScreenshot string `json:"resultScreenshot,omitempty"`
 }
 
 type ConsoleLogEntry struct {
