@@ -1470,6 +1470,57 @@ func saveManualTestResult(ctx context.Context, result models.ManualTestResult) e
 	return nil
 }
 
+// SyncScenario re-fetches a single markdown-sourced scenario from its GitLab source file
+// and re-parses it, preserving all existing automation tests and notes.
+func SyncScenario(c *gin.Context) {
+	scenarioID := routeScenarioID(c)
+	if scenarioID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "scenario id is required"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	scenario, err := getScenario(ctx, scenarioID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "scenario not found"})
+		return
+	}
+	if !ensureScenarioProject(c, scenario) {
+		return
+	}
+	if scenario.SourceType != "markdown" || scenario.SourcePath == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "scenario was not imported from a markdown file and cannot be synced"})
+		return
+	}
+
+	projectID := routeProjectID(c)
+	project, err := services.GetAppProject(ctx, projectID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+		return
+	}
+
+	token, ok := c.MustGet("token").(*oauth2.Token)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	glClient, err := client.GetClient(ctx, token, nil)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create gitlab client"})
+		return
+	}
+
+	actorID, _ := identity.GetCurrentUserID(c)
+	updated, err := services.SyncSingleMarkdownScenario(ctx, glClient, project, scenarioID, actorID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, updated)
+}
+
 // ─────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────

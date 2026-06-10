@@ -98,6 +98,7 @@ func main() {
 		protected.PATCH("/projects/:id/test-scenarios/:scenario_id", handlers.UpdateScenario)
 		protected.DELETE("/projects/:id/test-scenarios/:scenario_id", handlers.DeleteScenario)
 		protected.POST("/projects/:id/test-scenarios/:scenario_id/automations", handlers.GenerateTestCaseAutomations)
+		protected.POST("/projects/:id/test-scenarios/:scenario_id/sync", handlers.SyncScenario)
 		protected.GET("/projects/:id/test-scenarios/:scenario_id/stream", handlers.StreamEvents)
 		protected.POST("/projects/:id/test-scenarios/bulk-delete", handlers.BulkDeleteScenarios)
 
