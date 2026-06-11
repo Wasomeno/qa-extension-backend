@@ -549,10 +549,18 @@ func listGitLabBranches(ctx context.Context, args ListBranchesArgs) (*ListBranch
 		opts.Search = &args.Search
 	}
 
-	branches, _, err := glClient.Branches.ListBranches(args.ProjectID, opts)
-	if err != nil {
-		log.Printf("[AgentTool] listGitLabBranches failed: %v", err)
-		return nil, fmt.Errorf("failed to list branches: %w", err)
+	var allBranches []*gitlab.Branch
+	for {
+		branches, resp, err := glClient.Branches.ListBranches(args.ProjectID, opts)
+		if err != nil {
+			log.Printf("[AgentTool] listGitLabBranches failed: %v", err)
+			return nil, fmt.Errorf("failed to list branches: %w", err)
+		}
+		allBranches = append(allBranches, branches...)
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
 	}
 
 	// Get project to identify the default branch
@@ -563,7 +571,7 @@ func listGitLabBranches(ctx context.Context, args ListBranchesArgs) (*ListBranch
 	}
 
 	var result []BranchInfo
-	for _, b := range branches {
+	for _, b := range allBranches {
 		result = append(result, BranchInfo{
 			Name:               b.Name,
 			Protected:          b.Protected,

@@ -506,15 +506,27 @@ func execListGitLabBranches(ctx context.Context, args map[string]any) (any, erro
 		return nil, fmt.Errorf("projectId is required")
 	}
 
-	opts := &gitlab.ListBranchesOptions{}
+	opts := &gitlab.ListBranchesOptions{
+		ListOptions: gitlab.ListOptions{
+			PerPage: 100,
+		},
+	}
 	if search != "" {
 		opts.Search = &search
 	}
 
-	branches, _, err := gitlabClient.Branches.ListBranches(projectID, opts)
-	if err != nil {
-		events.Error("Failed to list branches: " + err.Error())
-		return nil, fmt.Errorf("failed to list branches: %w", err)
+	var allBranches []*gitlab.Branch
+	for {
+		branches, resp, err := gitlabClient.Branches.ListBranches(projectID, opts)
+		if err != nil {
+			events.Error("Failed to list branches: " + err.Error())
+			return nil, fmt.Errorf("failed to list branches: %w", err)
+		}
+		allBranches = append(allBranches, branches...)
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
 	}
 
 	// Get project to identify the default branch
@@ -525,7 +537,7 @@ func execListGitLabBranches(ctx context.Context, args map[string]any) (any, erro
 	}
 
 	var result []BranchInfo
-	for _, b := range branches {
+	for _, b := range allBranches {
 		result = append(result, BranchInfo{
 			Name:               b.Name,
 			Protected:          b.Protected,
