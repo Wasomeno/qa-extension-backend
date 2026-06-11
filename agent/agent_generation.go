@@ -199,9 +199,8 @@ func buildAgentGenerationPrompt(scenario *models.TestScenario, scenarioID string
 For EACH test case in the scenario below:
 1. Use the GitLab tools to explore the project repository.
 2. Find the relevant source files (pages, components) for UI steps.
-3. Look for "src/api" or "src/commons/constants" to find API endpoint definitions if needed.
-4. Extract selectors from the UI source code.
-5. Generate a complete automation test utilizing the "save_automation_test" tool.
+3. Extract selectors from the UI source code.
+4. Generate a complete automation test utilizing the "save_automation_test" tool.
 
 ## Critical Requirements
 - Always include selector, elementHints, selectorCandidates, xpath, xpathCandidates for UI steps.
@@ -212,6 +211,15 @@ For EACH test case in the scenario below:
 - **PreConditions**: When evaluating the test case 'preCondition' (e.g. "User is logged in", "Invoice exists"), generate the necessary UI navigation steps to set this up. Do not use API calls for precondition setup.
 - **Login Flow**: If authentication is required, navigate to the Login URL provided below. Use the provided Username and Password to perform login through the UI (type credentials into the appropriate fields, click the login/submit button). Each test runs in an isolated browser context, so every automation must include its own login flow if needed.
 - **Framework Detection**: Detect if the project uses Vite ("vite.config.ts") or Next.js ("next.config.js") and pass "vite" or "nextjs" to the Framework argument of "save_automation_test".
+
+## Allowed Actions (CRITICAL)
+The automation framework only supports these action values. Do NOT use any other value.
+- **navigate**: Go to a URL (use the URL in the 'value' field)
+- **click**: Click on an element
+- **type**: Type text into an input field (use the text in the 'value' field)
+- **press**: Press a keyboard key on an element
+- **wait**: Wait for an element to appear (use timeout in ms in the 'value' field)
+- **assert**: Assert an element is visible or matches expected text
 
 ## Project Information
 `)
@@ -341,7 +349,7 @@ Each automation must have:
   "description": "Pre-condition text",
   "steps": [
     {
-      "action": "navigate|type|click|assert",
+      "action": "navigate | click | type | press | wait | assert",
       "description": "Clear description",
       "selector": "CSS selector (e.g. [data-testid='login-btn'], .submit, #email)",
       "selectorCandidates": ["CSS selector fallback 1", "CSS selector fallback 2"],
@@ -355,6 +363,8 @@ Each automation must have:
     }
   ]
 }
+
+CRITICAL: ONLY use the exact action values listed above (navigate, click, type, press, wait, assert). Do NOT use "api_request", "api_auth", or any other action. The runner does NOT support any other action types.
 
 CRITICAL: The automation framework runs on Playwright. You MUST extract real CSS and XPath selectors from the source files. DO NOT invent fake selectors. DO NOT leave 'selector' or 'xpath' blank. If you cannot find a file, use semantic locators like "button:has-text('Login')" as fallback.
 

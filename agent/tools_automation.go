@@ -54,7 +54,7 @@ type SaveAutomationInput struct {
 }
 
 type SaveAutomationStep struct {
-	Action             string            `json:"action"` // Can be navigate, click, type, press, assert, wait, api_request
+	Action             string            `json:"action"` // navigate, click, type, press, assert, wait
 	Description        string            `json:"description"`
 	ElementHints       ElementHintsInput `json:"elementHints"`
 	Selector           string            `json:"selector"`
