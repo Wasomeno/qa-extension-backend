@@ -24,7 +24,7 @@ type FixSession struct {
 	SessionID string `json:"sessionId"` // Unique session identifier
 
 	// Session description
-	Runner string `json:"runner"` // "claude" or "pi"
+	Runner string `json:"runner"` // "pi"
 
 	// Public QA project information
 	AppProjectID   string `json:"appProjectId,omitempty"`

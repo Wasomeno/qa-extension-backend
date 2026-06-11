@@ -3,4 +3,5 @@
 temp-go/
 agent/tmp/
 config.yaml
-static/management.htmlqa-extension-backend
+static/management.html
+qa-extension-backend

@@ -281,7 +281,7 @@ func (sm *stepManager) emitError(stage string, errMsg string) {
 	})
 }
 
-// This function mirrors the structure of RunFixAgent but uses Pi instead of Claude Code CLI.
+// RunFixWithPi orchestrates the fix using the Pi coding agent in RPC mode.
 func RunFixWithPi(ctx context.Context, issueProjectID int, issueIID int, repoProjectID int, targetBranch string, additionalContext string, eventCh chan<- FixEvent) {
 	defer close(eventCh)
 
