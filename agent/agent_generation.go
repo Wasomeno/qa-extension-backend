@@ -208,13 +208,9 @@ For EACH test case in the scenario below:
 - Use actual selectors from the source code (data-testid, id, aria-label, etc.).
 - NEVER use vague selectors like "button" or ".item".
 
-## Fast-Track Setup via API Data Seeding (CRITICAL)
-- **PreConditions**: When evaluating the test case 'preCondition' (e.g. "User is logged in", "Invoice exists"), do NOT generate slow UI navigation steps to set this up.
-- **Generate API Steps**: Instead, generate "api_request" actions (with apiMethod, apiEndpoint, apiPayload, apiHeaders) directly mapped to the frontend API definitions to fulfill the prerequisite state.
-- **Auth Token Extraction**: The test runner will automatically extract the authentication token from the login API response. Use the exact variable placeholder ` + "`{{AUTH_TOKEN}}`" + ` in subsequent "api_request" headers/payloads.
-- **Dynamic API Chaining**: For "Full Flow" data seeding where Step 2 creates a resource and Step 3 needs it, use the ` + "`{{STEP_X_RESPONSE.path.to.field}}`" + ` placeholder. The runner will substitute this dynamically.
-- **Dropdown Lookup Emulation**: If the UI code shows a payload requires a lookup ID (e.g. tax_id from a dropdown), generate a GET request first to fetch it from the staging API, and extract it via ` + "`{{STEP_X_RESPONSE.data[0].id}}`" + `.
-- **Mock Data Inference**: For string/number fields not requiring exact references, invent realistic mock data matching the TypeScript interfaces.
+## Handling Preconditions & Login
+- **PreConditions**: When evaluating the test case 'preCondition' (e.g. "User is logged in", "Invoice exists"), generate the necessary UI navigation steps to set this up. Do not use API calls for precondition setup.
+- **Login Flow**: If authentication is required, navigate to the Login URL provided below. Use the provided Username and Password to perform login through the UI (type credentials into the appropriate fields, click the login/submit button). Each test runs in an isolated browser context, so every automation must include its own login flow if needed.
 - **Framework Detection**: Detect if the project uses Vite ("vite.config.ts") or Next.js ("next.config.js") and pass "vite" or "nextjs" to the Framework argument of "save_automation_test".
 
 ## Project Information
