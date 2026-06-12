@@ -22,6 +22,12 @@ services:
       - GITLAB_BASE_URL=${GITLAB_BASE_URL:-https://gitlab.com}
       - GITLAB_APPLICATION_ID=${GITLAB_APPLICATION_ID}
       - GITLAB_SECRET=${GITLAB_SECRET}
+      # Local Git repository cache for AI agent code reads/searches
+      - REPO_CACHE_ENABLED=${REPO_CACHE_ENABLED:-true}
+      - REPO_CACHE_DIR=/var/cache/qa-extension/repos
+      - REPO_CACHE_SYNC_TTL=${REPO_CACHE_SYNC_TTL:-60s}
+      - REPO_CACHE_MAX_SYNC_CONCURRENCY=${REPO_CACHE_MAX_SYNC_CONCURRENCY:-3}
+      - REPO_CACHE_SEARCH_LIMIT=${REPO_CACHE_SEARCH_LIMIT:-50}
     user: root
     expose:
       - "3000"
@@ -30,6 +36,7 @@ services:
     volumes:
       - /root/.local/share/pi-node:/root/.local/share/pi-node:ro
       - /root/.pi:/root/.pi
+      - repo_cache_data:/var/cache/qa-extension/repos
     networks:
       - dokploy-network
 
@@ -43,6 +50,7 @@ services:
 
 volumes:
   redis_data:
+  repo_cache_data:
 
 networks:
   dokploy-network:

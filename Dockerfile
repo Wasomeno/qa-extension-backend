@@ -20,6 +20,10 @@ FROM mcr.microsoft.com/playwright:v1.57.0-jammy
 
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy the compiled Go binary
 COPY --from=builder /app/main .
 
