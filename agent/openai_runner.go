@@ -16,10 +16,11 @@ import (
 
 // AgentRunRequest is the input for an OpenAI-backed agent invocation.
 type AgentRunRequest struct {
-	SessionID   string
-	UserID      string
-	Input       string
-	Attachments []AgentAttachment
+	SessionID    string
+	UserID       string
+	Input        string
+	Attachments  []AgentAttachment
+	AppProjectID string
 }
 
 // AgentUsage captures token usage returned by OpenAI.
@@ -126,9 +127,14 @@ func (r *OpenAIAgentRunner) run(ctx context.Context, req AgentRunRequest, ch cha
 		return fmt.Errorf("failed to save user message: %w", err)
 	}
 
+	systemInstruction := r.systemInstruction
+	if req.AppProjectID != "" {
+		systemInstruction += fmt.Sprintf("\n\n## Current project\n\nThe user is currently working in app project with appProjectId: %q. Use this appProjectId directly for all project-scoped tools (e.g. listTestScenarios, listSpecsTree) without asking the user to select a project.", req.AppProjectID)
+	}
+
 	var lastUsage *AgentUsage
 	for {
-		messages := buildOpenAIChatMessages(r.instructionRole, r.systemInstruction, sess.Messages)
+		messages := buildOpenAIChatMessages(r.instructionRole, systemInstruction, sess.Messages)
 		resp, err := r.createChatCompletion(ctx, messages)
 		if err != nil {
 			return err

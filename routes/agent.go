@@ -139,9 +139,10 @@ func DeleteSession(c *gin.Context) {
 
 func ChatWithAgent(c *gin.Context) {
 	var req struct {
-		SessionID   string `json:"session_id"`
-		Input       string `json:"input"`
-		Attachments []struct {
+		SessionID    string `json:"session_id"`
+		Input        string `json:"input"`
+		AppProjectID string `json:"app_project_id"`
+		Attachments  []struct {
 			Name     string `json:"name"`
 			MimeType string `json:"mimeType"`
 			Data     string `json:"data"`
@@ -312,10 +313,11 @@ Please format this result nicely for the user.`, input, cmd.Name, cmd.Name, stri
 	// Run the agent
 	agentStart := time.Now()
 	eventCh := r.Run(agentCtx, agent.AgentRunRequest{
-		SessionID:   req.SessionID,
-		UserID:      userID,
-		Input:       input,
-		Attachments: attachments,
+		SessionID:    req.SessionID,
+		UserID:       userID,
+		Input:        input,
+		Attachments:  attachments,
+		AppProjectID: req.AppProjectID,
 	})
 
 	for event := range eventCh {
