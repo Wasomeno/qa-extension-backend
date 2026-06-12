@@ -68,39 +68,37 @@ func NewQAToolRegistry() *ToolRegistry {
 	r := NewToolRegistry()
 
 	registerTypedTool(r, "listGitLabProjects", "List available GitLab projects. Call this without arguments to see all projects the authenticated user can access.", listGitLabProjects)
-	registerTypedTool(r, "createGitLabIssue", "Create a new issue in a GitLab project.", createGitLabIssue)
-	registerTypedTool(r, "listGitLabIssues", "List issues from a specific GitLab project. Requires projectId.", listGitLabIssues)
+	registerTypedTool(r, "listAppProjects", "List QA app projects. App projects connect an issue GitLab repo, a specs GitLab repo, test scenarios, recordings, and fix sessions.", listAppProjects)
+	registerTypedTool(r, "getAppProject", "Get one QA app project by appProjectId, including issueRepoId, specsRepoId, and test context.", getAppProject)
+	registerTypedTool(r, "getProjectTestContext", "Read the project-level testing context markdown for an app project.", getProjectTestContext)
+	registerTypedTool(r, "updateProjectTestContext", "Replace the project-level testing context markdown for an app project.", updateProjectTestContext)
+	registerTypedTool(r, "createGitLabIssue", "Create a new issue in a raw GitLab issue repo. Use an app project's issueRepoId when working inside a QA app project.", createGitLabIssue)
+	registerTypedTool(r, "listGitLabIssues", "List issues from a raw GitLab project/repo. Use an app project's issueRepoId for project-scoped issue work.", listGitLabIssues)
 	registerTypedTool(r, "listAllGitLabIssues", "List all GitLab issues assigned to or created by the authenticated user across all projects.", listAllGitLabIssues)
-	registerTypedTool(r, "updateGitLabIssue", "Update an existing GitLab issue title, description, or state.", updateGitLabIssue)
-	registerTypedTool(r, "listGitLabRepositoryTree", "List files and directories in a GitLab repository. For automation generation, leave ref empty to use the default branch.", listGitLabRepositoryTree)
-	registerTypedTool(r, "getGitLabFileContent", "Read a file from a GitLab repository. Use this to inspect React/Next/Vite source and find selectors such as data-testid, id, aria-label, name, and button text.", getGitLabFileContent)
-	registerTypedTool(r, "searchGitLabCode", "Search code or selector patterns in a GitLab repository. For automation generation, leave ref empty unless the user explicitly asks for a branch.", searchGitLabCode)
+	registerTypedTool(r, "updateGitLabIssue", "Update an existing GitLab issue title, description, or state in a raw GitLab issue repo.", updateGitLabIssue)
+	registerTypedTool(r, "getIssueComments", "List comments/notes for a GitLab issue IID in a raw GitLab issue repo.", getIssueComments)
+	registerTypedTool(r, "createIssueComment", "Create a comment/note on a GitLab issue IID in a raw GitLab issue repo.", createIssueComment)
+	registerTypedTool(r, "createIssueEvidence", "Create an evidence-formatted comment on a GitLab issue IID.", createIssueEvidence)
+	registerTypedTool(r, "getIssueLinks", "List issue relations/links for a GitLab issue IID.", getIssueLinks)
+	registerTypedTool(r, "listGitLabRepositoryTree", "List files and directories in any raw GitLab repository. Use issueRepoId for app code/issue repos and specsRepoId for specs repos.", listGitLabRepositoryTree)
+	registerTypedTool(r, "getGitLabFileContent", "Read a file from any raw GitLab repository. Use this to inspect source and find selectors such as data-testid, id, aria-label, name, and button text.", getGitLabFileContent)
+	registerTypedTool(r, "searchGitLabCode", "Search code or selector patterns in any raw GitLab repository. Leave ref empty unless the user explicitly asks for a branch.", searchGitLabCode)
 	registerTypedTool(r, "listGitLabBranches", "List branches in a GitLab project repository.", listGitLabBranches)
-	registerTypedTool(r, "listRecordedTests", "List available recorded automation tests. Optionally filter by projectID or issueID.", listRecordedTests)
+	registerTypedTool(r, "listSpecsTree", "List files and folders from an app project's specs repo. Uses appProjectId and resolves specsRepoId automatically.", listSpecsTree)
+	registerTypedTool(r, "getSpecsFile", "Read a file from an app project's specs repo. Uses appProjectId and resolves specsRepoId automatically.", getSpecsFile)
+	registerTypedTool(r, "searchSpecs", "Search file names/paths in an app project's specs repo tree.", searchSpecs)
+	registerTypedTool(r, "getSpecsFileBlame", "Get Git blame information for a specs repo file.", getSpecsFileBlame)
+	registerTypedTool(r, "listSpecsCommits", "List commit history for an app project's specs repo, optionally scoped to a file path.", listSpecsCommits)
+	registerTypedTool(r, "commitSpecsFiles", "Commit one or more create/update/delete/move file actions to an app project's specs repo.", commitSpecsFiles)
+	registerTypedTool(r, "listKnowledgeGraphs", "List cached knowledge graph catalogs for an app project's issue/source repo.", listKnowledgeGraphs)
+	registerTypedTool(r, "getKnowledgeGraph", "Get or generate a knowledge graph catalog for an app project's issue/source repo.", getKnowledgeGraph)
+	registerTypedTool(r, "getKnowledgeGraphCoverage", "Get route/module/selector coverage for a cached app project knowledge graph.", getKnowledgeGraphCoverage)
+	registerTypedTool(r, "listRecordedTests", "List available recorded automation tests. Optionally filter by projectID/app project or issueID.", listRecordedTests)
 	registerTypedTool(r, "runRecordedTest", "Run a recorded automation test by ID. Optional overrides can replace input values.", runRecordedTest)
-	registerTypedTool(r, "listTestScenarios", "List uploaded test scenarios from XLSX documents.", listTestScenarios)
-	registerTypedTool(r, "runTestScenario", "Run all generated tests for a specific scenario. Supports optional sheet filtering and chained execution.", runTestScenario)
-	registerTypedTool(r, "runScenarioTestCase", "Run a specific generated test case from a scenario.", runScenarioTestCase)
-	registerTypedTool(r, "save_automation_test", "Save a generated automation test to Redis. Use one call per test case. Include framework, complete steps, selectors, selectorCandidates, xpath, xpathCandidates, and elementHints.", saveAutomation)
-
-	return r
-}
-
-// NewScenarioToolRegistry creates a tool registry for the scenario-discussion agent
-// with only GitLab-related tools — no recording, running, or automation tools.
-func NewScenarioToolRegistry() *ToolRegistry {
-	r := NewToolRegistry()
-
-	registerTypedTool(r, "listGitLabProjects", "List available GitLab projects. Call this without arguments to see all projects the authenticated user can access.", listGitLabProjects)
-	registerTypedTool(r, "createGitLabIssue", "Create a new issue in a GitLab project.", createGitLabIssue)
-	registerTypedTool(r, "listGitLabIssues", "List issues from a specific GitLab project. Requires projectId.", listGitLabIssues)
-	registerTypedTool(r, "listAllGitLabIssues", "List all GitLab issues assigned to or created by the authenticated user across all projects.", listAllGitLabIssues)
-	registerTypedTool(r, "updateGitLabIssue", "Update an existing GitLab issue title, description, or state.", updateGitLabIssue)
-	registerTypedTool(r, "listGitLabRepositoryTree", "List files and directories in a GitLab repository.", listGitLabRepositoryTree)
-	registerTypedTool(r, "getGitLabFileContent", "Read a file from a GitLab repository.", getGitLabFileContent)
-	registerTypedTool(r, "searchGitLabCode", "Search code or patterns in a GitLab repository.", searchGitLabCode)
-	registerTypedTool(r, "listGitLabBranches", "List branches in a GitLab project repository.", listGitLabBranches)
-
+	registerTypedTool(r, "listTestScenarios", "List imported test scenarios stored by the app.", listTestScenarios)
+	registerTypedTool(r, "runTestScenario", "Run generated automation tests for a specific scenario. Supports optional sheet filtering and chained execution.", runTestScenario)
+	registerTypedTool(r, "runScenarioTestCase", "Run one generated automation test case from a scenario.", runScenarioTestCase)
+	registerTypedTool(r, "save_automation_test", "Save a generated E2E automation test into a test scenario. Use one call per test case with complete steps, selectors, selectorCandidates, xpath, xpathCandidates, and elementHints.", saveAutomation)
 	return r
 }
 

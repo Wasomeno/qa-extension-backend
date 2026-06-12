@@ -10,8 +10,6 @@ import (
 
 const defaultAgentAppName = "qa_extension"
 
-
-const scenarioAgentAppName = "scenario_agent"
 // AgentAttachment is an optional multimodal attachment for a user message.
 type AgentAttachment struct {
 	Name     string `json:"name"`
@@ -61,10 +59,6 @@ func NewRedisSessionService(appName string) *RedisSessionService {
 
 func GetSessionService() *RedisSessionService {
 	return NewRedisSessionService(defaultAgentAppName)
-}
-
-func GetScenarioSessionService() *RedisSessionService {
-	return NewRedisSessionService(scenarioAgentAppName)
 }
 
 func (s *RedisSessionService) Create(ctx context.Context, sessionID, userID string, state map[string]any) (*AgentSession, error) {

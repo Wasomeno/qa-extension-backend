@@ -89,39 +89,6 @@ func GetQARunner(ctx context.Context) (AgentRunner, error) {
 	}, nil
 }
 
-// GetScenarioRunner creates an AgentRunner for scenario-discussion sessions.
-// It uses a different system instruction and only GitLab tools.
-func GetScenarioRunner(ctx context.Context) (AgentRunner, error) {
-	model := os.Getenv("OPENAI_MODEL")
-	if model == "" {
-		model = "gpt-4.1-mini"
-	}
-
-	opts := []option.RequestOption{}
-	if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" {
-		opts = append(opts, option.WithAPIKey(apiKey))
-	}
-	if baseURL := os.Getenv("OPENAI_BASE_URL"); baseURL != "" {
-		opts = append(opts, option.WithBaseURL(baseURL))
-	}
-	instructionRole := os.Getenv("OPENAI_INSTRUCTION_ROLE")
-	if instructionRole == "" {
-		instructionRole = "system"
-		if strings.Contains(os.Getenv("OPENAI_BASE_URL"), "crof.ai") {
-			instructionRole = "user"
-		}
-	}
-
-	return &OpenAIAgentRunner{
-		client:            openai.NewClient(opts...),
-		model:             model,
-		instructionRole:   instructionRole,
-		store:             GetScenarioSessionService(),
-		tools:             NewScenarioToolRegistry(),
-		systemInstruction: SCENARIO_SYSTEM_INSTRUCTION,
-	}, nil
-}
-
 func (r *OpenAIAgentRunner) Model() string { return r.model }
 
 func (r *OpenAIAgentRunner) Run(ctx context.Context, req AgentRunRequest) <-chan AgentRunEvent {

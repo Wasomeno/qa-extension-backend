@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/oauth2"
 	gitlab "gitlab.com/gitlab-org/api/client-go"
+	"golang.org/x/oauth2"
 
 	"qa-extension-backend/client"
 	"qa-extension-backend/database"
@@ -28,16 +28,33 @@ var toolExecutorRegistry = make(map[string]ToolExecutor)
 func init() {
 	// GitLab tools
 	registerToolExecutor("listGitLabProjects", execListGitLabProjects)
+	registerTypedToolExecutor("listAppProjects", listAppProjects)
+	registerTypedToolExecutor("getAppProject", getAppProject)
+	registerTypedToolExecutor("getProjectTestContext", getProjectTestContext)
+	registerTypedToolExecutor("updateProjectTestContext", updateProjectTestContext)
 	registerToolExecutor("listAllGitLabIssues", execListAllGitLabIssues)
 	registerToolExecutor("createGitLabIssue", execCreateGitLabIssue)
 	registerToolExecutor("listGitLabIssues", execListGitLabIssues)
 	registerToolExecutor("updateGitLabIssue", execUpdateGitLabIssue)
+	registerTypedToolExecutor("getIssueComments", getIssueComments)
+	registerTypedToolExecutor("createIssueComment", createIssueComment)
+	registerTypedToolExecutor("createIssueEvidence", createIssueEvidence)
+	registerTypedToolExecutor("getIssueLinks", getIssueLinks)
 
 	// Test tools
 	registerToolExecutor("listGitLabRepositoryTree", execListGitLabRepositoryTree)
 	registerToolExecutor("getGitLabFileContent", execGetGitLabFileContent)
 	registerToolExecutor("searchGitLabCode", execSearchGitLabCode)
 	registerToolExecutor("listGitLabBranches", execListGitLabBranches)
+	registerTypedToolExecutor("listSpecsTree", listSpecsTree)
+	registerTypedToolExecutor("getSpecsFile", getSpecsFile)
+	registerTypedToolExecutor("searchSpecs", searchSpecs)
+	registerTypedToolExecutor("getSpecsFileBlame", getSpecsFileBlame)
+	registerTypedToolExecutor("listSpecsCommits", listSpecsCommits)
+	registerTypedToolExecutor("commitSpecsFiles", commitSpecsFiles)
+	registerTypedToolExecutor("listKnowledgeGraphs", listKnowledgeGraphs)
+	registerTypedToolExecutor("getKnowledgeGraph", getKnowledgeGraph)
+	registerTypedToolExecutor("getKnowledgeGraphCoverage", getKnowledgeGraphCoverage)
 
 	registerToolExecutor("listRecordedTests", execListRecordedTests)
 	registerToolExecutor("runRecordedTest", execRunRecordedTest)
@@ -48,6 +65,20 @@ func init() {
 
 func registerToolExecutor(name string, executor ToolExecutor) {
 	toolExecutorRegistry[name] = executor
+}
+
+func registerTypedToolExecutor[T any, R any](name string, fn func(context.Context, T) (R, error)) {
+	registerToolExecutor(name, func(ctx context.Context, args map[string]any) (any, error) {
+		raw, err := json.Marshal(args)
+		if err != nil {
+			return nil, fmt.Errorf("invalid arguments for %s: %w", name, err)
+		}
+		var typedArgs T
+		if err := json.Unmarshal(raw, &typedArgs); err != nil {
+			return nil, fmt.Errorf("invalid arguments for %s: %w", name, err)
+		}
+		return fn(ctx, typedArgs)
+	})
 }
 
 // ExecuteTool executes a tool by name with the given arguments
