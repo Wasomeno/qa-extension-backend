@@ -78,7 +78,7 @@ func PreviewFSDIssues(c *gin.Context) {
 		if ref == "" {
 			ref = defaultRef
 		}
-		file, err := specsService.GetFile(glClient, specsRepoID, path, ref)
+		file, err := specsService.GetFile(c, glClient, specsRepoID, path, ref)
 		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("failed to read FSD %s: %v", path, err)})
 			return

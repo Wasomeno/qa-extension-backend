@@ -121,7 +121,7 @@ func GetKnowledgeGraphCoverage(c *gin.Context) {
 
 	// Generate coverage report from cached data
 	// We need the route map - fetch from GitLab
-	files, err := graphMapper.FetchFileTree(gitlabClient, projectID, branch)
+	files, err := graphMapper.FetchFileTree(c, gitlabClient, projectID, branch)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch file tree: " + err.Error()})
 		return

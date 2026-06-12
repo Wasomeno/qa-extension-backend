@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"qa-extension-backend/client"
@@ -423,7 +424,7 @@ func fetchSourceFiles(ctx context.Context, input FetchFilesInput) (*FetchFilesOu
 
 	totalTokens := 0
 	for _, filePath := range input.FilePaths {
-		content, err := fetchSingleFileFromGitLab(glClient, input.ProjectID, branch, filePath)
+		content, err := fetchSingleFileFromGitLab(ctx, glClient, input.ProjectID, branch, filePath)
 		if err != nil {
 			log.Printf("[AutomationAgent] Failed to fetch %s: %v", filePath, err)
 			output.FailedFiles = append(output.FailedFiles, filePath)
@@ -443,7 +444,13 @@ func fetchSourceFiles(ctx context.Context, input FetchFilesInput) (*FetchFilesOu
 	return output, nil
 }
 
-func fetchSingleFileFromGitLab(glClient *gitlab.Client, projectID, branch, filePath string) (string, error) {
+func fetchSingleFileFromGitLab(ctx context.Context, glClient *gitlab.Client, projectID, branch, filePath string) (string, error) {
+	if content, _, err := services.DefaultRepoCache().ReadFile(ctx, glClient, projectID, branch, filePath); err == nil {
+		return content, nil
+	} else if !errors.Is(err, services.ErrRepoCacheDisabled) && !errors.Is(err, services.ErrRepoCacheToken) {
+		log.Printf("[AutomationAgent] repo cache file fallback for %s: %v", filePath, err)
+	}
+
 	fileOpt := &gitlab.GetFileOptions{Ref: gitlab.Ptr(branch)}
 	file, _, err := glClient.RepositoryFiles.GetFile(projectID, filePath, fileOpt)
 	if err != nil {
@@ -1350,7 +1357,13 @@ func RunAgentForTestGeneration(ctx context.Context, input AutomationAgentInput, 
 }
 
 // fetchSingleFileWithClient fetches a single file using provided GitLab client
-func fetchSingleFileWithClient(glClient *gitlab.Client, projectID, branch, filePath string) (string, error) {
+func fetchSingleFileWithClient(ctx context.Context, glClient *gitlab.Client, projectID, branch, filePath string) (string, error) {
+	if content, _, err := services.DefaultRepoCache().ReadFile(ctx, glClient, projectID, branch, filePath); err == nil {
+		return content, nil
+	} else if !errors.Is(err, services.ErrRepoCacheDisabled) && !errors.Is(err, services.ErrRepoCacheToken) {
+		log.Printf("[AutomationAgent] repo cache file fallback for %s: %v", filePath, err)
+	}
+
 	fileOpt := &gitlab.GetFileOptions{Ref: gitlab.Ptr(branch)}
 	file, _, err := glClient.RepositoryFiles.GetFile(projectID, filePath, fileOpt)
 	if err != nil {
@@ -1497,7 +1510,7 @@ func agentFetchRelevantFilesFromContext(ctx context.Context, glClient *gitlab.Cl
 			continue
 		}
 
-		content, err := fetchSingleFileWithClient(glClient, projectID, branch, path)
+		content, err := fetchSingleFileWithClient(ctx, glClient, projectID, branch, path)
 		if err != nil {
 			continue
 		}
@@ -1614,7 +1627,7 @@ func searchRepoTreeForModules(ctx context.Context, glClient *gitlab.Client, proj
 			if strings.Contains(nodeName, kwLower) || strings.Contains(kwLower, nodeName) {
 				// Try to fetch page.tsx in this module
 				pagePath := fmt.Sprintf("app/%s/page.tsx", node.Name)
-				content, err := fetchSingleFileWithClient(glClient, projectID, branch, pagePath)
+				content, err := fetchSingleFileWithClient(ctx, glClient, projectID, branch, pagePath)
 				if err == nil {
 					files = append(files, FetchedFile{
 						Path:    pagePath,
@@ -1625,7 +1638,7 @@ func searchRepoTreeForModules(ctx context.Context, glClient *gitlab.Client, proj
 
 				// Also fetch index.tsx if exists
 				indexPath := fmt.Sprintf("app/%s/index.tsx", node.Name)
-				content, err = fetchSingleFileWithClient(glClient, projectID, branch, indexPath)
+				content, err = fetchSingleFileWithClient(ctx, glClient, projectID, branch, indexPath)
 				if err == nil {
 					files = append(files, FetchedFile{
 						Path:    indexPath,
@@ -1794,7 +1807,7 @@ func inferRouteFromTestCaseName(name string, glClient *gitlab.Client, projectID,
 	for _, path := range searchPaths {
 		// Check if page.tsx exists at this path
 		pagePath := fmt.Sprintf("%s/page.tsx", path)
-		_, err := fetchSingleFileWithClient(glClient, projectID, branch, pagePath)
+		_, err := fetchSingleFileWithClient(context.Background(), glClient, projectID, branch, pagePath)
 		if err == nil {
 			// Found a route
 			route := strings.TrimPrefix(path, "app/")
@@ -1816,7 +1829,7 @@ func inferRouteFromTestCaseName(name string, glClient *gitlab.Client, projectID,
 				if strings.Contains(nodeName, entityLower) || strings.Contains(entityLower, nodeName) {
 					// Try to find page.tsx in this directory
 					pagePath := fmt.Sprintf("app/%s/page.tsx", node.Name)
-					_, err := fetchSingleFileWithClient(glClient, projectID, branch, pagePath)
+					_, err := fetchSingleFileWithClient(context.Background(), glClient, projectID, branch, pagePath)
 					if err == nil {
 						return fmt.Sprintf("/%s", node.Name)
 					}

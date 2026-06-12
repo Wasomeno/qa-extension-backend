@@ -1,9 +1,12 @@
 package services
 
 import (
+	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 
 	gitlab "gitlab.com/gitlab-org/api/client-go"
@@ -21,9 +24,9 @@ func NewSpecsService() *SpecsService {
 
 // FileTreeNode represents a node in the specs file tree.
 type FileTreeNode struct {
-	Path     string         `json:"path"`
-	Name     string         `json:"name"`
-	Type     string         `json:"type"` // "tree" or "blob"
+	Path     string          `json:"path"`
+	Name     string          `json:"name"`
+	Type     string          `json:"type"` // "tree" or "blob"
 	Children []*FileTreeNode `json:"children,omitempty"`
 }
 
@@ -74,13 +77,19 @@ type FileAction struct {
 // GetFileTree returns the file tree for a given path in the repository.
 // When recursive is true, it fetches every directory level individually
 // to avoid missing entries that GitLab's recursive ListTree can drop.
-func (s *SpecsService) GetFileTree(client *gitlab.Client, projectID string, path string, ref string, recursive bool) ([]*FileTreeNode, error) {
+func (s *SpecsService) GetFileTree(ctx context.Context, client *gitlab.Client, projectID string, path string, ref string, recursive bool) ([]*FileTreeNode, error) {
 	if ref == "" {
 		ref = "main"
 	}
 
+	if entries, err := DefaultRepoCache().ListTree(ctx, client, projectID, ref, path, recursive); err == nil {
+		return repoEntriesToFileTree(entries, recursive), nil
+	} else if !errors.Is(err, ErrRepoCacheDisabled) && !errors.Is(err, ErrRepoCacheToken) {
+		log.Printf("[specs] repo cache tree fallback for project %s path %s ref %s: %v", projectID, path, ref, err)
+	}
+
 	if recursive {
-		return s.getFullTree(client, projectID, path, ref)
+		return s.getFullTree(ctx, client, projectID, path, ref)
 	}
 
 	// Non-recursive: single-level listing
@@ -88,7 +97,7 @@ func (s *SpecsService) GetFileTree(client *gitlab.Client, projectID string, path
 }
 
 // getFullTree recursively walks every subdirectory and builds the complete tree.
-func (s *SpecsService) getFullTree(client *gitlab.Client, projectID string, path string, ref string) ([]*FileTreeNode, error) {
+func (s *SpecsService) getFullTree(ctx context.Context, client *gitlab.Client, projectID string, path string, ref string) ([]*FileTreeNode, error) {
 	children, err := s.listDirectory(client, projectID, path, ref)
 	if err != nil {
 		return nil, err
@@ -96,7 +105,7 @@ func (s *SpecsService) getFullTree(client *gitlab.Client, projectID string, path
 
 	for _, node := range children {
 		if node.Type == "tree" {
-			subChildren, err := s.getFullTree(client, projectID, node.Path, ref)
+			subChildren, err := s.getFullTree(ctx, client, projectID, node.Path, ref)
 			if err != nil {
 				log.Printf("[specs] skipping subtree %s: %v", node.Path, err)
 				node.Children = []*FileTreeNode{}
@@ -148,9 +157,15 @@ func (s *SpecsService) listDirectory(client *gitlab.Client, projectID string, pa
 // --- File CRUD ---
 
 // GetFile retrieves a file's content from the repository.
-func (s *SpecsService) GetFile(client *gitlab.Client, projectID string, filePath string, ref string) (*FileContent, error) {
+func (s *SpecsService) GetFile(ctx context.Context, client *gitlab.Client, projectID string, filePath string, ref string) (*FileContent, error) {
 	if ref == "" {
 		ref = "main"
+	}
+
+	if content, meta, err := DefaultRepoCache().ReadFile(ctx, client, projectID, ref, filePath); err == nil {
+		return &FileContent{Path: meta.Path, Content: content, Size: meta.Size}, nil
+	} else if !errors.Is(err, ErrRepoCacheDisabled) && !errors.Is(err, ErrRepoCacheToken) {
+		log.Printf("[specs] repo cache file fallback for project %s file %s ref %s: %v", projectID, filePath, ref, err)
 	}
 
 	file, _, err := client.RepositoryFiles.GetFile(projectID, filePath, &gitlab.GetFileOptions{
@@ -423,12 +438,67 @@ func (s *SpecsService) GetCommitDetail(client *gitlab.Client, projectID string, 
 // --- Search ---
 
 // SearchTree searches for files matching a query in the tree.
-func (s *SpecsService) SearchTree(client *gitlab.Client, projectID string, path string, ref string, query string) ([]*FileTreeNode, error) {
-	nodes, err := s.GetFileTree(client, projectID, path, ref, true)
+func (s *SpecsService) SearchTree(ctx context.Context, client *gitlab.Client, projectID string, path string, ref string, query string) ([]*FileTreeNode, error) {
+	nodes, err := s.GetFileTree(ctx, client, projectID, path, ref, true)
 	if err != nil {
 		return nil, err
 	}
 	return filterTree(nodes, query), nil
+}
+
+func repoEntriesToFileTree(entries []RepoTreeEntry, recursive bool) []*FileTreeNode {
+	if !recursive {
+		nodes := make([]*FileTreeNode, 0, len(entries))
+		for _, entry := range entries {
+			nodes = append(nodes, &FileTreeNode{Path: entry.Path, Name: entry.Name, Type: entry.Type})
+		}
+		return nodes
+	}
+
+	root := map[string]*FileTreeNode{}
+	for _, entry := range entries {
+		parts := strings.Split(entry.Path, "/")
+		for i := range parts {
+			currentPath := strings.Join(parts[:i+1], "/")
+			if _, ok := root[currentPath]; ok {
+				continue
+			}
+			nodeType := "tree"
+			if i == len(parts)-1 {
+				nodeType = entry.Type
+			}
+			root[currentPath] = &FileTreeNode{Path: currentPath, Name: parts[i], Type: nodeType}
+		}
+	}
+
+	var top []*FileTreeNode
+	for path, node := range root {
+		parentPath := ""
+		if idx := strings.LastIndex(path, "/"); idx >= 0 {
+			parentPath = path[:idx]
+		}
+		if parentPath == "" {
+			top = append(top, node)
+			continue
+		}
+		if parent, ok := root[parentPath]; ok {
+			parent.Children = append(parent.Children, node)
+		}
+	}
+	sortFileTree(top)
+	return top
+}
+
+func sortFileTree(nodes []*FileTreeNode) {
+	sort.Slice(nodes, func(i, j int) bool {
+		if nodes[i].Type != nodes[j].Type {
+			return nodes[i].Type == "tree"
+		}
+		return nodes[i].Name < nodes[j].Name
+	})
+	for _, node := range nodes {
+		sortFileTree(node.Children)
+	}
 }
 
 func filterTree(nodes []*FileTreeNode, query string) []*FileTreeNode {

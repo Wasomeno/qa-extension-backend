@@ -1,7 +1,9 @@
 package services
 
 import (
+	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -27,6 +29,12 @@ const MaxTokensApprox = 80000 // Very rough estimate (1 token ~ 4 chars)
 
 // FetchCodebaseContext fetches relevant source code from a GitLab project
 func FetchCodebaseContext(client *gitlab.Client, projectID string, targetKeyword string) (*CodebaseContext, error) {
+	return FetchCodebaseContextWithContext(context.Background(), client, projectID, targetKeyword)
+}
+
+// FetchCodebaseContextWithContext fetches relevant source code from a GitLab project.
+// When the context contains a GitLab OAuth token, it uses the local repo cache first.
+func FetchCodebaseContextWithContext(ctx context.Context, client *gitlab.Client, projectID string, targetKeyword string) (*CodebaseContext, error) {
 	// First, fetch project details
 	project, _, err := client.Projects.GetProject(projectID, nil)
 	if err != nil {
@@ -36,66 +44,78 @@ func FetchCodebaseContext(client *gitlab.Client, projectID string, targetKeyword
 	// Fetch repository tree (recursively)
 	var allFiles []*gitlab.TreeNode
 
-	// We only care about specific directories to save time
-	searchDirs := []string{"", "src", "pages", "components", "app", "views", "routes", "api", "commons", "modules"}
-	
-	for _, dir := range searchDirs {
-		var pathPtr *string
-		if dir != "" {
-			pathPtr = gitlab.Ptr(dir)
-		}
-		
-		opt := &gitlab.ListTreeOptions{
-			Path:      pathPtr,
-			Recursive: gitlab.Ptr(true),
-			ListOptions: gitlab.ListOptions{
-				PerPage: 100,
-			},
-		}
-
-		for {
-			treeNode, resp, err := client.Repositories.ListTree(projectID, opt)
-			if err != nil {
-				// E.g. directory doesn't exist, just suppress error and continue to next dir
-				break
+	if cachedFiles, cacheErr := DefaultRepoCache().ListFiles(ctx, client, projectID, project.DefaultBranch); cacheErr == nil {
+		for _, path := range cachedFiles {
+			if isRelevantFile(path) {
+				allFiles = append(allFiles, &gitlab.TreeNode{Path: path, Type: "blob"})
 			}
-
-			// Filter for files we care about
-			for _, node := range treeNode {
-				if node.Type == "blob" && isRelevantFile(node.Path) {
-					allFiles = append(allFiles, node)
-				}
-			}
-
-			if resp.NextPage == 0 {
-				break
-			}
-			opt.Page = resp.NextPage
 		}
+	} else if !errors.Is(cacheErr, ErrRepoCacheDisabled) && !errors.Is(cacheErr, ErrRepoCacheToken) {
+		fmt.Printf("[CodebaseFetcher] repo cache tree fallback for project %s: %v\n", projectID, cacheErr)
 	}
 
-	// If no files found in specific dirs, try fetching from root (non-recursive to avoid huge trees, maybe just root-level stuff)
 	if len(allFiles) == 0 {
-		opt := &gitlab.ListTreeOptions{
-			Recursive: gitlab.Ptr(true),
-			ListOptions: gitlab.ListOptions{
-				PerPage: 100,
-			},
-		}
-		for {
-			treeNode, resp, err := client.Repositories.ListTree(projectID, opt)
-			if err != nil {
-				break
+		// We only care about specific directories to save time
+		searchDirs := []string{"", "src", "pages", "components", "app", "views", "routes", "api", "commons", "modules"}
+
+		for _, dir := range searchDirs {
+			var pathPtr *string
+			if dir != "" {
+				pathPtr = gitlab.Ptr(dir)
 			}
-			for _, node := range treeNode {
-				if node.Type == "blob" && isRelevantFile(node.Path) {
-					allFiles = append(allFiles, node)
+
+			opt := &gitlab.ListTreeOptions{
+				Path:      pathPtr,
+				Recursive: gitlab.Ptr(true),
+				ListOptions: gitlab.ListOptions{
+					PerPage: 100,
+				},
+			}
+
+			for {
+				treeNode, resp, err := client.Repositories.ListTree(projectID, opt)
+				if err != nil {
+					// E.g. directory doesn't exist, just suppress error and continue to next dir
+					break
 				}
+
+				// Filter for files we care about
+				for _, node := range treeNode {
+					if node.Type == "blob" && isRelevantFile(node.Path) {
+						allFiles = append(allFiles, node)
+					}
+				}
+
+				if resp.NextPage == 0 {
+					break
+				}
+				opt.Page = resp.NextPage
 			}
-			if resp.NextPage == 0 {
-				break
+		}
+
+		// If no files found in specific dirs, try fetching from root.
+		if len(allFiles) == 0 {
+			opt := &gitlab.ListTreeOptions{
+				Recursive: gitlab.Ptr(true),
+				ListOptions: gitlab.ListOptions{
+					PerPage: 100,
+				},
 			}
-			opt.Page = resp.NextPage
+			for {
+				treeNode, resp, err := client.Repositories.ListTree(projectID, opt)
+				if err != nil {
+					break
+				}
+				for _, node := range treeNode {
+					if node.Type == "blob" && isRelevantFile(node.Path) {
+						allFiles = append(allFiles, node)
+					}
+				}
+				if resp.NextPage == 0 {
+					break
+				}
+				opt.Page = resp.NextPage
+			}
 		}
 	}
 
@@ -105,7 +125,7 @@ func FetchCodebaseContext(client *gitlab.Client, projectID string, targetKeyword
 	for _, node := range allFiles {
 		uniqueFiles[node.Path] = node
 	}
-	
+
 	var deduplicated []*gitlab.TreeNode
 	for _, node := range uniqueFiles {
 		deduplicated = append(deduplicated, node)
@@ -127,19 +147,23 @@ func FetchCodebaseContext(client *gitlab.Client, projectID string, targetKeyword
 			break
 		}
 
-		fileOpt := &gitlab.GetFileOptions{Ref: gitlab.Ptr(project.DefaultBranch)}
-		file, _, err := client.RepositoryFiles.GetFile(projectID, node.Path, fileOpt)
-		if err != nil {
-			continue
+		contentStr := ""
+		if cachedContent, _, cacheErr := DefaultRepoCache().ReadFile(ctx, client, projectID, project.DefaultBranch, node.Path); cacheErr == nil {
+			contentStr = cachedContent
+		} else {
+			fileOpt := &gitlab.GetFileOptions{Ref: gitlab.Ptr(project.DefaultBranch)}
+			file, _, err := client.RepositoryFiles.GetFile(projectID, node.Path, fileOpt)
+			if err != nil {
+				continue
+			}
+
+			contentBytes, err := base64.StdEncoding.DecodeString(file.Content)
+			if err != nil {
+				continue
+			}
+			contentStr = string(contentBytes)
 		}
 
-		contentBytes, err := base64.StdEncoding.DecodeString(file.Content)
-		if err != nil {
-			continue
-		}
-
-		contentStr := string(contentBytes)
-		
 		fetchedFiles = append(fetchedFiles, SourceFile{
 			Path:    node.Path,
 			Content: contentStr,
@@ -157,7 +181,7 @@ func FetchCodebaseContext(client *gitlab.Client, projectID string, targetKeyword
 
 func isRelevantFile(path string) bool {
 	lowerPath := strings.ToLower(path)
-	
+
 	// Skip tests, distinct from what we want the AI to read to generate scenarios
 	if strings.Contains(lowerPath, ".test.") || strings.Contains(lowerPath, ".spec.") {
 		return false
@@ -222,7 +246,7 @@ func sortFilesByTargetedRelevance(files []*gitlab.TreeNode, targetKeyword string
 		}
 
 		// 4. Exact match on UI folder
-		if (strings.Contains(lowerPath, "/pages/") || strings.Contains(lowerPath, "/components/") || strings.Contains(lowerPath, "/modules/")) && 
+		if (strings.Contains(lowerPath, "/pages/") || strings.Contains(lowerPath, "/components/") || strings.Contains(lowerPath, "/modules/")) &&
 			strings.Contains(lowerPath, targetKeyword) {
 			exactUiMatch = append(exactUiMatch, f)
 			continue

@@ -40,7 +40,7 @@ func GetSpecsTree(c *gin.Context) {
 	ref := c.Query("ref")
 	recursive := c.Query("recursive") == "true"
 
-	tree, err := specsService.GetFileTree(glClient, projectID, specsPath, ref, recursive)
+	tree, err := specsService.GetFileTree(c, glClient, projectID, specsPath, ref, recursive)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -73,7 +73,7 @@ func GetSpecsFile(c *gin.Context) {
 	}
 	ref := c.Query("ref")
 
-	file, err := specsService.GetFile(glClient, projectID, filePath, ref)
+	file, err := specsService.GetFile(c, glClient, projectID, filePath, ref)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "File not found: " + err.Error()})
 		return
@@ -200,8 +200,8 @@ func CommitSpecsFiles(c *gin.Context) {
 	projectID := c.Param("id")
 
 	var req struct {
-		Branch        string              `json:"branch"`
-		CommitMessage string              `json:"commitMessage" binding:"required"`
+		Branch        string                `json:"branch"`
+		CommitMessage string                `json:"commitMessage" binding:"required"`
 		Actions       []services.FileAction `json:"actions" binding:"required"`
 	}
 
@@ -309,7 +309,7 @@ func SearchSpecs(c *gin.Context) {
 	specsPath := c.Query("path")
 	ref := c.Query("ref")
 
-	results, err := specsService.SearchTree(glClient, projectID, specsPath, ref, query)
+	results, err := specsService.SearchTree(c, glClient, projectID, specsPath, ref, query)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

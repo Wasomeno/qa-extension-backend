@@ -10,10 +10,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
+	"qa-extension-backend/client"
+	"qa-extension-backend/services"
+
 	"github.com/google/uuid"
+	gitlab "gitlab.com/gitlab-org/api/client-go"
 	"golang.org/x/oauth2"
 )
 
@@ -39,11 +44,11 @@ func piTimeout() time.Duration {
 func slugify(s string) string {
 	// Convert to lowercase
 	s = strings.ToLower(s)
-	
+
 	// Replace spaces and underscores with dashes
 	s = strings.ReplaceAll(s, " ", "-")
 	s = strings.ReplaceAll(s, "_", "-")
-	
+
 	// Remove special characters, keep only alphanumeric and dashes
 	var result strings.Builder
 	for _, r := range s {
@@ -52,40 +57,40 @@ func slugify(s string) string {
 		}
 	}
 	s = result.String()
-	
+
 	// Replace multiple consecutive dashes with single dash
 	for strings.Contains(s, "--") {
 		s = strings.ReplaceAll(s, "--", "-")
 	}
-	
+
 	// Trim dashes from start and end
 	s = strings.Trim(s, "-")
-	
+
 	// Limit length to 50 characters
 	if len(s) > 50 {
 		s = s[:50]
 		// Trim trailing dash if we cut in the middle
 		s = strings.TrimRight(s, "-")
 	}
-	
+
 	return s
 }
 
 // PiRunnerConfig holds configuration for the Pi runner
 type PiRunnerConfig struct {
-	BinaryPath    string        // Path to pi binary (default: "pi")
-	WorkingDir    string        // Working directory for the session
-	Model         string        // Model to use (default: from PI_MODEL env or first available)
-	MaxTurns      int           // Maximum turns (default: 50)
-	Timeout       time.Duration // Overall timeout (default: 10 minutes)
-	SystemPrompt  string        // Custom system prompt (optional)
+	BinaryPath   string        // Path to pi binary (default: "pi")
+	WorkingDir   string        // Working directory for the session
+	Model        string        // Model to use (default: from PI_MODEL env or first available)
+	MaxTurns     int           // Maximum turns (default: 50)
+	Timeout      time.Duration // Overall timeout (default: 10 minutes)
+	SystemPrompt string        // Custom system prompt (optional)
 }
 
 // PiRPCCommand represents a command sent to Pi in RPC mode
 type PiRPCCommand struct {
-	ID    string          `json:"id,omitempty"`
-	Type  string          `json:"type"`
-	Data  json.RawMessage `json:"data,omitempty"`
+	ID   string          `json:"id,omitempty"`
+	Type string          `json:"type"`
+	Data json.RawMessage `json:"data,omitempty"`
 }
 
 // PiRPCResponse represents a response from Pi in RPC mode
@@ -105,14 +110,14 @@ type PiRPCEvent struct {
 
 // PiSessionState represents the state of a Pi session
 type PiSessionState struct {
-	Model           string `json:"model,omitempty"`
-	ThinkingLevel   string `json:"thinkingLevel"`
-	IsStreaming     bool   `json:"isStreaming"`
-	IsCompacting    bool   `json:"isCompacting"`
-	SessionFile     string `json:"sessionFile,omitempty"`
-	SessionID       string `json:"sessionId"`
-	SessionName     string `json:"sessionName,omitempty"`
-	MessageCount    int    `json:"messageCount"`
+	Model         string `json:"model,omitempty"`
+	ThinkingLevel string `json:"thinkingLevel"`
+	IsStreaming   bool   `json:"isStreaming"`
+	IsCompacting  bool   `json:"isCompacting"`
+	SessionFile   string `json:"sessionFile,omitempty"`
+	SessionID     string `json:"sessionId"`
+	SessionName   string `json:"sessionName,omitempty"`
+	MessageCount  int    `json:"messageCount"`
 }
 
 // Default Pi system prompt for fixing issues
@@ -372,27 +377,45 @@ func RunFixWithPi(ctx context.Context, issueProjectID int, issueIID int, repoPro
 	// Create branch name from issue title: fix/issue-title-parsed-to-dash-format
 	branchName := fmt.Sprintf("fix/%s", slugify(issueTitle))
 
+	glClientForCache, _ := client.GetClient(tokenCtx, token, nil)
 	runPiFixLocal(timeoutCtx, sm, workDir, cloneURL, branchName,
 		issueTitle, issueDesc, additionalContext, gitUserName, gitUserEmail, targetBranch,
-		tokenCtx, repoProjectID, issueIID, issueProjectID)
+		tokenCtx, glClientForCache, repoProjectID, issueIID, issueProjectID)
 }
 
 // runPiFixLocal executes the fix workflow locally using Pi in RPC mode
-func runPiFixLocal(ctx context.Context, sm *stepManager, workDir, cloneURL, branchName, issueTitle, issueDesc, additionalContext, gitUserName, gitUserEmail, targetBranch string, tokenCtx context.Context, repoProjectID, issueIID, issueProjectID int) {
-	// Cleanup on exit
-	defer func() {
+func runPiFixLocal(ctx context.Context, sm *stepManager, workDir, cloneURL, branchName, issueTitle, issueDesc, additionalContext, gitUserName, gitUserEmail, targetBranch string, tokenCtx context.Context, glClientForCache *gitlab.Client, repoProjectID, issueIID, issueProjectID int) {
+	cleanupWorkDir := func() {
 		log.Printf("[PiRunner] Cleaning up work directory: %s", workDir)
 		os.RemoveAll(workDir)
+	}
+	// Cleanup on exit
+	defer func() {
+		cleanupWorkDir()
 	}()
 
 	// Step 3: Clone repository
-	sm.startStep("clone_repo", fmt.Sprintf("Cloning repository to %s...", workDir))
-	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", cloneURL, workDir)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		sm.failStep("clone_repo", fmt.Sprintf("Git clone failed: %s", string(output)))
-		return
+	sm.startStep("clone_repo", fmt.Sprintf("Preparing repository workspace at %s...", workDir))
+	usedCacheWorktree := false
+	var cmd *exec.Cmd
+	if glClientForCache != nil {
+		if cachedWorkDir, cleanup, err := services.DefaultRepoCache().CreateWorktree(ctx, glClientForCache, strconv.Itoa(repoProjectID), targetBranch, uuid.NewString()); err == nil {
+			workDir = cachedWorkDir
+			cleanupWorkDir = cleanup
+			usedCacheWorktree = true
+			sm.completeStep("clone_repo", "Repository worktree prepared from cache")
+		} else {
+			log.Printf("[PiRunner] Repo cache worktree fallback: %v", err)
+		}
 	}
-	sm.completeStep("clone_repo", "Repository cloned successfully")
+	if !usedCacheWorktree {
+		cmd = exec.CommandContext(ctx, "git", "clone", "--depth", "1", cloneURL, workDir)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			sm.failStep("clone_repo", fmt.Sprintf("Git clone failed: %s", string(output)))
+			return
+		}
+		sm.completeStep("clone_repo", "Repository cloned successfully")
+	}
 
 	// Step 4: Configure git user
 	for _, args := range [][]string{
@@ -467,7 +490,7 @@ func runPiFixLocal(ctx context.Context, sm *stepManager, workDir, cloneURL, bran
 
 	// Step 8: Push branch
 	sm.startStep("push_branch", fmt.Sprintf("Pushing branch %s...", branchName))
-	cmd = exec.Command("git", "push", "-u", "origin", branchName, "--force")
+	cmd = exec.Command("git", "push", cloneURL, branchName, "--force")
 	cmd.Dir = workDir
 	if output, err := cmd.CombinedOutput(); err != nil {
 		sm.failStep("push_branch", fmt.Sprintf("Git push failed: %s", string(output)))
@@ -590,12 +613,12 @@ func runPiRPC(ctx context.Context, workDir, issueTitle, issueDesc, additionalCon
 
 	// Step 2: Send prompt command
 	log.Printf("[PiRunner] Sending fix prompt to Pi...")
-	
+
 	promptCmd := map[string]interface{}{
 		"type":    "prompt",
 		"message": fixPrompt,
 	}
-	
+
 	response, err := client.sendCommand(ctx, promptCmd)
 	if err != nil {
 		return "", fmt.Errorf("failed to send prompt: %w", err)
@@ -695,12 +718,12 @@ func runPiRPCWithSummary(ctx context.Context, workDir, issueTitle, issueDesc, ad
 
 	// Step 2: Send prompt command
 	log.Printf("[PiRunner] Sending fix prompt to Pi...")
-	
+
 	promptCmd := map[string]interface{}{
 		"type":    "prompt",
 		"message": fixPrompt,
 	}
-	
+
 	response, err := client.sendCommand(ctx, promptCmd)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to send prompt: %w", err)
@@ -762,7 +785,7 @@ type piRPCClient struct {
 	// Track pending requests
 	pendingRequests map[string]chan *PiRPCResponse
 	responseCh      chan *PiRPCResponse
-	
+
 	// Optional custom event handler
 	handleEventFunc func(*PiRPCResponse)
 }
@@ -898,7 +921,7 @@ func (c *piRPCClient) getLastAssistantText(ctx context.Context) (string, error) 
 	cmd := map[string]interface{}{
 		"type": "get_last_assistant_text",
 	}
-	
+
 	response, err := c.sendCommand(ctx, cmd)
 	if err != nil {
 		return "", err
@@ -919,7 +942,7 @@ func (c *piRPCClient) getLastAssistantText(ctx context.Context) (string, error) 
 func (c *piRPCClient) waitForAgentEnd(ctx context.Context, timeout time.Duration) error {
 	// Create a channel to receive agent_end event
 	agentEndCh := make(chan struct{}, 1)
-	
+
 	// Set a custom handler that detects agent_end
 	oldHandler := c.handleEventFunc
 	c.handleEventFunc = func(response *PiRPCResponse) {
@@ -934,7 +957,7 @@ func (c *piRPCClient) waitForAgentEnd(ctx context.Context, timeout time.Duration
 			oldHandler(response)
 		}
 	}
-	
+
 	// Wait for agent_end or timeout
 	select {
 	case <-agentEndCh:
@@ -955,4 +978,3 @@ func buildPiFixPrompt(title, desc, ctx string) string {
 	}
 	return prompt + "\n\nPlease fix this issue now. Remember to explore the codebase first before making changes."
 }
-

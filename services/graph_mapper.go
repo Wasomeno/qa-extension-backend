@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"regexp"
@@ -613,7 +614,7 @@ func (m *GraphMapper) FetchAndEnrichCatalog(
 	log.Printf("[GraphMapper] Cache MISS for %s/%s, generating...", projectID, branch)
 
 	// Fetch file tree
-	files, err := m.fetchFileTree(glClient, projectID, branch)
+	files, err := m.fetchFileTree(ctx, glClient, projectID, branch)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch file tree: %w", err)
 	}
@@ -665,7 +666,14 @@ func (m *GraphMapper) FetchAndEnrichCatalog(
 }
 
 // fetchFileTree fetches the complete file tree from GitLab
-func (m *GraphMapper) fetchFileTree(glClient *gitlab.Client, projectID, branch string) ([]string, error) {
+func (m *GraphMapper) fetchFileTree(ctx context.Context, glClient *gitlab.Client, projectID, branch string) ([]string, error) {
+	if files, err := DefaultRepoCache().ListFiles(ctx, glClient, projectID, branch); err == nil {
+		log.Printf("[GraphMapper] Repo cache file tree hit for %s/%s (%d files)", projectID, branch, len(files))
+		return files, nil
+	} else if !errors.Is(err, ErrRepoCacheDisabled) && !errors.Is(err, ErrRepoCacheToken) {
+		log.Printf("[GraphMapper] Repo cache file tree fallback for %s/%s: %v", projectID, branch, err)
+	}
+
 	var allFiles []string
 
 	opt := &gitlab.ListTreeOptions{
@@ -697,8 +705,8 @@ func (m *GraphMapper) fetchFileTree(glClient *gitlab.Client, projectID, branch s
 }
 
 // FetchFileTree is the exported version for use by routes
-func (m *GraphMapper) FetchFileTree(glClient *gitlab.Client, projectID, branch string) ([]string, error) {
-	return m.fetchFileTree(glClient, projectID, branch)
+func (m *GraphMapper) FetchFileTree(ctx context.Context, glClient *gitlab.Client, projectID, branch string) ([]string, error) {
+	return m.fetchFileTree(ctx, glClient, projectID, branch)
 }
 
 // fetchSourceFilesForEnrichment fetches ALL source files for complete selector coverage
@@ -754,7 +762,7 @@ func (m *GraphMapper) fetchSourceFilesForEnrichment(
 	fetchedCount := 0
 	failedCount := 0
 	for _, path := range allRelevant {
-		content, err := m.fetchFileContent(glClient, projectID, branch, path)
+		content, err := m.fetchFileContent(ctx, glClient, projectID, branch, path)
 		if err != nil {
 			failedCount++
 			if failedCount <= 10 { // Only log first 10 failures
@@ -778,7 +786,13 @@ func (m *GraphMapper) fetchSourceFilesForEnrichment(
 	return sourceFiles, nil
 }
 
-func (m *GraphMapper) fetchFileContent(glClient *gitlab.Client, projectID, branch, path string) (string, error) {
+func (m *GraphMapper) fetchFileContent(ctx context.Context, glClient *gitlab.Client, projectID, branch, path string) (string, error) {
+	if content, _, err := DefaultRepoCache().ReadFile(ctx, glClient, projectID, branch, path); err == nil {
+		return content, nil
+	} else if !errors.Is(err, ErrRepoCacheDisabled) && !errors.Is(err, ErrRepoCacheToken) {
+		log.Printf("[GraphMapper] Repo cache file fallback for %s: %v", path, err)
+	}
+
 	fileOpt := &gitlab.GetFileOptions{
 		Ref: gitlab.Ptr(branch),
 	}
@@ -1608,7 +1622,7 @@ func (m *GraphMapper) FetchCodebaseWithCatalog(
 	totalChars := 0
 
 	for filePath := range filePaths {
-		content, err := m.fetchFileContent(glClient, projectID, branch, filePath)
+		content, err := m.fetchFileContent(ctx, glClient, projectID, branch, filePath)
 		if err != nil {
 			log.Printf("[GraphMapper] Warning: failed to fetch %s: %v", filePath, err)
 			continue
