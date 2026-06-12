@@ -133,8 +133,13 @@ func listSpecsTree(ctx context.Context, args SpecsTreeArgs) (*SpecsTreeResponse,
 		events.Error("Failed to list specs tree: " + err.Error())
 		return nil, err
 	}
+	specsRepoID := strconv.FormatInt(project.SpecsRepoID, 10)
+	if err := ensureRepoMirrorForAgentTool(ctx, glClient, specsRepoID); err != nil {
+		events.Error(err.Error())
+		return nil, err
+	}
 
-	tree, err := services.NewSpecsService().GetFileTree(glClient, strconv.FormatInt(project.SpecsRepoID, 10), args.Path, args.Ref, args.Recursive)
+	tree, err := services.NewSpecsService().GetFileTree(ctx, glClient, specsRepoID, args.Path, args.Ref, args.Recursive)
 	if err != nil {
 		events.Error("Failed to list specs tree: " + err.Error())
 		return nil, err
@@ -169,8 +174,13 @@ func getSpecsFile(ctx context.Context, args SpecsFileArgs) (*SpecsFileResponse, 
 		events.Error("Failed to read specs file: " + err.Error())
 		return nil, err
 	}
+	specsRepoID := strconv.FormatInt(project.SpecsRepoID, 10)
+	if err := ensureRepoMirrorForAgentTool(ctx, glClient, specsRepoID); err != nil {
+		events.Error(err.Error())
+		return nil, err
+	}
 
-	file, err := services.NewSpecsService().GetFile(glClient, strconv.FormatInt(project.SpecsRepoID, 10), args.Path, args.Ref)
+	file, err := services.NewSpecsService().GetFile(ctx, glClient, specsRepoID, args.Path, args.Ref)
 	if err != nil {
 		events.Error("Failed to read specs file: " + err.Error())
 		return nil, err
@@ -206,8 +216,13 @@ func searchSpecs(ctx context.Context, args SearchSpecsArgs) (*SearchSpecsRespons
 		events.Error("Failed to search specs: " + err.Error())
 		return nil, err
 	}
+	specsRepoID := strconv.FormatInt(project.SpecsRepoID, 10)
+	if err := ensureRepoMirrorForAgentTool(ctx, glClient, specsRepoID); err != nil {
+		events.Error(err.Error())
+		return nil, err
+	}
 
-	results, err := services.NewSpecsService().SearchTree(glClient, strconv.FormatInt(project.SpecsRepoID, 10), args.Path, args.Ref, args.Query)
+	results, err := services.NewSpecsService().SearchTree(ctx, glClient, specsRepoID, args.Path, args.Ref, args.Query)
 	if err != nil {
 		events.Error("Failed to search specs: " + err.Error())
 		return nil, err
@@ -236,8 +251,13 @@ func getSpecsFileBlame(ctx context.Context, args SpecsFileArgs) (*SpecsFileBlame
 		events.Error("Failed to load specs file blame: " + err.Error())
 		return nil, err
 	}
+	specsRepoID := strconv.FormatInt(project.SpecsRepoID, 10)
+	if err := ensureRepoMirrorForAgentTool(ctx, glClient, specsRepoID); err != nil {
+		events.Error(err.Error())
+		return nil, err
+	}
 
-	blame, err := services.NewSpecsService().GetFileBlame(glClient, strconv.FormatInt(project.SpecsRepoID, 10), args.Path, args.Ref)
+	blame, err := services.NewSpecsService().GetFileBlame(glClient, specsRepoID, args.Path, args.Ref)
 	if err != nil {
 		events.Error("Failed to load specs file blame: " + err.Error())
 		return nil, err
@@ -271,8 +291,13 @@ func listSpecsCommits(ctx context.Context, args SpecsCommitsArgs) (*SpecsCommits
 		events.Error("Failed to load specs commits: " + err.Error())
 		return nil, err
 	}
+	specsRepoID := strconv.FormatInt(project.SpecsRepoID, 10)
+	if err := ensureRepoMirrorForAgentTool(ctx, glClient, specsRepoID); err != nil {
+		events.Error(err.Error())
+		return nil, err
+	}
 
-	commits, err := services.NewSpecsService().GetCommits(glClient, strconv.FormatInt(project.SpecsRepoID, 10), args.Path, args.Ref, args.PerPage, args.Page)
+	commits, err := services.NewSpecsService().GetCommits(glClient, specsRepoID, args.Path, args.Ref, args.PerPage, args.Page)
 	if err != nil {
 		events.Error("Failed to load specs commits: " + err.Error())
 		return nil, err
@@ -313,12 +338,18 @@ func commitSpecsFiles(ctx context.Context, args CommitSpecsFilesArgs) (*CommitSp
 		events.Error("Failed to commit specs files: " + err.Error())
 		return nil, err
 	}
+	specsRepoID := strconv.FormatInt(project.SpecsRepoID, 10)
+	if err := ensureRepoMirrorForAgentTool(ctx, glClient, specsRepoID); err != nil {
+		events.Error(err.Error())
+		return nil, err
+	}
 
-	commit, err := services.NewSpecsService().CommitFiles(glClient, strconv.FormatInt(project.SpecsRepoID, 10), args.Branch, args.CommitMessage, args.Actions, args.AuthorName, args.AuthorEmail)
+	commit, err := services.NewSpecsService().CommitFiles(glClient, specsRepoID, args.Branch, args.CommitMessage, args.Actions, args.AuthorName, args.AuthorEmail)
 	if err != nil {
 		events.Error("Failed to commit specs files: " + err.Error())
 		return nil, err
 	}
+	refreshRepoMirrorForAgentTool(ctx, glClient, specsRepoID)
 
 	events.Done("Committed specs changes: %s", commit.ShortHash)
 	return &CommitSpecsFilesResponse{AppProjectID: project.ID, SpecsRepoID: project.SpecsRepoID, Commit: commit}, nil
@@ -348,12 +379,17 @@ func getKnowledgeGraph(ctx context.Context, args KnowledgeGraphArgs) (*Knowledge
 		events.Error("Failed to load knowledge graph: " + err.Error())
 		return nil, err
 	}
+	issueRepoID := strconv.FormatInt(project.IssueRepoID, 10)
+	if err := ensureRepoMirrorForAgentTool(ctx, glClient, issueRepoID); err != nil {
+		events.Error(err.Error())
+		return nil, err
+	}
 
 	graphMapper := services.NewGraphMapper()
 	var catalog *services.ModuleCatalog
 	fromCache := false
 	if !args.ForceRefresh {
-		catalog, err = graphMapper.GetCachedCatalog(ctx, strconv.FormatInt(project.IssueRepoID, 10), branch)
+		catalog, err = graphMapper.GetCachedCatalog(ctx, issueRepoID, branch)
 		if err != nil {
 			events.Error("Failed to check knowledge graph cache: " + err.Error())
 			return nil, err
@@ -361,7 +397,7 @@ func getKnowledgeGraph(ctx context.Context, args KnowledgeGraphArgs) (*Knowledge
 		fromCache = catalog != nil
 	}
 	if catalog == nil {
-		catalog, err = graphMapper.FetchAndEnrichCatalog(ctx, glClient, strconv.FormatInt(project.IssueRepoID, 10), branch)
+		catalog, err = graphMapper.FetchAndEnrichCatalog(ctx, glClient, issueRepoID, branch)
 		if err != nil {
 			events.Error("Failed to generate knowledge graph: " + err.Error())
 			return nil, err
@@ -416,9 +452,14 @@ func getKnowledgeGraphCoverage(ctx context.Context, args KnowledgeGraphArgs) (*K
 		events.Error("Failed to load knowledge graph coverage: " + err.Error())
 		return nil, err
 	}
+	issueRepoID := strconv.FormatInt(project.IssueRepoID, 10)
+	if err := ensureRepoMirrorForAgentTool(ctx, glClient, issueRepoID); err != nil {
+		events.Error(err.Error())
+		return nil, err
+	}
 
 	graphMapper := services.NewGraphMapper()
-	catalog, err := graphMapper.GetCachedCatalog(ctx, strconv.FormatInt(project.IssueRepoID, 10), branch)
+	catalog, err := graphMapper.GetCachedCatalog(ctx, issueRepoID, branch)
 	if err != nil {
 		events.Error("Failed to load knowledge graph cache: " + err.Error())
 		return nil, err
@@ -427,7 +468,7 @@ func getKnowledgeGraphCoverage(ctx context.Context, args KnowledgeGraphArgs) (*K
 		return nil, fmt.Errorf("no knowledge graph found for appProjectId %s branch %s; call getKnowledgeGraph first", project.ID, branch)
 	}
 
-	files, err := graphMapper.FetchFileTree(glClient, strconv.FormatInt(project.IssueRepoID, 10), branch)
+	files, err := graphMapper.FetchFileTree(ctx, glClient, issueRepoID, branch)
 	if err != nil {
 		events.Error("Failed to fetch route files: " + err.Error())
 		return nil, err

@@ -3,9 +3,11 @@ package agent
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"qa-extension-backend/client"
+	"qa-extension-backend/services"
 	"strconv"
 
 	gitlab "gitlab.com/gitlab-org/api/client-go"
@@ -328,6 +330,9 @@ func listGitLabRepositoryTree(ctx context.Context, args ListRepoTreeArgs) (*List
 	if err != nil {
 		return nil, fmt.Errorf("failed to get GitLab client: %w", err)
 	}
+	if err := ensureRepoMirrorForAgentTool(ctx, glClient, args.ProjectID); err != nil {
+		return nil, err
+	}
 
 	// Resolve ref: use provided ref or fall back to project's default branch
 	ref := args.Ref
@@ -345,6 +350,17 @@ func listGitLabRepositoryTree(ctx context.Context, args ListRepoTreeArgs) (*List
 	path := args.Path
 	if path == "" {
 		path = "."
+	}
+
+	if entries, cacheErr := services.DefaultRepoCache().ListTree(ctx, glClient, args.ProjectID, ref, path, args.Recursive); cacheErr == nil {
+		result := make([]RepoTreeNode, 0, len(entries))
+		for _, n := range entries {
+			result = append(result, RepoTreeNode{ID: n.ID, Name: n.Name, Type: n.Type, Path: n.Path})
+		}
+		log.Printf("[AgentTool] listGitLabRepositoryTree cache hit: %d items at ref '%s'", len(result), ref)
+		return &ListRepoTreeResponse{Nodes: result, Count: len(result)}, nil
+	} else if !errors.Is(cacheErr, services.ErrRepoCacheDisabled) && !errors.Is(cacheErr, services.ErrRepoCacheToken) {
+		log.Printf("[AgentTool] listGitLabRepositoryTree cache fallback: %v", cacheErr)
 	}
 
 	opt := &gitlab.ListTreeOptions{
@@ -403,6 +419,9 @@ func getGitLabFileContent(ctx context.Context, args GetFileContentArgs) (*FileCo
 	if err != nil {
 		return nil, fmt.Errorf("failed to get GitLab client: %w", err)
 	}
+	if err := ensureRepoMirrorForAgentTool(ctx, glClient, args.ProjectID); err != nil {
+		return nil, err
+	}
 
 	// Get project branch if not specified
 	ref := args.Ref
@@ -415,6 +434,18 @@ func getGitLabFileContent(ctx context.Context, args GetFileContentArgs) (*FileCo
 		if ref == "" {
 			ref = "main"
 		}
+	}
+
+	if content, meta, cacheErr := services.DefaultRepoCache().ReadFile(ctx, glClient, args.ProjectID, ref, args.FilePath); cacheErr == nil {
+		log.Printf("[AgentTool] getGitLabFileContent cache hit: %s (%d bytes)", args.FilePath, meta.Size)
+		return &FileContentResponse{
+			FilePath: args.FilePath,
+			Content:  content,
+			Size:     int(meta.Size),
+			Encoding: "text",
+		}, nil
+	} else if !errors.Is(cacheErr, services.ErrRepoCacheDisabled) && !errors.Is(cacheErr, services.ErrRepoCacheToken) {
+		log.Printf("[AgentTool] getGitLabFileContent cache fallback: %v", cacheErr)
 	}
 
 	fileOpt := &gitlab.GetFileOptions{Ref: &ref}
@@ -469,6 +500,9 @@ func searchGitLabCode(ctx context.Context, args SearchCodeArgs) (*SearchCodeResp
 	if err != nil {
 		return nil, fmt.Errorf("failed to get GitLab client: %w", err)
 	}
+	if err := ensureRepoMirrorForAgentTool(ctx, glClient, args.ProjectID); err != nil {
+		return nil, err
+	}
 
 	// Resolve ref: use provided ref or fall back to project's default branch
 	ref := args.Ref
@@ -485,6 +519,17 @@ func searchGitLabCode(ctx context.Context, args SearchCodeArgs) (*SearchCodeResp
 
 	searchOpts := &gitlab.SearchOptions{
 		Ref: &ref,
+	}
+
+	if cached, cacheErr := services.DefaultRepoCache().Search(ctx, glClient, args.ProjectID, ref, args.Query, args.Path, 0); cacheErr == nil {
+		searchResults := make([]SearchResult, 0, len(cached))
+		for _, r := range cached {
+			searchResults = append(searchResults, SearchResult{FilePath: r.FilePath, Ref: r.Ref, Content: r.Content})
+		}
+		log.Printf("[AgentTool] searchGitLabCode cache hit: %d results at ref '%s'", len(searchResults), ref)
+		return &SearchCodeResponse{Results: searchResults, Count: len(searchResults)}, nil
+	} else if !errors.Is(cacheErr, services.ErrRepoCacheDisabled) && !errors.Is(cacheErr, services.ErrRepoCacheToken) {
+		log.Printf("[AgentTool] searchGitLabCode cache fallback: %v", cacheErr)
 	}
 
 	results, _, err := glClient.Search.BlobsByProject(args.ProjectID, args.Query, searchOpts)
@@ -542,6 +587,9 @@ func listGitLabBranches(ctx context.Context, args ListBranchesArgs) (*ListBranch
 	glClient, err := getGitLabClient(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get GitLab client: %w", err)
+	}
+	if err := ensureRepoMirrorForAgentTool(ctx, glClient, args.ProjectID); err != nil {
+		return nil, err
 	}
 
 	opts := &gitlab.ListBranchesOptions{}
