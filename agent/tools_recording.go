@@ -17,35 +17,20 @@ import (
 
 type ListTestScenariosResponse struct {
 	Scenarios []models.TestScenario `json:"scenarios"`
+	Count     int                   `json:"count"`
+	ProjectID string                `json:"projectId,omitempty"`
 }
 
-func listTestScenarios(ctx context.Context, _ struct{}) (*ListTestScenariosResponse, error) {
-	log.Printf("[AgentTool] listTestScenarios called")
+type ListTestScenariosArgs struct {
+	AppProjectID string `json:"appProjectId"`
+	ProjectID    string `json:"projectId,omitempty"`
+	Search       string `json:"search,omitempty"`
+	Limit        int    `json:"limit,omitempty"`
+}
 
-	var ids []string
-	var err error
-
-	ids, err = database.RedisClient.SMembers(ctx, "scenarios").Result()
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to list scenarios: %w", err)
-	}
-
-	var scenarios []models.TestScenario
-	for _, id := range ids {
-		val, err := database.RedisClient.Get(ctx, fmt.Sprintf("scenario:%s", id)).Result()
-		if err != nil {
-			continue
-		}
-
-		var s models.TestScenario
-		if err := json.Unmarshal([]byte(val), &s); err != nil {
-			continue
-		}
-		scenarios = append(scenarios, s)
-	}
-
-	return &ListTestScenariosResponse{Scenarios: scenarios}, nil
+func listTestScenarios(ctx context.Context, args ListTestScenariosArgs) (*ListTestScenariosResponse, error) {
+	log.Printf("[AgentTool] listTestScenarios called with args: %+v", args)
+	return listTestScenariosDirect(ctx, args)
 }
 
 type RunTestScenarioArgs struct {

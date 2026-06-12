@@ -95,7 +95,7 @@ func NewQAToolRegistry() *ToolRegistry {
 	registerTypedTool(r, "getKnowledgeGraphCoverage", "Get route/module/selector coverage for a cached app project knowledge graph.", getKnowledgeGraphCoverage)
 	registerTypedTool(r, "listRecordedTests", "List available recorded automation tests. Optionally filter by projectID/app project or issueID.", listRecordedTests)
 	registerTypedTool(r, "runRecordedTest", "Run a recorded automation test by ID. Optional overrides can replace input values.", runRecordedTest)
-	registerTypedTool(r, "listTestScenarios", "List imported test scenarios stored by the app.", listTestScenarios)
+	registerTypedTool(r, "listTestScenarios", "List imported test scenarios for one QA app project. Requires appProjectId; use listAppProjects or getAppProject first if the project ID is unknown. Returns compact summaries, not full test case bodies.", listTestScenarios)
 	registerTypedTool(r, "runTestScenario", "Run generated automation tests for a specific scenario. Supports optional sheet filtering and chained execution.", runTestScenario)
 	registerTypedTool(r, "runScenarioTestCase", "Run one generated automation test case from a scenario.", runScenarioTestCase)
 	registerTypedTool(r, "save_automation_test", "Save a generated E2E automation test into a test scenario. Use one call per test case with complete steps, selectors, selectorCandidates, xpath, xpathCandidates, and elementHints.", saveAutomation)

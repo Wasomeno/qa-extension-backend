@@ -675,7 +675,12 @@ func execListTestScenarios(ctx context.Context, args map[string]any) (any, error
 	events := NewAgentToolEmitter(ctx)
 	events.Start("Fetching test scenarios...")
 
-	result, err := listTestScenariosDirect(ctx)
+	result, err := listTestScenariosDirect(ctx, ListTestScenariosArgs{
+		AppProjectID: stringArg(args, "appProjectId"),
+		ProjectID:    stringArg(args, "projectId"),
+		Search:       stringArg(args, "search"),
+		Limit:        intArg(args, "limit"),
+	})
 	if err != nil {
 		events.Error("Failed to fetch test scenarios: " + err.Error())
 		return nil, err
@@ -817,27 +822,97 @@ func runRecordedTestDirect(ctx context.Context, args map[string]any) (*models.Te
 	return RunTest(timeoutCtx, run)
 }
 
-func listTestScenariosDirect(ctx context.Context) (*ListTestScenariosResponse, error) {
-	ids, err := database.RedisClient.SMembers(ctx, "scenarios").Result()
+func listTestScenariosDirect(ctx context.Context, args ListTestScenariosArgs) (*ListTestScenariosResponse, error) {
+	projectID := strings.TrimSpace(args.AppProjectID)
+	if projectID == "" {
+		projectID = strings.TrimSpace(args.ProjectID)
+	}
+	if projectID == "" {
+		return nil, fmt.Errorf("appProjectId is required to list project test scenarios")
+	}
+	limit := args.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+
+	ids, err := database.RedisClient.SMembers(ctx, fmt.Sprintf("scenarios:project:%s", projectID)).Result()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list scenarios: %w", err)
 	}
+	if len(ids) == 0 {
+		return &ListTestScenariosResponse{Scenarios: []models.TestScenario{}, Count: 0, ProjectID: projectID}, nil
+	}
 
 	var scenarios []models.TestScenario
+	keys := make([]string, 0, len(ids))
+	seenIDs := make(map[string]bool, len(ids))
 	for _, id := range ids {
-		val, err := database.RedisClient.Get(ctx, fmt.Sprintf("scenario:%s", id)).Result()
-		if err != nil {
+		if id == "" || seenIDs[id] {
 			continue
 		}
+		seenIDs[id] = true
+		keys = append(keys, fmt.Sprintf("scenario:%s", id))
+	}
 
+	values, err := database.RedisClient.MGet(ctx, keys...).Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load scenarios: %w", err)
+	}
+
+	search := strings.ToLower(strings.TrimSpace(args.Search))
+	for _, raw := range values {
+		val, ok := raw.(string)
+		if !ok || val == "" {
+			continue
+		}
 		var s models.TestScenario
 		if err := json.Unmarshal([]byte(val), &s); err != nil {
 			continue
 		}
-		scenarios = append(scenarios, s)
+		if s.ProjectID != projectID {
+			continue
+		}
+		if search != "" &&
+			!strings.Contains(strings.ToLower(s.Title), search) &&
+			!strings.Contains(strings.ToLower(s.ProjectName), search) &&
+			!strings.Contains(strings.ToLower(s.SourcePath), search) {
+			continue
+		}
+		scenarios = append(scenarios, compactScenarioForAgentList(s))
+		if len(scenarios) >= limit {
+			break
+		}
 	}
 
-	return &ListTestScenariosResponse{Scenarios: scenarios}, nil
+	return &ListTestScenariosResponse{Scenarios: scenarios, Count: len(scenarios), ProjectID: projectID}, nil
+}
+
+func compactScenarioForAgentList(s models.TestScenario) models.TestScenario {
+	s.ComputeAutomationSummary(5)
+	s.Sections = nil
+	s.Sheets = nil
+	s.AuthConfig = models.AuthConfig{}
+	return s
+}
+
+func stringArg(args map[string]any, key string) string {
+	if value, ok := args[key].(string); ok {
+		return value
+	}
+	return ""
+}
+
+func intArg(args map[string]any, key string) int {
+	switch value := args[key].(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	default:
+		return 0
+	}
 }
 
 func runTestScenarioDirect(ctx context.Context, args map[string]any) (*RunTestScenarioResponse, error) {
