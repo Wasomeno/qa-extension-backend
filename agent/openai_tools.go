@@ -83,6 +83,8 @@ func NewQAToolRegistry() *ToolRegistry {
 	registerTypedTool(r, "listGitLabRepositoryTree", "List files and directories in any raw GitLab repository. Use issueRepoId for app code/issue repos and specsRepoId for specs repos.", listGitLabRepositoryTree)
 	registerTypedTool(r, "getGitLabFileContent", "Read a file from any raw GitLab repository. Use this to inspect source and find selectors such as data-testid, id, aria-label, name, and button text.", getGitLabFileContent)
 	registerTypedTool(r, "searchGitLabCode", "Search code or selector patterns in any raw GitLab repository. Leave ref empty unless the user explicitly asks for a branch.", searchGitLabCode)
+	registerTypedTool(r, "grepRepo", "Search the local repository mirror for a pattern and return matching lines with file path, line number, and surrounding context. Faster and richer than searchGitLabCode — prefer this for code exploration. Set fixedString=true for literal matches, leave false for regex.", grepRepo)
+	registerTypedTool(r, "findFiles", "Find files in the local repository mirror whose path matches a pattern (substring or glob like '*.tsx'). Use to locate files by name without browsing directories one at a time.", findFiles)
 	registerTypedTool(r, "listGitLabBranches", "List branches in a GitLab project repository.", listGitLabBranches)
 	registerTypedTool(r, "listSpecsTree", "List files and folders from an app project's specs repo. Uses appProjectId and resolves specsRepoId automatically.", listSpecsTree)
 	registerTypedTool(r, "getSpecsFile", "Read a file from an app project's specs repo. Uses appProjectId and resolves specsRepoId automatically.", getSpecsFile)

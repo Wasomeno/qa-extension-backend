@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"path/filepath"
 	"qa-extension-backend/client"
 	"qa-extension-backend/services"
 	"strconv"
+	"strings"
 
 	gitlab "gitlab.com/gitlab-org/api/client-go"
 	"golang.org/x/oauth2"
@@ -636,4 +638,143 @@ func listGitLabBranches(ctx context.Context, args ListBranchesArgs) (*ListBranch
 		Branches: result,
 		Count:    len(result),
 	}, nil
+}
+
+// --- grepRepo ---
+
+type GrepRepoArgs struct {
+	ProjectID    string `json:"projectId"`
+	Pattern      string `json:"pattern"`
+	Path         string `json:"path,omitempty"`
+	Ref          string `json:"ref,omitempty"`
+	ContextLines int    `json:"contextLines,omitempty"`
+	FixedString  bool   `json:"fixedString,omitempty"`
+}
+
+type GrepMatch struct {
+	File    string `json:"file"`
+	Line    int    `json:"line"`
+	Content string `json:"content"`
+}
+
+type GrepRepoResponse struct {
+	Matches []GrepMatch `json:"matches"`
+	Count   int         `json:"count"`
+	Ref     string      `json:"ref"`
+}
+
+func grepRepo(ctx context.Context, args GrepRepoArgs) (*GrepRepoResponse, error) {
+	log.Printf("[AgentTool] grepRepo called: project=%s, pattern=%q, path=%s, ref=%s", args.ProjectID, args.Pattern, args.Path, args.Ref)
+
+	glClient, err := getGitLabClient(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get GitLab client: %w", err)
+	}
+	if err := ensureRepoMirrorForAgentTool(ctx, glClient, args.ProjectID); err != nil {
+		return nil, err
+	}
+
+	ref := args.Ref
+	if ref == "" {
+		project, _, err := glClient.Projects.GetProject(args.ProjectID, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get project: %w", err)
+		}
+		ref = project.DefaultBranch
+		if ref == "" {
+			ref = "main"
+		}
+	}
+
+	contextLines := args.ContextLines
+	if contextLines <= 0 {
+		contextLines = 2
+	}
+
+	cached, cacheErr := services.DefaultRepoCache().GrepLines(ctx, glClient, args.ProjectID, ref, args.Pattern, args.Path, contextLines, args.FixedString)
+	if cacheErr != nil {
+		log.Printf("[AgentTool] grepRepo cache error: %v", cacheErr)
+		return nil, fmt.Errorf("grep failed: %w", cacheErr)
+	}
+
+	matches := make([]GrepMatch, 0, len(cached))
+	for _, m := range cached {
+		matches = append(matches, GrepMatch{File: m.FilePath, Line: m.Line, Content: m.Content})
+	}
+	log.Printf("[AgentTool] grepRepo found %d lines at ref '%s'", len(matches), ref)
+	return &GrepRepoResponse{Matches: matches, Count: len(matches), Ref: ref}, nil
+}
+
+// --- findFiles ---
+
+type FindFilesArgs struct {
+	ProjectID string `json:"projectId"`
+	Pattern   string `json:"pattern"`
+	Ref       string `json:"ref,omitempty"`
+	Limit     int    `json:"limit,omitempty"`
+}
+
+type FindFilesResponse struct {
+	Files []string `json:"files"`
+	Count int      `json:"count"`
+	Ref   string   `json:"ref"`
+}
+
+func findFiles(ctx context.Context, args FindFilesArgs) (*FindFilesResponse, error) {
+	log.Printf("[AgentTool] findFiles called: project=%s, pattern=%q, ref=%s", args.ProjectID, args.Pattern, args.Ref)
+
+	glClient, err := getGitLabClient(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get GitLab client: %w", err)
+	}
+	if err := ensureRepoMirrorForAgentTool(ctx, glClient, args.ProjectID); err != nil {
+		return nil, err
+	}
+
+	ref := args.Ref
+	if ref == "" {
+		project, _, err := glClient.Projects.GetProject(args.ProjectID, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get project: %w", err)
+		}
+		ref = project.DefaultBranch
+		if ref == "" {
+			ref = "main"
+		}
+	}
+
+	limit := args.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+
+	allFiles, cacheErr := services.DefaultRepoCache().ListFiles(ctx, glClient, args.ProjectID, ref)
+	if cacheErr != nil {
+		log.Printf("[AgentTool] findFiles cache error: %v", cacheErr)
+		return nil, fmt.Errorf("could not list files: %w", cacheErr)
+	}
+
+	pattern := strings.ToLower(args.Pattern)
+	var matched []string
+	for _, f := range allFiles {
+		lf := strings.ToLower(f)
+		ok := false
+		if strings.ContainsAny(pattern, "*?[") {
+			ok, _ = filepath.Match(pattern, filepath.Base(lf))
+			if !ok {
+				ok, _ = filepath.Match(pattern, lf)
+			}
+		} else {
+			ok = strings.Contains(lf, pattern)
+		}
+		if ok {
+			matched = append(matched, f)
+			if len(matched) >= limit {
+				break
+			}
+		}
+	}
+
+	log.Printf("[AgentTool] findFiles found %d files matching %q at ref '%s'", len(matched), args.Pattern, ref)
+	return &FindFilesResponse{Files: matched, Count: len(matched), Ref: ref}, nil
 }

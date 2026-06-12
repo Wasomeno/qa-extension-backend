@@ -377,6 +377,114 @@ func (s *RepoCacheService) showFile(ctx context.Context, mirrorDir, ref, filePat
 	return s.runGitOutput(ctx, mirrorDir, "show", ref+":"+filePath)
 }
 
+type RepoGrepMatch struct {
+	FilePath string `json:"filePath"`
+	Line     int    `json:"line"`
+	Content  string `json:"content"`
+}
+
+// GrepLines runs git grep -n on the local mirror and returns matching lines with file path and line number.
+func (s *RepoCacheService) GrepLines(ctx context.Context, glClient *gitlab.Client, projectID, ref, pattern, path string, contextLines int, fixedString bool) ([]RepoGrepMatch, error) {
+	if !s.enabled {
+		return nil, ErrRepoCacheDisabled
+	}
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return nil, fmt.Errorf("pattern is required")
+	}
+	if err := validateRepoPath(path, true); err != nil {
+		return nil, err
+	}
+
+	repo, resolvedRef, err := s.ensureRepoRef(ctx, glClient, projectID, ref, false)
+	if err != nil {
+		return nil, err
+	}
+
+	matches, err := s.grepLines(ctx, repo.MirrorDir, resolvedRef, pattern, path, contextLines, fixedString)
+	if err != nil {
+		repo, resolvedRef, err = s.ensureRepoRef(ctx, glClient, projectID, ref, true)
+		if err != nil {
+			return nil, err
+		}
+		matches, err = s.grepLines(ctx, repo.MirrorDir, resolvedRef, pattern, path, contextLines, fixedString)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return matches, nil
+}
+
+func (s *RepoCacheService) grepLines(ctx context.Context, mirrorDir, ref, pattern, path string, contextLines int, fixedString bool) ([]RepoGrepMatch, error) {
+	args := []string{"grep", "-n", "-I"}
+	if fixedString {
+		args = append(args, "-F")
+	}
+	if contextLines > 0 {
+		args = append(args, fmt.Sprintf("--context=%d", contextLines))
+	}
+	args = append(args, pattern, ref)
+	if strings.TrimSpace(path) != "" && path != "." {
+		args = append(args, "--", strings.TrimSpace(path))
+	}
+	out, err := s.runGitOutput(ctx, mirrorDir, args...)
+	if err != nil {
+		if strings.TrimSpace(out) == "" {
+			return []RepoGrepMatch{}, nil
+		}
+		return nil, err
+	}
+	return parseGrepLines(out), nil
+}
+
+// parseGrepLines parses git grep -n output:
+//
+//	match line:   <file>:<linenum>:<content>
+//	context line: <file>-<linenum>-<content>
+//	separator:    --
+func parseGrepLines(out string) []RepoGrepMatch {
+	var matches []RepoGrepMatch
+	for _, line := range strings.Split(out, "\n") {
+		if line == "" || line == "--" {
+			continue
+		}
+		// Determine separator: match uses ':', context uses '-'
+		// Format: <file><sep><linenum><sep><content>
+		// File paths may contain '-' so we look for the numeric linenum segment.
+		colonIdx := strings.Index(line, ":")
+		dashIdx := strings.Index(line, "-")
+		if colonIdx < 0 && dashIdx < 0 {
+			continue
+		}
+		// Pick whichever separator comes first
+		sep := byte(':')
+		sepIdx := colonIdx
+		if dashIdx >= 0 && (colonIdx < 0 || dashIdx < colonIdx) {
+			sep = '-'
+			sepIdx = dashIdx
+		}
+		file := line[:sepIdx]
+		rest := line[sepIdx+1:]
+		// Find next separator to split linenum from content
+		nextSep := strings.IndexByte(rest, sep)
+		if nextSep < 0 {
+			continue
+		}
+		lineNumStr := rest[:nextSep]
+		content := rest[nextSep+1:]
+		lineNum, err := strconv.Atoi(lineNumStr)
+		if err != nil {
+			continue
+		}
+		matches = append(matches, RepoGrepMatch{
+			FilePath: file,
+			Line:     lineNum,
+			Content:  content,
+		})
+	}
+	return matches
+}
+
 func (s *RepoCacheService) grepPaths(ctx context.Context, mirrorDir, ref, query, path string, limit int) ([]string, error) {
 	args := []string{"grep", "-l", "-I", "--fixed-strings", query, ref}
 	if strings.TrimSpace(path) != "" && path != "." {
