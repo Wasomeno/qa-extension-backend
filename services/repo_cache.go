@@ -215,7 +215,7 @@ func (s *RepoCacheService) ListTree(ctx context.Context, glClient *gitlab.Client
 	if recursive {
 		args = append(args, "-r", "-t")
 	}
-	args = append(args, "--format=%(objectname)%x09%(objecttype)%x09%(path)", resolvedRef)
+	args = append(args, resolvedRef)
 	if strings.TrimSpace(path) != "" && path != "." {
 		args = append(args, "--", strings.TrimSpace(path))
 	}
@@ -554,27 +554,33 @@ func validateRepoPath(path string, allowEmpty bool) error {
 	return nil
 }
 
+// parseRepoTreeEntries parses the default git ls-tree output:
+//
+//	<mode> <type> <hash>\t<path>
 func parseRepoTreeEntries(out string) []RepoTreeEntry {
 	var entries []RepoTreeEntry
 	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "\t", 3)
-		if len(parts) != 3 {
+		tabIdx := strings.IndexByte(line, '\t')
+		if tabIdx < 0 {
 			continue
 		}
-		path := parts[2]
+		meta := strings.Fields(line[:tabIdx])
+		if len(meta) < 3 {
+			continue
+		}
+		entryPath := line[tabIdx+1:]
 		entryType := "blob"
-		if parts[1] == "tree" {
+		if meta[1] == "tree" {
 			entryType = "tree"
 		}
 		entries = append(entries, RepoTreeEntry{
-			ID:   parts[0],
-			Name: filepath.Base(path),
+			ID:   meta[2],
+			Name: filepath.Base(entryPath),
 			Type: entryType,
-			Path: path,
+			Path: entryPath,
 		})
 	}
 	return entries
