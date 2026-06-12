@@ -154,6 +154,8 @@ func main() {
 		protected.GET("/projects/:id/issues", routes.WithIssueRepo(routes.GetProjectIssues))
 		protected.POST("/projects/:id/issues", routes.WithIssueRepo(routes.CreateIssue))
 		protected.POST("/projects/:id/issues-with-child", routes.WithIssueRepo(routes.CreateIssueWithChild))
+		protected.POST("/projects/:id/fsd-issues/preview", routes.PreviewFSDIssues)
+		protected.POST("/projects/:id/fsd-issues", routes.CreateFSDIssues)
 		protected.PUT("/projects/:id/issues/:issue_id", routes.WithIssueRepo(routes.UpdateIssue))
 		protected.GET("/projects/:id/issues/:issue_id", routes.WithIssueRepo(routes.GetIssue))
 		protected.GET("/projects/:id/issues/:issue_id/comments", routes.WithIssueRepo(routes.GetIssueComments))
