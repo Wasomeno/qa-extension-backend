@@ -36,7 +36,6 @@ func routeRecordingID(c *gin.Context) string {
 	if id := c.Param("recording_id"); id != "" {
 		return id
 	}
-	fmt.Fprintf(c.Writer, "data: %s\n\n")
 	return c.Param("id")
 }
 
