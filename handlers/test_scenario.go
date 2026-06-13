@@ -908,6 +908,11 @@ func GenerateTestCaseAutomations(c *gin.Context) {
 		return
 	}
 
+	if err := applyProjectAutomationRepos(ctx, routeProjectID(c), &req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	switch req.Category {
 	case models.AutomationCategoryAPI:
 		generateAPIAutomationPrompts(c, &scenario, req)
@@ -918,6 +923,32 @@ func GenerateTestCaseAutomations(c *gin.Context) {
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "category must be api, e2e, or manual"})
 	}
+}
+
+func applyProjectAutomationRepos(ctx context.Context, projectID string, req *models.GenerateAutomationRequest) error {
+	if strings.TrimSpace(projectID) == "" || req == nil {
+		return nil
+	}
+	if req.Category != models.AutomationCategoryAPI && req.Category != models.AutomationCategoryE2E {
+		return nil
+	}
+	project, err := services.GetAppProject(ctx, projectID)
+	if err != nil {
+		return fmt.Errorf("project not found")
+	}
+	switch req.Category {
+	case models.AutomationCategoryAPI:
+		if project.BackendRepoID <= 0 {
+			return fmt.Errorf("project backendRepoId is required for api automation")
+		}
+		req.BackendRepoID = strconv.FormatInt(project.BackendRepoID, 10)
+	case models.AutomationCategoryE2E:
+		if project.FrontendRepoID <= 0 {
+			return fmt.Errorf("project frontendRepoId is required for e2e automation")
+		}
+		req.FrontendRepoID = strconv.FormatInt(project.FrontendRepoID, 10)
+	}
+	return nil
 }
 
 // GenerateScenarioAutomations generates automation for every test case in a scenario

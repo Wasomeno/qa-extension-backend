@@ -434,10 +434,12 @@ type GenerateSectionRequest struct {
 }
 
 type GenerateAutomationRequest struct {
-	Category       AutomationCategory `json:"category" binding:"required"`
-	TestCaseIDs    []string           `json:"testCaseIds" binding:"required"`
-	BackendRepoID  string             `json:"backendRepoId,omitempty"`
-	FrontendRepoID string             `json:"frontendRepoId,omitempty"`
+	Category    AutomationCategory `json:"category" binding:"required"`
+	TestCaseIDs []string           `json:"testCaseIds" binding:"required"`
+	// BackendRepoID and FrontendRepoID are derived from the app project for
+	// project-scoped requests. They remain accepted for legacy direct callers.
+	BackendRepoID  string `json:"backendRepoId,omitempty"`
+	FrontendRepoID string `json:"frontendRepoId,omitempty"`
 }
 
 type GenerateScenarioAutomationsRequest struct {
