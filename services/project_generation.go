@@ -15,15 +15,15 @@ import (
 // AutoGenerateFunc is the function type for project-level auto-generation.
 // It is injected from outside to avoid circular imports (services -> agent -> services).
 // Set via init() in the handlers package.
-var AutoGenerateFunc func(ctx context.Context, project *models.AppProject, importedScenarios []models.TestScenario, token *oauth2.Token, actorID int)
+var AutoGenerateFunc func(ctx context.Context, project *models.AppProject, importedScenarios []models.TestScenario, token *oauth2.Token, actorID int, authSessionID string)
 
 // RunProjectAutoGeneration invokes the registered auto-generation function.
-func RunProjectAutoGeneration(ctx context.Context, project *models.AppProject, importedScenarios []models.TestScenario, token *oauth2.Token, actorID int) {
+func RunProjectAutoGeneration(ctx context.Context, project *models.AppProject, importedScenarios []models.TestScenario, token *oauth2.Token, actorID int, authSessionID string) {
 	if AutoGenerateFunc == nil {
 		log.Printf("[ProjectGeneration] AutoGenerateFunc not registered, skipping auto-generation projectID=%s", project.ID)
 		return
 	}
-	AutoGenerateFunc(ctx, project, importedScenarios, token, actorID)
+	AutoGenerateFunc(ctx, project, importedScenarios, token, actorID, authSessionID)
 }
 
 // PublishGenerationProgress publishes an SSE event for the project-level generation progress.

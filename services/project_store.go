@@ -34,7 +34,7 @@ const (
 // auto-generates test cases for all imported scenarios via the LLM agent.
 // It intentionally uses a context that is detached from the HTTP request so
 // proxy/client disconnects do not cancel LLM description generation or Redis writes.
-func StartMarkdownScenarioSyncJob(glClient *gitlab.Client, project *models.AppProject, actorID int, token *oauth2.Token) {
+func StartMarkdownScenarioSyncJob(glClient *gitlab.Client, project *models.AppProject, actorID int, token *oauth2.Token, authSessionID string) {
 	if glClient == nil || project == nil {
 		return
 	}
@@ -79,7 +79,7 @@ func StartMarkdownScenarioSyncJob(glClient *gitlab.Client, project *models.AppPr
 
 		// Run auto-generation for all imported scenarios
 		if token != nil && len(imported) > 0 {
-			RunProjectAutoGeneration(ctx, &projectCopy, imported, token, actorID)
+			RunProjectAutoGeneration(ctx, &projectCopy, imported, token, actorID, authSessionID)
 		}
 
 		// Publish final done event with both import and generation summary

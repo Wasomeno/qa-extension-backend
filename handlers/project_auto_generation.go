@@ -27,6 +27,7 @@ func runProjectAutoGeneration(
 	importedScenarios []models.TestScenario,
 	token *oauth2.Token,
 	actorID int,
+	authSessionID string,
 ) {
 	if len(importedScenarios) == 0 {
 		log.Printf("[ProjectGeneration] no imported scenarios to generate for projectID=%s", project.ID)
@@ -75,60 +76,25 @@ func runProjectAutoGeneration(
 
 		totalTestCases += caseCount
 
-		// Batch process test cases (5 at a time to prevent LLM context limits)
-		batchSize := 5
 		batchGenerated := 0
-
-		for batchStart := 0; batchStart < len(allCaseIDs); batchStart += batchSize {
-			batchEnd := batchStart + batchSize
-			if batchEnd > len(allCaseIDs) {
-				batchEnd = len(allCaseIDs)
-			}
-			batchIDs := allCaseIDs[batchStart:batchEnd]
-
-			// Set this batch to running status
-			services.SetTestCaseBatchStatus(ctx, scenario.ID, batchIDs, models.AutomationStatusRunning)
-
-			// Generate via the LLM agent
-			result, err := agent.RunAgentForTestGenerationWithLLM(ctx, agent.AutomationAgentInput{
-				ScenarioID:  scenario.ID,
-				TestCaseIDs: batchIDs,
-			}, token)
-
+		job, err := agent.EnqueueE2EGenerationJob(ctx, agent.EnqueueE2EGenerationJobInput{
+			ScenarioID:    scenario.ID,
+			RepoID:        scenario.GitLabSpecsProjectID(),
+			TestCaseIDs:   allCaseIDs,
+			AuthSessionID: authSessionID,
+		})
+		if err != nil {
+			log.Printf("[ProjectGeneration] failed to enqueue generation job for scenario=%s err=%v", scenario.ID, err)
+			services.SetTestCaseBatchStatus(ctx, scenario.ID, allCaseIDs, models.AutomationStatusFail)
+		} else {
+			resultJob, err := agent.WaitE2EGenerationJob(ctx, job.ID, 2*time.Second)
 			if err != nil {
-				log.Printf("[ProjectGeneration] batch generation failed for scenario=%s batch=%d-%d err=%v",
-					scenario.ID, batchStart+1, batchEnd, err)
-				services.SetTestCaseBatchStatus(ctx, scenario.ID, batchIDs, models.AutomationStatusFail)
-				continue
+				log.Printf("[ProjectGeneration] generation job wait failed for scenario=%s job=%s err=%v", scenario.ID, job.ID, err)
+				services.SetTestCaseBatchStatus(ctx, scenario.ID, allCaseIDs, models.AutomationStatusFail)
+			} else {
+				batchGenerated = resultJob.GeneratedCount
+				generatedTestCases += resultJob.GeneratedCount
 			}
-
-			if result != nil {
-				// Reload scenario and link automations
-				s, _ := services.GetScenarioFromRedis(ctx, scenario.ID)
-				if s != nil {
-					for _, auto := range result.Automations {
-						services.LinkAutomation(s, &auto)
-					}
-					// Mark any still-running test cases as failed
-					for si := range s.Sections {
-						for ti := range s.Sections[si].TestCases {
-							tc := &s.Sections[si].TestCases[ti]
-							if tc.AutomationTest != nil && tc.AutomationTest.Status == models.AutomationStatusRunning {
-								tc.AutomationTest.Status = models.AutomationStatusFail
-								tc.AutomationTest.ErrorMessage = "Failed to generate automation for this test case."
-							}
-						}
-					}
-					s.Error = ""
-					s.ComputeStats()
-					services.SaveScenarioToRedis(ctx, s)
-				}
-				batchGenerated += len(result.Automations)
-				generatedTestCases += len(result.Automations)
-			}
-
-			// Brief pause between batches to avoid overwhelming the LLM
-			time.Sleep(500 * time.Millisecond)
 		}
 
 		if batchGenerated > 0 {

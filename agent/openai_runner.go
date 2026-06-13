@@ -135,7 +135,9 @@ func (r *OpenAIAgentRunner) run(ctx context.Context, req AgentRunRequest, ch cha
 	var lastUsage *AgentUsage
 	for {
 		messages := buildOpenAIChatMessages(r.instructionRole, systemInstruction, sess.Messages)
-		resp, err := r.createChatCompletion(ctx, messages)
+		resp, err := retryOpenAIChatCompletion(ctx, func() (*openAIChatResponse, error) {
+			return r.createChatCompletion(ctx, messages)
+		})
 		if err != nil {
 			return err
 		}
@@ -250,6 +252,9 @@ type openAIUsage struct {
 }
 
 func (r *OpenAIAgentRunner) createChatCompletion(ctx context.Context, messages []openAIChatMessage) (*openAIChatResponse, error) {
+	if err := waitForGenerationOpenAIQuota(ctx, messages); err != nil {
+		return nil, fmt.Errorf("OpenAI generation throttle failed: %w", err)
+	}
 	temperature := 0.2
 	body := openAIChatRequest{
 		Model:           r.model,

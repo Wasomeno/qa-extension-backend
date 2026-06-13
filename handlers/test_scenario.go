@@ -24,7 +24,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	gitlab "gitlab.com/gitlab-org/api/client-go"
 	"golang.org/x/oauth2"
 )
 
@@ -843,8 +842,14 @@ func GenerateTests(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
+	sessionID, _ := c.Get("session_id")
+	authSessionID, _ := sessionID.(string)
+	if authSessionID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized: missing session"})
+		return
+	}
 
-	gitlabClient, err := client.GetClient(ctx, token, nil)
+	_, err = client.GetClient(ctx, token, nil)
 	if err != nil {
 		scenario.Error = fmt.Sprintf("failed to get gitlab client: %v", err)
 		saveScenario(ctx, &scenario)
@@ -852,107 +857,25 @@ func GenerateTests(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusAccepted, gin.H{"message": "generation started", "id": id})
+	setAutomationCategory(&scenario, targetTestCaseIDs, models.AutomationCategoryE2E, scenario.GitLabSpecsProjectID(), models.AutomationStatusRunning)
+	if err := saveScenario(ctx, &scenario); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save scenario"})
+		return
+	}
 
-	go func(scenario *models.TestScenario, targetIDs []string, gitlabClient interface{}) {
-		bgCtx := context.Background()
-		events := agent.NewGenerationEmitter(bgCtx, id)
+	job, err := agent.EnqueueE2EGenerationJob(ctx, agent.EnqueueE2EGenerationJobInput{
+		ScenarioID:    id,
+		RepoID:        scenario.GitLabSpecsProjectID(),
+		TestCaseIDs:   targetTestCaseIDs,
+		AuthSessionID: authSessionID,
+	})
+	if err != nil {
+		setTestCasesAutomationStatus(ctx, id, targetTestCaseIDs, models.AutomationStatusFail)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enqueue generation job"})
+		return
+	}
 
-		clientObj, _ := client.GetClient(bgCtx, token, nil)
-		if clientObj == nil {
-			clientObj = gitlabClient.(*gitlab.Client)
-		}
-
-		projectName := scenario.ProjectName
-		if projectName == "" {
-			projectName = scenario.ProjectID
-		}
-
-		// Update target test cases to running state
-		setTestCasesAutomationStatus(bgCtx, id, targetIDs, models.AutomationStatusRunning)
-
-		events.SetTotalSteps(len(targetIDs))
-		events.Start("Generating %d automation test%s for '%s'...",
-			len(targetIDs), pluralize(len(targetIDs)), projectName)
-
-		var allAutomations []models.GeneratedAutomation
-		var allFailedIDs []string
-
-		// Batch execution: 5 test cases at a time to prevent LLM token limits and hallucinations
-		batchSize := 5
-		for i := 0; i < len(targetIDs); i += batchSize {
-			end := i + batchSize
-			if end > len(targetIDs) {
-				end = len(targetIDs)
-			}
-			batchIDs := targetIDs[i:end]
-
-			events.Progressf("Generating automations for batch %d to %d (of %d)...", i+1, end, len(targetIDs))
-
-			// Use agent for this batch
-			result, err := agent.RunAgentForTestGenerationWithLLM(bgCtx, agent.AutomationAgentInput{
-				ScenarioID:  id,
-				TestCaseIDs: batchIDs,
-			}, token)
-
-			if err != nil {
-				log.Printf("[Agent] Batch generation failed: %v", err)
-				// Log but keep going with other batches
-				allFailedIDs = append(allFailedIDs, batchIDs...)
-				continue
-			}
-
-			if result != nil {
-				allAutomations = append(allAutomations, result.Automations...)
-				allFailedIDs = append(allFailedIDs, result.FailedIDs...)
-			}
-		}
-
-		if len(allAutomations) == 0 && len(allFailedIDs) == len(targetIDs) {
-			events.Error(fmt.Sprintf("Agent generation completely failed for all test cases"))
-
-			// Mark all running as failed
-			setTestCasesAutomationStatus(bgCtx, id, targetIDs, models.AutomationStatusFail)
-
-			s, _ := getScenario(bgCtx, id)
-			s.Error = "failed to generate tests: all batches failed"
-			s.ComputeStats()
-			saveScenario(bgCtx, &s)
-			return
-		}
-
-		if len(allFailedIDs) > 0 {
-			log.Printf("[Agent] Failed to generate %d test cases: %v", len(allFailedIDs), allFailedIDs)
-		}
-
-		events.Progressf("Saving %d generated automation test%s to scenario...", len(allAutomations), pluralize(len(allAutomations)))
-
-		// Reload scenario to get latest state
-		s, _ := getScenario(bgCtx, id)
-
-		for _, auto := range allAutomations {
-			// Link automation steps to test case
-			services.LinkAutomation(&s, &auto)
-		}
-
-		// Update any that were running but didn't get an automation to failed
-		for i := range s.Sections {
-			for j := range s.Sections[i].TestCases {
-				tc := &s.Sections[i].TestCases[j]
-				if tc.AutomationTest != nil && tc.AutomationTest.Status == models.AutomationStatusRunning {
-					tc.AutomationTest.Status = models.AutomationStatusFail
-					tc.AutomationTest.ErrorMessage = "Failed to generate automation for this test case."
-				}
-			}
-		}
-
-		s.Error = ""
-		s.ComputeStats()
-		saveScenario(bgCtx, &s)
-
-		events.Done("Successfully generated %d automation test%s for '%s'",
-			len(allAutomations), pluralize(len(allAutomations)), projectName)
-	}(&scenario, targetTestCaseIDs, gitlabClient)
+	c.JSON(http.StatusAccepted, gin.H{"message": "generation started", "id": id, "jobId": job.ID})
 }
 
 // GenerateTestCaseAutomations creates automation artifacts for selected test cases.
@@ -1101,13 +1024,18 @@ func generateE2EAutomations(c *gin.Context, scenario *models.TestScenario, req m
 		return
 	}
 
-	token, ok := c.MustGet("token").(*oauth2.Token)
+	_, ok := c.MustGet("token").(*oauth2.Token)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
+	sessionID, _ := c.Get("session_id")
+	authSessionID, _ := sessionID.(string)
+	if authSessionID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized: missing session"})
+		return
+	}
 
-	jobID := uuid.NewString()
 	scenario.UpdatedAt = time.Now()
 	setAutomationCategory(scenario, targetIDs, models.AutomationCategoryE2E, req.FrontendRepoID, models.AutomationStatusRunning)
 	if err := saveScenario(c.Request.Context(), scenario); err != nil {
@@ -1115,87 +1043,18 @@ func generateE2EAutomations(c *gin.Context, scenario *models.TestScenario, req m
 		return
 	}
 
-	c.JSON(http.StatusAccepted, gin.H{"message": "e2e generation started", "jobId": jobID, "id": scenario.ID, "testCaseIds": targetIDs})
-
-	go func(scenarioID string, targetIDs []string, frontendRepoID string, token *oauth2.Token) {
-		bgCtx := context.Background()
-		events := agent.NewGenerationEmitter(bgCtx, scenarioID)
-		events.SetTotalSteps(len(targetIDs))
-		if err := events.Start("Generating %d e2e automation test%s...", len(targetIDs), pluralize(len(targetIDs))); err != nil {
-			log.Printf("[E2EGeneration] failed to publish start event: %v", err)
-		}
-
-		var allAutomations []models.GeneratedAutomation
-		var allFailedIDs []string
-		batchSize := 5
-		for i := 0; i < len(targetIDs); i += batchSize {
-			end := i + batchSize
-			if end > len(targetIDs) {
-				end = len(targetIDs)
-			}
-			batchIDs := targetIDs[i:end]
-			if err := events.Progressf("Generating e2e automations for batch %d to %d (of %d)...", i+1, end, len(targetIDs)); err != nil {
-				log.Printf("[E2EGeneration] failed to publish progress event: %v", err)
-			}
-			result, err := agent.RunAgentForTestGenerationWithLLM(bgCtx, agent.AutomationAgentInput{
-				ScenarioID:  scenarioID,
-				RepoID:      frontendRepoID,
-				TestCaseIDs: batchIDs,
-			}, token)
-			if err != nil {
-				log.Printf("[E2EGeneration] batch failed for scenario=%s testCaseIds=%v: %v", scenarioID, batchIDs, err)
-				allFailedIDs = append(allFailedIDs, batchIDs...)
-				continue
-			}
-			if result != nil {
-				allAutomations = append(allAutomations, result.Automations...)
-				allFailedIDs = append(allFailedIDs, result.FailedIDs...)
-			}
-		}
-
-		s, err := getScenario(bgCtx, scenarioID)
-		if err != nil {
-			msg := fmt.Sprintf("failed to reload scenario after e2e generation: %v", err)
-			log.Printf("[E2EGeneration] %s", msg)
-			if eventErr := events.Error(msg); eventErr != nil {
-				log.Printf("[E2EGeneration] failed to publish error event: %v", eventErr)
-			}
-			return
-		}
-		for _, auto := range allAutomations {
-			services.LinkAutomation(&s, &auto)
-		}
-		setGeneratedE2ERepo(&s, targetIDs, frontendRepoID)
-		markMissingE2EFailed(&s, targetIDs, allFailedIDs)
-
-		success := !(len(allAutomations) == 0 && len(allFailedIDs) == len(targetIDs))
-		if success {
-			s.Error = ""
-		} else {
-			s.Error = "failed to generate e2e tests"
-		}
-		s.ComputeStats()
-		if err := saveScenario(bgCtx, &s); err != nil {
-			msg := fmt.Sprintf("failed to save e2e generation result: %v", err)
-			log.Printf("[E2EGeneration] scenario=%s %s", scenarioID, msg)
-			if eventErr := events.Error(msg); eventErr != nil {
-				log.Printf("[E2EGeneration] failed to publish error event: %v", eventErr)
-			}
-			return
-		}
-
-		if success {
-			log.Printf("[E2EGeneration] completed scenario=%s generated=%d failed=%d", scenarioID, len(allAutomations), len(allFailedIDs))
-			if err := events.Done("Successfully generated %d e2e automation test%s", len(allAutomations), pluralize(len(allAutomations))); err != nil {
-				log.Printf("[E2EGeneration] failed to publish done event: %v", err)
-			}
-		} else {
-			log.Printf("[E2EGeneration] failed scenario=%s generated=0 failed=%d", scenarioID, len(allFailedIDs))
-			if err := events.Error(s.Error); err != nil {
-				log.Printf("[E2EGeneration] failed to publish error event: %v", err)
-			}
-		}
-	}(scenario.ID, targetIDs, req.FrontendRepoID, token)
+	job, err := agent.EnqueueE2EGenerationJob(c.Request.Context(), agent.EnqueueE2EGenerationJobInput{
+		ScenarioID:    scenario.ID,
+		RepoID:        req.FrontendRepoID,
+		TestCaseIDs:   targetIDs,
+		AuthSessionID: authSessionID,
+	})
+	if err != nil {
+		setTestCasesAutomationStatus(c.Request.Context(), scenario.ID, targetIDs, models.AutomationStatusFail)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enqueue e2e generation job"})
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"message": "e2e generation started", "jobId": job.ID, "id": scenario.ID, "testCaseIds": targetIDs})
 }
 
 func filterExistingTestCaseIDs(scenario *models.TestScenario, requested []string) []string {
@@ -1236,47 +1095,6 @@ func setAutomationCategory(scenario *models.TestScenario, targetIDs []string, ca
 		}
 	}
 	scenario.ComputeStats()
-}
-
-func markMissingE2EFailed(scenario *models.TestScenario, targetIDs []string, failedIDs []string) {
-	targets := make(map[string]bool, len(targetIDs))
-	for _, id := range targetIDs {
-		targets[id] = true
-	}
-	failed := make(map[string]bool, len(failedIDs))
-	for _, id := range failedIDs {
-		failed[id] = true
-	}
-	for si := range scenario.Sections {
-		for ti := range scenario.Sections[si].TestCases {
-			tc := &scenario.Sections[si].TestCases[ti]
-			if !targets[tc.ID] || tc.AutomationType == nil || *tc.AutomationType != models.AutomationCategoryE2E || tc.AutomationTest == nil {
-				continue
-			}
-			if tc.AutomationTest.Status == models.AutomationStatusRunning || failed[tc.ID] {
-				tc.AutomationTest.Status = models.AutomationStatusFail
-				tc.AutomationTest.ErrorMessage = "Failed to generate e2e automation for this test case."
-			}
-		}
-	}
-}
-
-func setGeneratedE2ERepo(scenario *models.TestScenario, targetIDs []string, frontendRepoID string) {
-	targets := make(map[string]bool, len(targetIDs))
-	for _, id := range targetIDs {
-		targets[id] = true
-	}
-	for si := range scenario.Sections {
-		for ti := range scenario.Sections[si].TestCases {
-			tc := &scenario.Sections[si].TestCases[ti]
-			if !targets[tc.ID] || tc.AutomationTest == nil {
-				continue
-			}
-			tc.AutomationType = models.AutomationCategoryPtr(models.AutomationCategoryE2E)
-			tc.AutomationTest.Category = models.AutomationCategoryE2E
-			tc.AutomationTest.RepoID = frontendRepoID
-		}
-	}
 }
 
 // CreateManualTestResult stores a manual execution result and optionally uploads evidence to R2.

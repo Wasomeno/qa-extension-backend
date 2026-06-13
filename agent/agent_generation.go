@@ -5,31 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 	"qa-extension-backend/database"
 	"qa-extension-backend/internal/models"
 	"qa-extension-backend/services"
 	"qa-extension-backend/tracker"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 )
-
-// generationSemaphore caps the number of concurrent LLM generation calls to avoid
-// saturating the provider's rate limit when many test cases are triggered at once.
-// Configurable via GENERATION_CONCURRENCY env var (default 3).
-var generationSemaphore = func() chan struct{} {
-	n := 3
-	if v := os.Getenv("GENERATION_CONCURRENCY"); v != "" {
-		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
-			n = parsed
-		}
-	}
-	return make(chan struct{}, n)
-}()
 
 // RunAgentForTestGenerationWithLLM runs the actual QA LLM agent to generate automations
 // The agent will use GitLab tools to navigate the repo and find relevant files
@@ -64,21 +49,19 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input AutomationAgent
 	agentCtx, agentCancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer agentCancel()
 	agentCtx = context.WithValue(agentCtx, "token", token)
-	agentCtx = context.WithValue(agentCtx, "session_id", sessionID)
+	if input.AuthSessionID != "" {
+		agentCtx = context.WithValue(agentCtx, "session_id", input.AuthSessionID)
+	}
+	agentCtx = context.WithValue(agentCtx, "agent_session_id", sessionID)
+	if input.GenerationJobID != "" {
+		agentCtx = context.WithValue(agentCtx, generationJobContextKey{}, input.GenerationJobID)
+	}
 
 	// Create session
 	sessionService := GetSessionService()
 	_, err = sessionService.Create(agentCtx, sessionID, userID, nil)
 	if err != nil {
 		log.Printf("[AgentGeneration] Session already exists or error: %v", err)
-	}
-
-	// Acquire a generation slot to cap concurrent LLM calls and avoid rate limit errors.
-	select {
-	case generationSemaphore <- struct{}{}:
-		defer func() { <-generationSemaphore }()
-	case <-agentCtx.Done():
-		return nil, fmt.Errorf("generation cancelled while waiting for capacity: %w", agentCtx.Err())
 	}
 
 	log.Printf("[AgentGeneration] Starting agent execution for scenario %s", input.ScenarioID)

@@ -65,7 +65,9 @@ func CreateAppProject(c *gin.Context) {
 		log.Printf("[ProjectCreation] starting background markdown scenario sync projectID=%s specsRepoID=%d actorID=%d", project.ID, project.SpecsRepoID, actorID)
 		token, _ := c.Get("token")
 		oauthToken, _ := token.(*oauth2.Token)
-		services.StartMarkdownScenarioSyncJob(glClient, project, actorID, oauthToken)
+		sessionValue, _ := c.Get("session_id")
+		authSessionID, _ := sessionValue.(string)
+		services.StartMarkdownScenarioSyncJob(glClient, project, actorID, oauthToken, authSessionID)
 		syncStarted = true
 	} else {
 		log.Printf("[ProjectCreation] skipping scenario sync projectID=%s reason=missing_gitlab_token", project.ID)

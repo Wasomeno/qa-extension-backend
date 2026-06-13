@@ -1262,10 +1262,12 @@ type GenerateAutomationsOutput struct {
 
 // AutomationAgentInput is the prompt/input for the agent to generate automation tests
 type AutomationAgentInput struct {
-	ScenarioID  string   `json:"scenarioID"`
-	RepoID      string   `json:"repoId,omitempty"`
-	SheetNames  []string `json:"sheetNames,omitempty"`
-	TestCaseIDs []string `json:"testCaseIds,omitempty"`
+	ScenarioID      string   `json:"scenarioID"`
+	RepoID          string   `json:"repoId,omitempty"`
+	SheetNames      []string `json:"sheetNames,omitempty"`
+	TestCaseIDs     []string `json:"testCaseIds,omitempty"`
+	AuthSessionID   string   `json:"authSessionId,omitempty"`
+	GenerationJobID string   `json:"generationJobId,omitempty"`
 }
 
 // RunAgentForTestGeneration runs the QA agent to generate automation tests

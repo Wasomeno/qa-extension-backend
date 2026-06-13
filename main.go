@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"log"
@@ -41,6 +42,8 @@ func main() {
 	}
 
 	fmt.Println("Redis connected successfully")
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	agent.StartE2EGenerationWorkers(workerCtx)
 
 	// Cleanup Playwright on exit
 	c := make(chan os.Signal, 1)
@@ -48,6 +51,7 @@ func main() {
 	go func() {
 		<-c
 		fmt.Println("\nShutting down...")
+		workerCancel()
 		agent.StopPlaywright()
 		os.Exit(0)
 	}()
