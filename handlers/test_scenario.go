@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	gitlab "gitlab.com/gitlab-org/api/client-go"
 	"golang.org/x/oauth2"
 )
 
@@ -918,6 +920,155 @@ func GenerateTestCaseAutomations(c *gin.Context) {
 	}
 }
 
+// GenerateScenarioAutomations generates automation for every test case in a scenario
+// using each test case's assigned automationType. Manual and unassigned cases are skipped.
+func GenerateScenarioAutomations(c *gin.Context) {
+	scenarioID := routeScenarioID(c)
+	if scenarioID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "scenario id is required"})
+		return
+	}
+
+	var req models.GenerateScenarioAutomationsRequest
+	if c.Request.Body != nil {
+		if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
+	ctx := c.Request.Context()
+	scenario, err := getScenario(ctx, scenarioID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "scenario not found"})
+		return
+	}
+	if !ensureScenarioProject(c, scenario) {
+		return
+	}
+
+	projectID := routeProjectID(c)
+	if projectID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "project id is required"})
+		return
+	}
+	project, err := services.GetAppProject(ctx, projectID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+		return
+	}
+
+	apiIDs, e2eIDs, manualSkipped, unassignedSkipped := scenarioAutomationTargets(&scenario)
+	if len(apiIDs) == 0 && len(e2eIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no api or e2e test cases are assigned for generation"})
+		return
+	}
+	if len(apiIDs) > 0 && project.BackendRepoID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "project backendRepoId is required for api generation"})
+		return
+	}
+	if len(e2eIDs) > 0 && project.FrontendRepoID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "project frontendRepoId is required for e2e generation"})
+		return
+	}
+
+	backendRepoID := strconv.FormatInt(project.BackendRepoID, 10)
+	backendRepoName := ""
+	if len(apiIDs) > 0 {
+		if tokenValue, exists := c.Get("token"); exists {
+			if token, ok := tokenValue.(*oauth2.Token); ok {
+				if glClient, err := client.GetClient(ctx, token, nil); err == nil {
+					backendRepoName = fetchGitLabProjectName(glClient, backendRepoID)
+				}
+			}
+		}
+		_, _, err := generateAPIAutomationPromptsForTestCases(ctx, &scenario, apiIDs, backendRepoID, backendRepoName)
+		if err != nil {
+			log.Printf("[GenerateScenarioAutomations] api generation failed scenario=%s err=%v", scenarioID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate api automation prompts"})
+			return
+		}
+	}
+
+	var e2eJobID string
+	if len(e2eIDs) > 0 {
+		sessionID, _ := c.Get("session_id")
+		authSessionID, _ := sessionID.(string)
+		if authSessionID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized: missing session"})
+			return
+		}
+		setAutomationCategory(&scenario, e2eIDs, models.AutomationCategoryE2E, strconv.FormatInt(project.FrontendRepoID, 10), models.AutomationStatusRunning)
+		scenario.UpdatedAt = time.Now()
+		if err := saveScenario(ctx, &scenario); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save scenario"})
+			return
+		}
+		job, err := agent.EnqueueE2EGenerationJob(ctx, agent.EnqueueE2EGenerationJobInput{
+			ScenarioID:    scenario.ID,
+			RepoID:        strconv.FormatInt(project.FrontendRepoID, 10),
+			TestCaseIDs:   e2eIDs,
+			AuthSessionID: authSessionID,
+		})
+		if err != nil {
+			setTestCasesAutomationStatus(ctx, scenario.ID, e2eIDs, models.AutomationStatusFail)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enqueue e2e generation job"})
+			return
+		}
+		e2eJobID = job.ID
+	} else {
+		scenario.UpdatedAt = time.Now()
+		if err := saveScenario(ctx, &scenario); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save scenario"})
+			return
+		}
+	}
+
+	c.JSON(http.StatusAccepted, gin.H{
+		"message":           "scenario automation generation started",
+		"id":                scenario.ID,
+		"apiCount":          len(apiIDs),
+		"e2eCount":          len(e2eIDs),
+		"manualSkipped":     manualSkipped,
+		"unassignedSkipped": unassignedSkipped,
+		"e2eJobId":          e2eJobID,
+		"force":             req.Force,
+	})
+}
+
+func scenarioAutomationTargets(scenario *models.TestScenario) (apiIDs []string, e2eIDs []string, manualSkipped int, unassignedSkipped int) {
+	for _, section := range scenario.Sections {
+		for _, tc := range section.TestCases {
+			if tc.AutomationType == nil {
+				unassignedSkipped++
+				continue
+			}
+			switch *tc.AutomationType {
+			case models.AutomationCategoryAPI:
+				apiIDs = append(apiIDs, tc.ID)
+			case models.AutomationCategoryE2E:
+				e2eIDs = append(e2eIDs, tc.ID)
+			case models.AutomationCategoryManual:
+				manualSkipped++
+			default:
+				unassignedSkipped++
+			}
+		}
+	}
+	return apiIDs, e2eIDs, manualSkipped, unassignedSkipped
+}
+
+func fetchGitLabProjectName(glClient *gitlab.Client, projectID string) string {
+	if glClient == nil || strings.TrimSpace(projectID) == "" {
+		return ""
+	}
+	project, _, err := glClient.Projects.GetProject(projectID, nil)
+	if err != nil || project == nil {
+		return ""
+	}
+	return project.PathWithNamespace
+}
+
 func generateAPIAutomationPrompts(c *gin.Context, scenario *models.TestScenario, req models.GenerateAutomationRequest) {
 	if strings.TrimSpace(req.BackendRepoID) == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "backendRepoId is required for api automation"})
@@ -936,38 +1087,11 @@ func generateAPIAutomationPrompts(c *gin.Context, scenario *models.TestScenario,
 		}
 	}
 
-	targets := make(map[string]bool, len(req.TestCaseIDs))
-	for _, id := range req.TestCaseIDs {
-		targets[id] = true
-	}
-	prompts := make([]gin.H, 0, len(req.TestCaseIDs))
-	found := 0
-	now := time.Now().Format(time.RFC3339)
-	for si := range scenario.Sections {
-		for ti := range scenario.Sections[si].TestCases {
-			tc := &scenario.Sections[si].TestCases[ti]
-			if !targets[tc.ID] {
-				continue
-			}
-			found++
-			prompt, err := services.GenerateAPITestPromptWithLLM(ctx, *scenario, *tc, req.BackendRepoID, backendRepoName)
-			if err != nil {
-				log.Printf("[GenerateAPIAutomationPrompts] failed to generate API test prompt for test case %s: %v", tc.ID, err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate API test prompt"})
-				return
-			}
-			tc.AutomationType = models.AutomationCategoryPtr(models.AutomationCategoryAPI)
-			tc.AutomationTest = &models.AutomationTest{
-				ID:        fmt.Sprintf("api-prompt-%s", tc.ID),
-				Name:      fmt.Sprintf("%s API test prompt", tc.Code),
-				Category:  models.AutomationCategoryAPI,
-				Status:    models.AutomationStatusIdle,
-				RepoID:    req.BackendRepoID,
-				Prompt:    prompt,
-				LastRunAt: now,
-			}
-			prompts = append(prompts, gin.H{"testCaseId": tc.ID, "prompt": prompt})
-		}
+	prompts, found, err := generateAPIAutomationPromptsForTestCases(ctx, scenario, req.TestCaseIDs, req.BackendRepoID, backendRepoName)
+	if err != nil {
+		log.Printf("[GenerateAPIAutomationPrompts] failed to generate API test prompt: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate API test prompt"})
+		return
 	}
 	if found == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "no matching test cases found"})
@@ -980,6 +1104,47 @@ func generateAPIAutomationPrompts(c *gin.Context, scenario *models.TestScenario,
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"category": req.Category, "backendRepoId": req.BackendRepoID, "prompts": prompts})
+}
+
+func generateAPIAutomationPromptsForTestCases(
+	ctx context.Context,
+	scenario *models.TestScenario,
+	testCaseIDs []string,
+	backendRepoID string,
+	backendRepoName string,
+) ([]gin.H, int, error) {
+	targets := make(map[string]bool, len(testCaseIDs))
+	for _, id := range testCaseIDs {
+		targets[id] = true
+	}
+	prompts := make([]gin.H, 0, len(testCaseIDs))
+	found := 0
+	now := time.Now().Format(time.RFC3339)
+	for si := range scenario.Sections {
+		for ti := range scenario.Sections[si].TestCases {
+			tc := &scenario.Sections[si].TestCases[ti]
+			if !targets[tc.ID] {
+				continue
+			}
+			found++
+			prompt, err := services.GenerateAPITestPromptWithLLM(ctx, *scenario, *tc, backendRepoID, backendRepoName)
+			if err != nil {
+				return prompts, found, fmt.Errorf("test case %s: %w", tc.ID, err)
+			}
+			tc.AutomationType = models.AutomationCategoryPtr(models.AutomationCategoryAPI)
+			tc.AutomationTest = &models.AutomationTest{
+				ID:        fmt.Sprintf("api-prompt-%s", tc.ID),
+				Name:      fmt.Sprintf("%s API test prompt", tc.Code),
+				Category:  models.AutomationCategoryAPI,
+				Status:    models.AutomationStatusIdle,
+				RepoID:    backendRepoID,
+				Prompt:    prompt,
+				LastRunAt: now,
+			}
+			prompts = append(prompts, gin.H{"testCaseId": tc.ID, "prompt": prompt})
+		}
+	}
+	return prompts, found, nil
 }
 
 func markManualAutomation(c *gin.Context, scenario *models.TestScenario, testCaseIDs []string) {

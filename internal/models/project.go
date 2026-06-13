@@ -16,8 +16,10 @@ type AppProject struct {
 	// additional factual context when generating API and E2E automation tests.
 	TestContextMarkdown string `json:"testContextMarkdown,omitempty"`
 
-	IssueRepoID int64 `json:"issueRepoId"`
-	SpecsRepoID int64 `json:"specsRepoId"`
+	IssueRepoID    int64 `json:"issueRepoId"`
+	SpecsRepoID    int64 `json:"specsRepoId"`
+	BackendRepoID  int64 `json:"backendRepoId"`
+	FrontendRepoID int64 `json:"frontendRepoId"`
 
 	CreatedByID int       `json:"createdById,omitempty"`
 	UpdatedByID int       `json:"updatedById,omitempty"`
@@ -34,6 +36,8 @@ type AppProjectResponse struct {
 	TestContextMarkdown string    `json:"testContextMarkdown,omitempty"`
 	IssueRepoName       string    `json:"issueRepoName"`
 	SpecsRepoName       string    `json:"specsRepoName"`
+	BackendRepoName     string    `json:"backendRepoName"`
+	FrontendRepoName    string    `json:"frontendRepoName"`
 	CreatedByID         int       `json:"createdById,omitempty"`
 	UpdatedByID         int       `json:"updatedById,omitempty"`
 	CreatedAt           time.Time `json:"createdAt"`
@@ -42,12 +46,18 @@ type AppProjectResponse struct {
 
 // ToResponse converts an AppProject to an AppProjectResponse, using the provided
 // repo names. If a repo name is empty, it falls back to the repo ID as a string.
-func (p *AppProject) ToResponse(issueRepoName, specsRepoName string) AppProjectResponse {
-	if issueRepoName == "" {
+func (p *AppProject) ToResponse(issueRepoName, specsRepoName, backendRepoName, frontendRepoName string) AppProjectResponse {
+	if issueRepoName == "" && p.IssueRepoID > 0 {
 		issueRepoName = strconv.FormatInt(p.IssueRepoID, 10)
 	}
-	if specsRepoName == "" {
+	if specsRepoName == "" && p.SpecsRepoID > 0 {
 		specsRepoName = strconv.FormatInt(p.SpecsRepoID, 10)
+	}
+	if backendRepoName == "" && p.BackendRepoID > 0 {
+		backendRepoName = strconv.FormatInt(p.BackendRepoID, 10)
+	}
+	if frontendRepoName == "" && p.FrontendRepoID > 0 {
+		frontendRepoName = strconv.FormatInt(p.FrontendRepoID, 10)
 	}
 	return AppProjectResponse{
 		ID:                  p.ID,
@@ -56,6 +66,8 @@ func (p *AppProject) ToResponse(issueRepoName, specsRepoName string) AppProjectR
 		TestContextMarkdown: p.TestContextMarkdown,
 		IssueRepoName:       issueRepoName,
 		SpecsRepoName:       specsRepoName,
+		BackendRepoName:     backendRepoName,
+		FrontendRepoName:    frontendRepoName,
 		CreatedByID:         p.CreatedByID,
 		UpdatedByID:         p.UpdatedByID,
 		CreatedAt:           p.CreatedAt,
@@ -70,6 +82,8 @@ type CreateAppProjectRequest struct {
 	TestContextMarkdown string `json:"testContextMarkdown,omitempty"`
 	IssueRepoID         int64  `json:"issueRepoId" binding:"required"`
 	SpecsRepoID         int64  `json:"specsRepoId" binding:"required"`
+	BackendRepoID       int64  `json:"backendRepoId" binding:"required"`
+	FrontendRepoID      int64  `json:"frontendRepoId" binding:"required"`
 }
 
 // UpdateAppProjectRequest is the payload for partial project updates.
@@ -79,6 +93,8 @@ type UpdateAppProjectRequest struct {
 	TestContextMarkdown *string `json:"testContextMarkdown"`
 	IssueRepoID         *int64  `json:"issueRepoId"`
 	SpecsRepoID         *int64  `json:"specsRepoId"`
+	BackendRepoID       *int64  `json:"backendRepoId"`
+	FrontendRepoID      *int64  `json:"frontendRepoId"`
 }
 
 // UpdateProjectTestContextRequest is the payload for replacing a project's
@@ -145,9 +161,9 @@ type Namespace struct {
 
 // ProjectPassRate represents the test pass rate over a time window.
 type ProjectPassRate struct {
-	Value       *float64 `json:"value"`       // percentage 0-100, or null if no runs
-	Trend       string   `json:"trend"`       // "up" | "down" | "flat"
-	TrendLabel  string   `json:"trendLabel"`  // e.g. "Last 7 days"
+	Value      *float64 `json:"value"`      // percentage 0-100, or null if no runs
+	Trend      string   `json:"trend"`      // "up" | "down" | "flat"
+	TrendLabel string   `json:"trendLabel"` // e.g. "Last 7 days"
 }
 
 // ProjectIssuesToday shows issue activity for the current day.

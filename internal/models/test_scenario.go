@@ -118,15 +118,15 @@ func AutomationCategoryPtr(category AutomationCategory) *AutomationCategory {
 // The generated steps are stored inline in the Steps field.
 // After each run, VideoURL, StepResults, and Log are populated with the latest result.
 type AutomationTest struct {
-	ID              string              `json:"id"`
-	Name            string              `json:"name"`
-	Category        AutomationCategory  `json:"category,omitempty"`
-	Framework       string              `json:"framework,omitempty"` // nextjs or vite
-	Status          AutomationRunStatus `json:"status"`
-	RepoID          string              `json:"repoId,omitempty"`
-	Prompt          string              `json:"prompt,omitempty"`
-	LastRunAt       string              `json:"lastRunAt,omitempty"`
-	RunDurationMs   int64               `json:"runDurationMs,omitempty"`
+	ID            string              `json:"id"`
+	Name          string              `json:"name"`
+	Category      AutomationCategory  `json:"category,omitempty"`
+	Framework     string              `json:"framework,omitempty"` // nextjs or vite
+	Status        AutomationRunStatus `json:"status"`
+	RepoID        string              `json:"repoId,omitempty"`
+	Prompt        string              `json:"prompt,omitempty"`
+	LastRunAt     string              `json:"lastRunAt,omitempty"`
+	RunDurationMs int64               `json:"runDurationMs,omitempty"`
 	Steps         []RecordingStep     `json:"steps,omitempty"`
 	VideoURL      string              `json:"videoUrl,omitempty"`
 	ScreenshotURL string              `json:"screenshotUrl,omitempty"`
@@ -438,6 +438,10 @@ type GenerateAutomationRequest struct {
 	TestCaseIDs    []string           `json:"testCaseIds" binding:"required"`
 	BackendRepoID  string             `json:"backendRepoId,omitempty"`
 	FrontendRepoID string             `json:"frontendRepoId,omitempty"`
+}
+
+type GenerateScenarioAutomationsRequest struct {
+	Force bool `json:"force,omitempty"`
 }
 
 // ─────────────────────────────────────────────

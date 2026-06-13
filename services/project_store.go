@@ -129,6 +129,8 @@ func CreateAppProject(ctx context.Context, req models.CreateAppProjectRequest, a
 		TestContextMarkdown: testContextMarkdown,
 		IssueRepoID:         req.IssueRepoID,
 		SpecsRepoID:         req.SpecsRepoID,
+		BackendRepoID:       req.BackendRepoID,
+		FrontendRepoID:      req.FrontendRepoID,
 		CreatedByID:         actorID,
 		UpdatedByID:         actorID,
 		CreatedAt:           now,
@@ -239,6 +241,14 @@ func UpdateAppProject(ctx context.Context, id string, req models.UpdateAppProjec
 	if req.SpecsRepoID != nil && *req.SpecsRepoID != project.SpecsRepoID {
 		changes["specsRepoId"] = models.AppProjectChange{Old: project.SpecsRepoID, New: *req.SpecsRepoID}
 		project.SpecsRepoID = *req.SpecsRepoID
+	}
+	if req.BackendRepoID != nil && *req.BackendRepoID != project.BackendRepoID {
+		changes["backendRepoId"] = models.AppProjectChange{Old: project.BackendRepoID, New: *req.BackendRepoID}
+		project.BackendRepoID = *req.BackendRepoID
+	}
+	if req.FrontendRepoID != nil && *req.FrontendRepoID != project.FrontendRepoID {
+		changes["frontendRepoId"] = models.AppProjectChange{Old: project.FrontendRepoID, New: *req.FrontendRepoID}
+		project.FrontendRepoID = *req.FrontendRepoID
 	}
 
 	if len(changes) == 0 {
