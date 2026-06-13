@@ -16,6 +16,10 @@ import (
 	"golang.org/x/oauth2"
 )
 
+type generationAllowedScenarioContextKey struct{}
+type generationAllowedTestCasesContextKey struct{}
+type generationToolAllowlistContextKey struct{}
+
 // RunAgentForTestGenerationWithLLM runs the actual QA LLM agent to generate automations
 // The agent will use GitLab tools to navigate the repo and find relevant files
 func RunAgentForTestGenerationWithLLM(ctx context.Context, input AutomationAgentInput, token *oauth2.Token) (*GenerateAutomationsOutput, error) {
@@ -56,6 +60,26 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input AutomationAgent
 	if input.GenerationJobID != "" {
 		agentCtx = context.WithValue(agentCtx, generationJobContextKey{}, input.GenerationJobID)
 	}
+	agentCtx = context.WithValue(agentCtx, generationAllowedScenarioContextKey{}, input.ScenarioID)
+	allowedTestCaseIDs := make(map[string]bool, len(input.TestCaseIDs))
+	for _, id := range input.TestCaseIDs {
+		if id = strings.TrimSpace(id); id != "" {
+			allowedTestCaseIDs[id] = true
+		}
+	}
+	agentCtx = context.WithValue(agentCtx, generationAllowedTestCasesContextKey{}, allowedTestCaseIDs)
+	agentCtx = context.WithValue(agentCtx, generationToolAllowlistContextKey{}, map[string]bool{
+		"listGitLabRepositoryTree":  true,
+		"getGitLabFileContent":      true,
+		"searchGitLabCode":          true,
+		"grepRepo":                  true,
+		"findFiles":                 true,
+		"listGitLabBranches":        true,
+		"listKnowledgeGraphs":       true,
+		"getKnowledgeGraph":         true,
+		"getKnowledgeGraphCoverage": true,
+		"save_automation_test":      true,
+	})
 
 	// Create session
 	sessionService := GetSessionService()

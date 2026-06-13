@@ -12,7 +12,6 @@ import (
 	"time"
 
 	gitlab "gitlab.com/gitlab-org/api/client-go"
-	"golang.org/x/oauth2"
 
 	"qa-extension-backend/client"
 	"qa-extension-backend/database"
@@ -331,12 +330,7 @@ func execUpdateGitLabIssue(ctx context.Context, args map[string]any) (any, error
 }
 
 func getGitLabClientDirect(ctx context.Context) (*gitlab.Client, error) {
-	token, ok := ctx.Value("token").(*oauth2.Token)
-	if !ok {
-		return nil, fmt.Errorf("unauthorized: missing GitLab token in context")
-	}
-
-	return client.GetClient(ctx, token, nil)
+	return getGitLabClient(ctx)
 }
 
 // --- Repository Explorer Tool Executors ---

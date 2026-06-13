@@ -259,7 +259,7 @@ func (r *OpenAIAgentRunner) createChatCompletion(ctx context.Context, messages [
 	body := openAIChatRequest{
 		Model:           r.model,
 		Messages:        messages,
-		Tools:           r.tools.OpenAITools(),
+		Tools:           r.tools.OpenAIToolsForContext(ctx),
 		ToolChoice:      "auto",
 		Temperature:     &temperature,
 		ReasoningEffort: openAIReasoningEffort(os.Getenv("OPENAI_BASE_URL")),

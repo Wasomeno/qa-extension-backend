@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"qa-extension-backend/auth"
 	"qa-extension-backend/client"
 	"qa-extension-backend/services"
 	"strconv"
@@ -298,7 +299,18 @@ func getGitLabClient(ctx context.Context) (*gitlab.Client, error) {
 		return nil, fmt.Errorf("unauthorized: missing GitLab token in context")
 	}
 
-	return client.GetClient(ctx, token, nil)
+	var saver client.TokenSaver
+	if sessionID, ok := ctx.Value("session_id").(string); ok && strings.TrimSpace(sessionID) != "" {
+		sessionID = strings.TrimSpace(sessionID)
+		saver = func(ctx context.Context, t *oauth2.Token) error {
+			if t != nil {
+				*token = *t
+			}
+			return auth.UpdateSession(ctx, sessionID, t)
+		}
+	}
+
+	return client.GetClient(ctx, token, saver)
 }
 
 // =============================================================================

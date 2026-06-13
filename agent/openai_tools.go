@@ -42,8 +42,15 @@ func (r *ToolRegistry) Get(name string) (AgentTool, bool) {
 }
 
 func (r *ToolRegistry) OpenAITools() []openai.ChatCompletionToolParam {
+	return r.OpenAIToolsForContext(context.Background())
+}
+
+func (r *ToolRegistry) OpenAIToolsForContext(ctx context.Context) []openai.ChatCompletionToolParam {
 	tools := make([]openai.ChatCompletionToolParam, 0, len(r.order))
 	for _, name := range r.order {
+		if !toolAllowedInContext(ctx, name) {
+			continue
+		}
 		tool := r.tools[name]
 		tools = append(tools, openai.ChatCompletionToolParam{
 			Function: shared.FunctionDefinitionParam{
@@ -57,11 +64,22 @@ func (r *ToolRegistry) OpenAITools() []openai.ChatCompletionToolParam {
 }
 
 func (r *ToolRegistry) Execute(ctx context.Context, name string, raw json.RawMessage) (any, error) {
+	if !toolAllowedInContext(ctx, name) {
+		return nil, fmt.Errorf("tool %q is not allowed in this generation context", name)
+	}
 	tool, ok := r.Get(name)
 	if !ok {
 		return nil, fmt.Errorf("tool %q not found", name)
 	}
 	return tool.Execute(ctx, raw)
+}
+
+func toolAllowedInContext(ctx context.Context, name string) bool {
+	allowlist, ok := ctx.Value(generationToolAllowlistContextKey{}).(map[string]bool)
+	if !ok || len(allowlist) == 0 {
+		return true
+	}
+	return allowlist[name]
 }
 
 func NewQAToolRegistry() *ToolRegistry {

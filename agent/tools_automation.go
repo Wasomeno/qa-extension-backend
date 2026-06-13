@@ -87,6 +87,10 @@ type SaveAutomationOutput struct {
 func saveAutomation(ctx context.Context, input SaveAutomationInput) (*SaveAutomationOutput, error) {
 	log.Printf("[AgentTool] saveAutomation called: testCaseID=%s, steps=%d", input.TestCaseID, len(input.Steps))
 
+	if err := validateGenerationSaveScope(ctx, &input); err != nil {
+		return nil, err
+	}
+
 	steps := make([]models.RecordingStep, len(input.Steps))
 	for i, step := range input.Steps {
 		steps[i] = models.RecordingStep{
@@ -165,6 +169,32 @@ func saveAutomation(ctx context.Context, input SaveAutomationInput) (*SaveAutoma
 		Status:  "saved",
 		Message: fmt.Sprintf("Automation test saved with %d steps", len(steps)),
 	}, nil
+}
+
+func validateGenerationSaveScope(ctx context.Context, input *SaveAutomationInput) error {
+	if input == nil {
+		return fmt.Errorf("save automation input is required")
+	}
+
+	if allowedScenarioID, ok := ctx.Value(generationAllowedScenarioContextKey{}).(string); ok && strings.TrimSpace(allowedScenarioID) != "" {
+		allowedScenarioID = strings.TrimSpace(allowedScenarioID)
+		input.ScenarioID = strings.TrimSpace(input.ScenarioID)
+		if input.ScenarioID == "" {
+			input.ScenarioID = allowedScenarioID
+		}
+		if input.ScenarioID != allowedScenarioID {
+			return fmt.Errorf("save_automation_test rejected: scenarioID %s is outside active generation scenario %s", input.ScenarioID, allowedScenarioID)
+		}
+	}
+
+	if allowedTestCaseIDs, ok := ctx.Value(generationAllowedTestCasesContextKey{}).(map[string]bool); ok && len(allowedTestCaseIDs) > 0 {
+		input.TestCaseID = strings.TrimSpace(input.TestCaseID)
+		if !allowedTestCaseIDs[input.TestCaseID] {
+			return fmt.Errorf("save_automation_test rejected: testCaseID %s is outside active generation batch", input.TestCaseID)
+		}
+	}
+
+	return nil
 }
 
 // =============================================================================
@@ -466,11 +496,7 @@ func fetchSingleFileFromGitLab(ctx context.Context, glClient *gitlab.Client, pro
 }
 
 func getGitLabClientFromContext(ctx context.Context) (*gitlab.Client, error) {
-	token, ok := ctx.Value("token").(*oauth2.Token)
-	if !ok {
-		return nil, fmt.Errorf("unauthorized: missing GitLab token in context")
-	}
-	return client.GetClient(ctx, token, nil)
+	return getGitLabClient(ctx)
 }
 
 // =============================================================================
