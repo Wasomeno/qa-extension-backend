@@ -88,6 +88,74 @@ func TestRepoCacheLocalGitReadAndSearch(t *testing.T) {
 	}
 }
 
+func TestRepoCacheListTreeReturnsChildrenForScopedPath(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "src")
+	mirror := filepath.Join(tmp, "repo.git")
+
+	runTestGit(t, "", "init", "-b", "main", src)
+	runTestGit(t, src, "config", "user.email", "test@example.com")
+	runTestGit(t, src, "config", "user.name", "Test User")
+	if err := os.MkdirAll(filepath.Join(src, "docs", "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "docs", "intro.md"), []byte("intro\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "docs", "nested", "deep.md"), []byte("deep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, src, "add", ".")
+	runTestGit(t, src, "commit", "-m", "initial")
+	runTestGit(t, "", "clone", "--bare", src, mirror)
+
+	cache := &RepoCacheService{enabled: true, commandTimeout: time.Minute}
+	ref, err := cache.resolveRef(ctx, mirror, "main")
+	if err != nil {
+		t.Fatalf("resolveRef: %v", err)
+	}
+
+	entries, err := cache.listTreeFromMirror(ctx, mirror, ref, "docs", false)
+	if err != nil {
+		t.Fatalf("listTreeFromMirror non-recursive: %v", err)
+	}
+	assertRepoTreeEntries(t, entries, []RepoTreeEntry{
+		{Name: "intro.md", Path: "docs/intro.md", Type: "blob"},
+		{Name: "nested", Path: "docs/nested", Type: "tree"},
+	})
+
+	recursiveEntries, err := cache.listTreeFromMirror(ctx, mirror, ref, "docs", true)
+	if err != nil {
+		t.Fatalf("listTreeFromMirror recursive: %v", err)
+	}
+	tree := repoEntriesToFileTree(recursiveEntries, true, "docs")
+	if len(tree) != 2 {
+		t.Fatalf("tree length = %d, want 2: %#v", len(tree), tree)
+	}
+	if tree[0].Path != "docs/nested" || tree[0].Type != "tree" {
+		t.Fatalf("first tree node = %#v, want docs/nested tree", tree[0])
+	}
+	if len(tree[0].Children) != 1 || tree[0].Children[0].Path != "docs/nested/deep.md" {
+		t.Fatalf("nested children = %#v, want docs/nested/deep.md", tree[0].Children)
+	}
+	if tree[1].Path != "docs/intro.md" || tree[1].Type != "blob" {
+		t.Fatalf("second tree node = %#v, want docs/intro.md blob", tree[1])
+	}
+}
+
+func assertRepoTreeEntries(t *testing.T, got []RepoTreeEntry, want []RepoTreeEntry) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("entries length = %d, want %d: %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i].Name != want[i].Name || got[i].Path != want[i].Path || got[i].Type != want[i].Type {
+			t.Fatalf("entry %d = %#v, want %#v", i, got[i], want[i])
+		}
+	}
+}
+
 func runTestGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)

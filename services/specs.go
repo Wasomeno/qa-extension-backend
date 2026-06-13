@@ -83,7 +83,7 @@ func (s *SpecsService) GetFileTree(ctx context.Context, client *gitlab.Client, p
 	}
 
 	if entries, err := DefaultRepoCache().ListTree(ctx, client, projectID, ref, path, recursive); err == nil {
-		return repoEntriesToFileTree(entries, recursive), nil
+		return repoEntriesToFileTree(entries, recursive, path), nil
 	} else if !errors.Is(err, ErrRepoCacheDisabled) && !errors.Is(err, ErrRepoCacheToken) {
 		log.Printf("[specs] repo cache tree fallback for project %s path %s ref %s: %v", projectID, path, ref, err)
 	}
@@ -446,7 +446,7 @@ func (s *SpecsService) SearchTree(ctx context.Context, client *gitlab.Client, pr
 	return filterTree(nodes, query), nil
 }
 
-func repoEntriesToFileTree(entries []RepoTreeEntry, recursive bool) []*FileTreeNode {
+func repoEntriesToFileTree(entries []RepoTreeEntry, recursive bool, basePath string) []*FileTreeNode {
 	if !recursive {
 		nodes := make([]*FileTreeNode, 0, len(entries))
 		for _, entry := range entries {
@@ -471,13 +471,17 @@ func repoEntriesToFileTree(entries []RepoTreeEntry, recursive bool) []*FileTreeN
 		}
 	}
 
+	basePath = strings.Trim(strings.TrimSpace(basePath), "/")
+	if basePath == "." {
+		basePath = ""
+	}
 	var top []*FileTreeNode
 	for path, node := range root {
 		parentPath := ""
 		if idx := strings.LastIndex(path, "/"); idx >= 0 {
 			parentPath = path[:idx]
 		}
-		if parentPath == "" {
+		if parentPath == basePath {
 			top = append(top, node)
 			continue
 		}

@@ -211,27 +211,49 @@ func (s *RepoCacheService) ListTree(ctx context.Context, glClient *gitlab.Client
 		return nil, err
 	}
 
-	args := []string{"ls-tree"}
-	if recursive {
-		args = append(args, "-r", "-t")
-	}
-	args = append(args, resolvedRef)
-	if strings.TrimSpace(path) != "" && path != "." {
-		args = append(args, "--", strings.TrimSpace(path))
-	}
-
-	out, err := s.runGitOutput(ctx, repo.MirrorDir, args...)
+	entries, err := s.listTreeFromMirror(ctx, repo.MirrorDir, resolvedRef, path, recursive)
 	if err != nil {
 		repo, resolvedRef, err = s.ensureRepoRef(ctx, glClient, projectID, ref, true)
 		if err != nil {
 			return nil, err
 		}
-		out, err = s.runGitOutput(ctx, repo.MirrorDir, args...)
+		entries, err = s.listTreeFromMirror(ctx, repo.MirrorDir, resolvedRef, path, recursive)
 		if err != nil {
 			return nil, err
 		}
 	}
-	return parseRepoTreeEntries(out), nil
+	return entries, nil
+}
+
+func (s *RepoCacheService) listTreeFromMirror(ctx context.Context, mirrorDir, ref, path string, recursive bool) ([]RepoTreeEntry, error) {
+	cleanPath := strings.Trim(strings.TrimSpace(path), "/")
+	if cleanPath == "." {
+		cleanPath = ""
+	}
+
+	args := []string{"ls-tree"}
+	if recursive {
+		args = append(args, "-r", "-t")
+	}
+	if cleanPath == "" {
+		args = append(args, ref)
+	} else {
+		args = append(args, ref+":"+cleanPath)
+	}
+
+	out, err := s.runGitOutput(ctx, mirrorDir, args...)
+	if err != nil {
+		return nil, err
+	}
+	entries := parseRepoTreeEntries(out)
+	if cleanPath == "" {
+		return entries, nil
+	}
+	for i := range entries {
+		entries[i].Path = cleanPath + "/" + strings.TrimPrefix(entries[i].Path, "/")
+		entries[i].Name = filepath.Base(entries[i].Path)
+	}
+	return entries, nil
 }
 
 func (s *RepoCacheService) ListFiles(ctx context.Context, glClient *gitlab.Client, projectID, ref string) ([]string, error) {
