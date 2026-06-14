@@ -40,7 +40,10 @@ services:
     expose:
       - "3000"
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+      redis-flush:
+        condition: service_completed_successfully
     volumes:
       - /root/.local/share/pi-node:/root/.local/share/pi-node:ro
       - /root/.pi:/root/.pi
@@ -55,13 +58,17 @@ services:
       - redis_data:/data
     networks:
       - dokploy-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   redis-flush:
     image: redis:7-alpine
-    profiles:
-      - maintenance
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     command: ["redis-cli", "-h", "redis", "-p", "6379", "-n", "0", "FLUSHDB", "ASYNC"]
     networks:
       - dokploy-network
