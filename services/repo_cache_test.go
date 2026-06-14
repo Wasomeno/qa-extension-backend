@@ -144,6 +144,20 @@ func TestRepoCacheListTreeReturnsChildrenForScopedPath(t *testing.T) {
 	}
 }
 
+func TestNewRepoCacheServiceFromEnvParsesDurations(t *testing.T) {
+	t.Setenv("REPO_CACHE_DIR", t.TempDir())
+	t.Setenv("REPO_CACHE_SYNC_TTL", "30m")
+	t.Setenv("REPO_CACHE_COMMAND_TIMEOUT", "7m")
+
+	cache := NewRepoCacheServiceFromEnv()
+	if cache.syncTTL != 30*time.Minute {
+		t.Fatalf("syncTTL = %s, want 30m", cache.syncTTL)
+	}
+	if cache.commandTimeout != 7*time.Minute {
+		t.Fatalf("commandTimeout = %s, want 7m", cache.commandTimeout)
+	}
+}
+
 func assertRepoTreeEntries(t *testing.T, got []RepoTreeEntry, want []RepoTreeEntry) {
 	t.Helper()
 	if len(got) != len(want) {

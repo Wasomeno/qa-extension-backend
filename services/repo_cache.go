@@ -23,8 +23,8 @@ import (
 
 const (
 	defaultRepoCacheDir            = "/var/cache/qa-extension/repos"
-	defaultRepoCacheSyncTTL        = time.Minute
-	defaultRepoCacheCommandTimeout = 2 * time.Minute
+	defaultRepoCacheSyncTTL        = 15 * time.Minute
+	defaultRepoCacheCommandTimeout = 5 * time.Minute
 	defaultRepoCacheSearchLimit    = 50
 )
 
@@ -96,6 +96,15 @@ func NewRepoCacheServiceFromEnv() *RepoCacheService {
 		}
 	}
 
+	commandTimeout := defaultRepoCacheCommandTimeout
+	if raw := strings.TrimSpace(os.Getenv("REPO_CACHE_COMMAND_TIMEOUT")); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			commandTimeout = d
+		} else if seconds, err := strconv.Atoi(raw); err == nil && seconds > 0 {
+			commandTimeout = time.Duration(seconds) * time.Second
+		}
+	}
+
 	concurrency := 3
 	if raw := strings.TrimSpace(os.Getenv("REPO_CACHE_MAX_SYNC_CONCURRENCY")); raw != "" {
 		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
@@ -107,7 +116,7 @@ func NewRepoCacheServiceFromEnv() *RepoCacheService {
 		rootDir:        root,
 		enabled:        enabled,
 		syncTTL:        syncTTL,
-		commandTimeout: defaultRepoCacheCommandTimeout,
+		commandTimeout: commandTimeout,
 		searchLimit:    searchLimit,
 		syncSlots:      make(chan struct{}, concurrency),
 	}

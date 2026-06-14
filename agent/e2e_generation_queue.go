@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+	"golang.org/x/oauth2"
 )
 
 type E2EGenerationJobStatus string
@@ -80,7 +81,7 @@ func EnqueueE2EGenerationJob(ctx context.Context, input EnqueueE2EGenerationJobI
 		RepoID:        input.RepoID,
 		TestCaseIDs:   append([]string(nil), input.TestCaseIDs...),
 		AuthSessionID: input.AuthSessionID,
-		MaxAttempts:   envInt("GENERATION_JOB_MAX_ATTEMPTS", 3),
+		MaxAttempts:   generationJobMaxAttempts(),
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
@@ -253,12 +254,14 @@ func retryOrFailE2EGenerationJob(ctx context.Context, job *E2EGenerationJob, err
 	job.Error = err.Error()
 	job.UpdatedAt = now
 	job.LeaseUntil = time.Time{}
-	if job.Attempts < job.MaxAttempts {
+	if shouldRetryE2EGenerationJob(job) {
 		job.Status = E2EGenerationJobQueued
 		if saveErr := saveE2EGenerationJob(ctx, job); saveErr != nil {
 			return saveErr
 		}
 		_ = database.RedisClient.LRem(ctx, e2eGenerationProcessingKey, 0, job.ID).Err()
+		events := NewGenerationEmitter(ctx, job.ScenarioID)
+		_ = events.Progressf("Generation attempt %d/%d failed; retrying...", job.Attempts, job.MaxAttempts)
 		backoff := time.Duration(job.Attempts*job.Attempts) * time.Second
 		go func(jobID string, delay time.Duration) {
 			timer := time.NewTimer(delay)
@@ -296,6 +299,9 @@ func executeE2EGenerationJob(ctx context.Context, job *E2EGenerationJob) error {
 		_ = events.ErrorWithCode("generation_auth_failed", "Generation failed: auth session expired or is invalid", err.Error())
 		return fmt.Errorf("failed to load auth session: %w", err)
 	}
+	if err := prewarmE2ERepoCache(ctx, job, token); err != nil {
+		return err
+	}
 
 	var allAutomations []models.GeneratedAutomation
 	var allFailedIDs []string
@@ -327,6 +333,12 @@ func executeE2EGenerationJob(ctx context.Context, job *E2EGenerationJob) error {
 		}
 	}
 
+	job.GeneratedCount = len(allAutomations)
+	job.FailedCount = len(allFailedIDs)
+	if len(allAutomations) == 0 {
+		return errors.New(e2eGenerationFailureMessage(batchErrors))
+	}
+
 	scenario, err := services.GetScenarioFromRedis(ctx, job.ScenarioID)
 	if err != nil {
 		_ = events.ErrorFromErr(err)
@@ -338,28 +350,50 @@ func executeE2EGenerationJob(ctx context.Context, job *E2EGenerationJob) error {
 	setGeneratedE2ERepo(scenario, job.TestCaseIDs, job.RepoID)
 	markMissingE2EFailed(scenario, job.TestCaseIDs, allFailedIDs)
 
-	job.GeneratedCount = len(allAutomations)
-	job.FailedCount = len(allFailedIDs)
-	success := !(len(allAutomations) == 0 && len(allFailedIDs) == len(job.TestCaseIDs))
-	if success {
-		scenario.Error = ""
-	} else if len(batchErrors) > 0 {
-		scenario.Error = strings.Join(batchErrors, "; ")
-	} else {
-		scenario.Error = "failed to generate e2e tests"
-	}
+	scenario.Error = ""
 	scenario.ComputeStats()
 	if err := services.SaveScenarioToRedis(ctx, scenario); err != nil {
 		_ = events.ErrorFromErr(err)
 		return fmt.Errorf("failed to save e2e generation result: %w", err)
 	}
 
-	if success {
-		_ = events.Done("Successfully generated %d e2e automation test%s", len(allAutomations), pluralizeCount(len(allAutomations)))
+	_ = events.Done("Successfully generated %d e2e automation test%s", len(allAutomations), pluralizeCount(len(allAutomations)))
+	return nil
+}
+
+func prewarmE2ERepoCache(ctx context.Context, job *E2EGenerationJob, token *oauth2.Token) error {
+	repoID := strings.TrimSpace(job.RepoID)
+	if repoID == "" || !services.DefaultRepoCache().Enabled() {
 		return nil
 	}
-	_ = events.Error(scenario.Error)
-	return errors.New(scenario.Error)
+	if token == nil {
+		return fmt.Errorf("failed to prepare repository cache: missing GitLab token")
+	}
+
+	events := NewGenerationEmitter(ctx, job.ScenarioID)
+	_ = events.Progressf("Preparing repository cache for project %s...", repoID)
+
+	repoCtx, cancel := context.WithTimeout(ctx, generationRepoCacheTimeout())
+	defer cancel()
+	repoCtx = context.WithValue(repoCtx, "token", token)
+	if strings.TrimSpace(job.AuthSessionID) != "" {
+		repoCtx = context.WithValue(repoCtx, "session_id", job.AuthSessionID)
+	}
+	glClient, err := getGitLabClient(repoCtx)
+	if err != nil {
+		return fmt.Errorf("failed to prepare repository cache: %w", err)
+	}
+	if _, err := services.DefaultRepoCache().EnsureRepo(repoCtx, glClient, repoID, false); err != nil {
+		return fmt.Errorf("failed to prepare repository cache for project %s: %w", repoID, err)
+	}
+	return nil
+}
+
+func e2eGenerationFailureMessage(batchErrors []string) string {
+	if len(batchErrors) == 0 {
+		return "failed to generate e2e tests"
+	}
+	return strings.Join(batchErrors, "; ")
 }
 
 func markE2EJobFailed(ctx context.Context, job *E2EGenerationJob, message string) {
@@ -432,6 +466,29 @@ func e2eGenerationJobKey(jobID string) string {
 
 func generationJobLease() time.Duration {
 	return time.Duration(envInt("GENERATION_JOB_LEASE_SECONDS", 900)) * time.Second
+}
+
+func generationJobMaxAttempts() int {
+	maxAttempts := envInt("GENERATION_JOB_MAX_ATTEMPTS", 1)
+	if maxAttempts <= 0 {
+		return 1
+	}
+	return maxAttempts
+}
+
+func shouldRetryE2EGenerationJob(job *E2EGenerationJob) bool {
+	if job == nil {
+		return false
+	}
+	maxAttempts := job.MaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 1
+	}
+	return job.Attempts < maxAttempts
+}
+
+func generationRepoCacheTimeout() time.Duration {
+	return envDuration("GENERATION_REPO_CACHE_TIMEOUT", 8*time.Minute)
 }
 
 func generationGlobalInflightLimit() int {
@@ -520,6 +577,20 @@ func envInt(name string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func envDuration(name string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+		return d
+	}
+	if seconds, err := strconv.Atoi(raw); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	return fallback
 }
 
 func pluralizeCount(n int) string {
