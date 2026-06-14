@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -34,9 +35,9 @@ func TestQAToolRegistryUsesBoundedRepoTools(t *testing.T) {
 			t.Fatalf("expected repo tool %q to be registered", name)
 		}
 	}
-	for _, name := range []string{"listGitLabRepositoryTree", "getGitLabFileContent", "searchGitLabCode", "grepRepo", "findFiles", "listGitLabBranches"} {
+	for _, name := range []string{"listGitLabRepositoryTree", "getGitLabFileContent", "searchGitLabCode", "grepRepo", "findFiles", "listGitLabBranches", "listKnowledgeGraphs", "getKnowledgeGraph", "getKnowledgeGraphCoverage"} {
 		if _, ok := registry.Get(name); ok {
-			t.Fatalf("old repo tool %q should not be registered", name)
+			t.Fatalf("removed tool %q should not be registered", name)
 		}
 	}
 }
@@ -51,5 +52,11 @@ func TestGenerationToolAllowlistRejectsExecution(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("Execute returned nil error, want allowlist rejection")
+	}
+}
+
+func TestSystemInstructionDoesNotAdvertiseKnowledgeGraphs(t *testing.T) {
+	if strings.Contains(strings.ToLower(SYSTEM_INSTRUCTION), "knowledge graph") {
+		t.Fatal("system instruction should not advertise knowledge graph usage")
 	}
 }

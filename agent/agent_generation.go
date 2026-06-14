@@ -69,15 +69,12 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input AutomationAgent
 	}
 	agentCtx = context.WithValue(agentCtx, generationAllowedTestCasesContextKey{}, allowedTestCaseIDs)
 	agentCtx = context.WithValue(agentCtx, generationToolAllowlistContextKey{}, map[string]bool{
-		"repo_ls":                   true,
-		"repo_find":                 true,
-		"repo_grep":                 true,
-		"repo_read":                 true,
-		"repo_branches":             true,
-		"listKnowledgeGraphs":       true,
-		"getKnowledgeGraph":         true,
-		"getKnowledgeGraphCoverage": true,
-		"save_automation_test":      true,
+		"repo_ls":              true,
+		"repo_find":            true,
+		"repo_grep":            true,
+		"repo_read":            true,
+		"repo_branches":        true,
+		"save_automation_test": true,
 	})
 
 	// Create session

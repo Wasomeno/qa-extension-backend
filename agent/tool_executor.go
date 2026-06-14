@@ -54,10 +54,6 @@ func init() {
 	registerTypedToolExecutor("getSpecsFileBlame", getSpecsFileBlame)
 	registerTypedToolExecutor("listSpecsCommits", listSpecsCommits)
 	registerTypedToolExecutor("commitSpecsFiles", commitSpecsFiles)
-	registerTypedToolExecutor("listKnowledgeGraphs", listKnowledgeGraphs)
-	registerTypedToolExecutor("getKnowledgeGraph", getKnowledgeGraph)
-	registerTypedToolExecutor("getKnowledgeGraphCoverage", getKnowledgeGraphCoverage)
-
 	registerToolExecutor("listRecordedTests", execListRecordedTests)
 	registerToolExecutor("runRecordedTest", execRunRecordedTest)
 	registerToolExecutor("listTestScenarios", execListTestScenarios)
