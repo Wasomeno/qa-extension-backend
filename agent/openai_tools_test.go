@@ -9,7 +9,7 @@ import (
 func TestGenerationToolAllowlistHidesProjectScenarioTools(t *testing.T) {
 	registry := NewQAToolRegistry()
 	ctx := context.WithValue(context.Background(), generationToolAllowlistContextKey{}, map[string]bool{
-		"findFiles":            true,
+		"repo_find":            true,
 		"save_automation_test": true,
 	})
 
@@ -26,10 +26,25 @@ func TestGenerationToolAllowlistHidesProjectScenarioTools(t *testing.T) {
 	}
 }
 
+func TestQAToolRegistryUsesBoundedRepoTools(t *testing.T) {
+	registry := NewQAToolRegistry()
+
+	for _, name := range []string{"repo_ls", "repo_find", "repo_grep", "repo_read", "repo_branches"} {
+		if _, ok := registry.Get(name); !ok {
+			t.Fatalf("expected repo tool %q to be registered", name)
+		}
+	}
+	for _, name := range []string{"listGitLabRepositoryTree", "getGitLabFileContent", "searchGitLabCode", "grepRepo", "findFiles", "listGitLabBranches"} {
+		if _, ok := registry.Get(name); ok {
+			t.Fatalf("old repo tool %q should not be registered", name)
+		}
+	}
+}
+
 func TestGenerationToolAllowlistRejectsExecution(t *testing.T) {
 	registry := NewQAToolRegistry()
 	ctx := context.WithValue(context.Background(), generationToolAllowlistContextKey{}, map[string]bool{
-		"findFiles": true,
+		"repo_find": true,
 	})
 
 	_, err := registry.Execute(ctx, "listTestScenarios", json.RawMessage(`{}`))

@@ -299,6 +299,7 @@ func executeE2EGenerationJob(ctx context.Context, job *E2EGenerationJob) error {
 
 	var allAutomations []models.GeneratedAutomation
 	var allFailedIDs []string
+	var batchErrors []string
 	for i := 0; i < len(job.TestCaseIDs); i += e2eGenerationBatchSize {
 		end := i + e2eGenerationBatchSize
 		if end > len(job.TestCaseIDs) {
@@ -316,6 +317,7 @@ func executeE2EGenerationJob(ctx context.Context, job *E2EGenerationJob) error {
 		}, token)
 		if err != nil {
 			log.Printf("[E2EGenerationQueue] batch failed job=%s scenario=%s testCaseIds=%v: %v", job.ID, job.ScenarioID, batchIDs, err)
+			batchErrors = append(batchErrors, err.Error())
 			allFailedIDs = append(allFailedIDs, batchIDs...)
 			continue
 		}
@@ -341,6 +343,8 @@ func executeE2EGenerationJob(ctx context.Context, job *E2EGenerationJob) error {
 	success := !(len(allAutomations) == 0 && len(allFailedIDs) == len(job.TestCaseIDs))
 	if success {
 		scenario.Error = ""
+	} else if len(batchErrors) > 0 {
+		scenario.Error = strings.Join(batchErrors, "; ")
 	} else {
 		scenario.Error = "failed to generate e2e tests"
 	}

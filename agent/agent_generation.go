@@ -69,12 +69,11 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input AutomationAgent
 	}
 	agentCtx = context.WithValue(agentCtx, generationAllowedTestCasesContextKey{}, allowedTestCaseIDs)
 	agentCtx = context.WithValue(agentCtx, generationToolAllowlistContextKey{}, map[string]bool{
-		"listGitLabRepositoryTree":  true,
-		"getGitLabFileContent":      true,
-		"searchGitLabCode":          true,
-		"grepRepo":                  true,
-		"findFiles":                 true,
-		"listGitLabBranches":        true,
+		"repo_ls":                   true,
+		"repo_find":                 true,
+		"repo_grep":                 true,
+		"repo_read":                 true,
+		"repo_branches":             true,
 		"listKnowledgeGraphs":       true,
 		"getKnowledgeGraph":         true,
 		"getKnowledgeGraphCoverage": true,
@@ -101,9 +100,11 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input AutomationAgent
 	// Process events
 	var finalResponse string
 	var lastUsage *AgentUsage
+	var agentErr error
 	for event := range eventCh {
 		if event.Err != nil {
 			log.Printf("[AgentGeneration] Agent error: %v", event.Err)
+			agentErr = event.Err
 			continue
 		}
 		if event.Usage != nil {
@@ -120,6 +121,9 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input AutomationAgent
 	agentDuration := time.Since(agentStart)
 	log.Printf("[AgentGeneration] Agent execution completed")
 	log.Printf("[AgentGeneration] Final response length: %d", len(finalResponse))
+	if finalResponse == "" && agentErr != nil {
+		return nil, fmt.Errorf("agent execution failed before final response: %w", agentErr)
+	}
 
 	// Track token usage from agent execution
 	if lastUsage != nil {
@@ -227,7 +231,7 @@ func buildAgentGenerationPrompt(scenario *models.TestScenario, scenarioID string
 
 ## Your Task
 For EACH test case in the scenario below:
-1. Use the GitLab tools to explore the project repository.
+1. Use the bounded repo tools to explore the project repository mirror.
 2. Find the relevant source files (pages, components) for UI steps.
 3. Extract selectors from the UI source code.
 4. Generate a complete automation test utilizing the "save_automation_test" tool.
@@ -360,10 +364,10 @@ The following user-maintained markdown is additional factual context for automat
 
 	prompt.WriteString(`
 ## Instructions
-1. First, use listGitLabRepositoryTree with the GitLab Frontend Repo ID above to explore the project structure
-2. For each test case, identify which pages/components are relevant
-3. Use getGitLabFileContent with the GitLab Frontend Repo ID above to fetch the source files
-4. Extract Playwright-compatible selectors (CSS and XPath) from the source code
+1. Use repo_find and repo_grep with the GitLab Frontend Repo ID above to locate relevant pages, components, routes, labels, and selector attributes
+2. Use repo_ls only for small targeted directories when you need orientation
+3. Use repo_read with startLine and lineCount to inspect small line windows around relevant source; do NOT read entire files or broad directories
+4. Extract Playwright-compatible selectors (CSS and XPath) from the bounded source snippets
 5. Use save_automation_test to save each generated automation
 
 NOTE: When generating tests, the system will execute them in parallel (up to 10 at a time). Since each test runs in a completely isolated browser context, you MUST ensure that EVERY SINGLE automation includes the full setup steps (e.g. navigation and login) if required by the test case's precondition.
@@ -398,7 +402,7 @@ CRITICAL: ONLY use the exact action values listed above (navigate, click, type, 
 
 CRITICAL: The automation framework runs on Playwright. You MUST extract real CSS and XPath selectors from the source files. DO NOT invent fake selectors. DO NOT leave 'selector' or 'xpath' blank. If you cannot find a file, use semantic locators like "button:has-text('Login')" as fallback.
 
-CRITICAL BRANCH POLICY: When using listGitLabRepositoryTree or getGitLabFileContent, you MUST leave the 'ref' argument empty so the tool automatically uses the default branch. DO NOT use random branch names like 'Prod/25-06-2025'. Always leave 'ref' empty to analyze the default branch.
+CRITICAL BRANCH POLICY: When using repo_ls, repo_find, repo_grep, or repo_read, you MUST leave the 'ref' argument empty so the tool automatically uses the default branch. DO NOT use random branch names like 'Prod/25-06-2025'. Always leave 'ref' empty to analyze the default branch.
 
 Generate automations for ALL test cases now. Use the save_automation_test tool for each one.
 `)

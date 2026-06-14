@@ -42,11 +42,12 @@ func init() {
 	registerTypedToolExecutor("createIssueEvidence", createIssueEvidence)
 	registerTypedToolExecutor("getIssueLinks", getIssueLinks)
 
-	// Test tools
-	registerToolExecutor("listGitLabRepositoryTree", execListGitLabRepositoryTree)
-	registerToolExecutor("getGitLabFileContent", execGetGitLabFileContent)
-	registerToolExecutor("searchGitLabCode", execSearchGitLabCode)
-	registerToolExecutor("listGitLabBranches", execListGitLabBranches)
+	// Repository exploration tools
+	registerTypedToolExecutor("repo_ls", repoLS)
+	registerTypedToolExecutor("repo_find", repoFind)
+	registerTypedToolExecutor("repo_grep", repoGrep)
+	registerTypedToolExecutor("repo_read", repoRead)
+	registerTypedToolExecutor("repo_branches", repoBranches)
 	registerTypedToolExecutor("listSpecsTree", listSpecsTree)
 	registerTypedToolExecutor("getSpecsFile", getSpecsFile)
 	registerTypedToolExecutor("searchSpecs", searchSpecs)
