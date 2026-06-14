@@ -25,7 +25,7 @@ services:
       # Local Git repository cache for AI agent code reads/searches
       - REPO_CACHE_ENABLED=${REPO_CACHE_ENABLED:-true}
       - REPO_CACHE_DIR=/var/cache/qa-extension/repos
-      - REPO_CACHE_SYNC_TTL=${REPO_CACHE_SYNC_TTL:-60s}
+      - REPO_CACHE_SYNC_TTL=${REPO_CACHE_SYNC_TTL:-15m}
       - REPO_CACHE_MAX_SYNC_CONCURRENCY=${REPO_CACHE_MAX_SYNC_CONCURRENCY:-3}
       - REPO_CACHE_SEARCH_LIMIT=${REPO_CACHE_SEARCH_LIMIT:-50}
       # E2E generation queue and OpenAI throttling
@@ -34,7 +34,7 @@ services:
       - GENERATION_OPENAI_RPM=${GENERATION_OPENAI_RPM:-30}
       - GENERATION_OPENAI_TPM=${GENERATION_OPENAI_TPM:-120000}
       - GENERATION_JOB_LEASE_SECONDS=${GENERATION_JOB_LEASE_SECONDS:-900}
-      - GENERATION_JOB_MAX_ATTEMPTS=${GENERATION_JOB_MAX_ATTEMPTS:-3}
+      - GENERATION_JOB_MAX_ATTEMPTS=${GENERATION_JOB_MAX_ATTEMPTS:-1}
       - GENERATION_OPENAI_MAX_ATTEMPTS=${GENERATION_OPENAI_MAX_ATTEMPTS:-3}
     user: root
     expose:
@@ -53,6 +53,16 @@ services:
     restart: unless-stopped
     volumes:
       - redis_data:/data
+    networks:
+      - dokploy-network
+
+  redis-flush:
+    image: redis:7-alpine
+    profiles:
+      - maintenance
+    depends_on:
+      - redis
+    command: ["redis-cli", "-h", "redis", "-p", "6379", "-n", "0", "FLUSHDB", "ASYNC"]
     networks:
       - dokploy-network
 
