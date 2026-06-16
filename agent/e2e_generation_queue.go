@@ -36,7 +36,6 @@ const (
 	e2eGenerationJobKeyPrefix  = "generation:e2e:job:"
 	e2eGenerationInflightPref  = "generation:e2e:inflight:"
 	e2eGenerationJobTTL        = 24 * time.Hour
-	e2eGenerationBatchSize     = 5
 )
 
 type E2EGenerationJob struct {
@@ -303,43 +302,68 @@ func executeE2EGenerationJob(ctx context.Context, job *E2EGenerationJob) error {
 		return err
 	}
 
+	bulkCtx, bulkCancel := context.WithTimeout(ctx, GenerationBulkTimeout(len(job.TestCaseIDs)))
+	defer bulkCancel()
+
 	var allAutomations []models.GeneratedAutomation
 	var allFailedIDs []string
-	var batchErrors []string
-	for i := 0; i < len(job.TestCaseIDs); i += e2eGenerationBatchSize {
-		end := i + e2eGenerationBatchSize
-		if end > len(job.TestCaseIDs) {
-			end = len(job.TestCaseIDs)
+	var generationErrors []string
+	for i, testCaseID := range job.TestCaseIDs {
+		if err := bulkCtx.Err(); err != nil {
+			msg := fmt.Sprintf("bulk e2e generation deadline exceeded after %d/%d test cases: %v", i, len(job.TestCaseIDs), err)
+			log.Printf("[E2EGenerationQueue] job=%s %s", job.ID, msg)
+			generationErrors = append(generationErrors, msg)
+			allFailedIDs = append(allFailedIDs, job.TestCaseIDs[i:]...)
+			markE2EGenerationCasesFailed(context.Background(), job.ScenarioID, job.TestCaseIDs[i:], msg)
+			break
 		}
-		batchIDs := job.TestCaseIDs[i:end]
-		_ = events.Progressf("Generating e2e automations for batch %d to %d (of %d)...", i+1, end, len(job.TestCaseIDs))
 
-		result, err := RunAgentForTestGenerationWithLLM(ctx, AutomationAgentInput{
+		_ = events.Progressf("Generating e2e automation for test case %d of %d...", i+1, len(job.TestCaseIDs))
+		caseCtx, caseCancel := context.WithTimeout(bulkCtx, GenerationSingleTestTimeout())
+		result, err := RunAgentForTestGenerationWithLLM(caseCtx, AutomationAgentInput{
 			ScenarioID:      job.ScenarioID,
 			RepoID:          job.RepoID,
-			TestCaseIDs:     batchIDs,
+			TestCaseIDs:     []string{testCaseID},
 			AuthSessionID:   job.AuthSessionID,
 			GenerationJobID: job.ID,
 		}, token)
+		caseErr := caseCtx.Err()
+		caseCancel()
 		if err != nil {
-			log.Printf("[E2EGenerationQueue] batch failed job=%s scenario=%s testCaseIds=%v: %v", job.ID, job.ScenarioID, batchIDs, err)
-			batchErrors = append(batchErrors, err.Error())
-			allFailedIDs = append(allFailedIDs, batchIDs...)
+			msg := err.Error()
+			if errors.Is(caseErr, context.DeadlineExceeded) {
+				msg = fmt.Sprintf("e2e generation timed out after %s", GenerationSingleTestTimeout())
+			}
+			log.Printf("[E2EGenerationQueue] test case failed job=%s scenario=%s testCaseId=%s: %s", job.ID, job.ScenarioID, testCaseID, msg)
+			generationErrors = append(generationErrors, msg)
+			allFailedIDs = append(allFailedIDs, testCaseID)
+			markE2EGenerationCasesFailed(context.Background(), job.ScenarioID, []string{testCaseID}, msg)
 			continue
 		}
 		if result != nil {
 			allAutomations = append(allAutomations, result.Automations...)
 			allFailedIDs = append(allFailedIDs, result.FailedIDs...)
+			if len(result.FailedIDs) > 0 {
+				msg := "Failed to generate e2e automation for this test case."
+				generationErrors = append(generationErrors, fmt.Sprintf("%s: %s", strings.Join(result.FailedIDs, ","), msg))
+				markE2EGenerationCasesFailed(context.Background(), job.ScenarioID, result.FailedIDs, msg)
+			}
+			continue
 		}
+		msg := "e2e generation returned no result"
+		generationErrors = append(generationErrors, msg)
+		allFailedIDs = append(allFailedIDs, testCaseID)
+		markE2EGenerationCasesFailed(context.Background(), job.ScenarioID, []string{testCaseID}, msg)
 	}
 
 	job.GeneratedCount = len(allAutomations)
 	job.FailedCount = len(allFailedIDs)
 	if len(allAutomations) == 0 {
-		return errors.New(e2eGenerationFailureMessage(batchErrors))
+		return errors.New(e2eGenerationFailureMessage(generationErrors))
 	}
 
-	scenario, err := services.GetScenarioFromRedis(ctx, job.ScenarioID)
+	persistCtx := context.Background()
+	scenario, err := services.GetScenarioFromRedis(persistCtx, job.ScenarioID)
 	if err != nil {
 		_ = events.ErrorFromErr(err)
 		return fmt.Errorf("failed to reload scenario after e2e generation: %w", err)
@@ -352,13 +376,57 @@ func executeE2EGenerationJob(ctx context.Context, job *E2EGenerationJob) error {
 
 	scenario.Error = ""
 	scenario.ComputeStats()
-	if err := services.SaveScenarioToRedis(ctx, scenario); err != nil {
+	if err := services.SaveScenarioToRedis(persistCtx, scenario); err != nil {
 		_ = events.ErrorFromErr(err)
 		return fmt.Errorf("failed to save e2e generation result: %w", err)
 	}
 
 	_ = events.Done("Successfully generated %d e2e automation test%s", len(allAutomations), pluralizeCount(len(allAutomations)))
 	return nil
+}
+
+func markE2EGenerationCasesFailed(ctx context.Context, scenarioID string, testCaseIDs []string, message string) {
+	if len(testCaseIDs) == 0 {
+		return
+	}
+	if strings.TrimSpace(message) == "" {
+		message = "Failed to generate e2e automation for this test case."
+	}
+	_ = withScenarioLock(scenarioID, func() error {
+		scenario, err := services.GetScenarioFromRedis(ctx, scenarioID)
+		if err != nil {
+			return err
+		}
+		targets := make(map[string]bool, len(testCaseIDs))
+		for _, id := range testCaseIDs {
+			targets[id] = true
+		}
+		for si := range scenario.Sections {
+			for ti := range scenario.Sections[si].TestCases {
+				tc := &scenario.Sections[si].TestCases[ti]
+				if !targets[tc.ID] {
+					continue
+				}
+				if tc.AutomationTest == nil {
+					tc.AutomationTest = &models.AutomationTest{
+						ID:       fmt.Sprintf("auto-pending-%s-%d", tc.ID, time.Now().UnixNano()),
+						Name:     fmt.Sprintf("%s_Automation", tc.Code),
+						Category: models.AutomationCategoryE2E,
+						Status:   models.AutomationStatusFail,
+					}
+				} else {
+					tc.AutomationTest.Status = models.AutomationStatusFail
+					if tc.AutomationTest.Category == "" {
+						tc.AutomationTest.Category = models.AutomationCategoryE2E
+					}
+				}
+				tc.AutomationType = models.AutomationCategoryPtr(models.AutomationCategoryE2E)
+				tc.AutomationTest.ErrorMessage = message
+			}
+		}
+		scenario.ComputeStats()
+		return services.SaveScenarioToRedis(ctx, scenario)
+	})
 }
 
 func prewarmE2ERepoCache(ctx context.Context, job *E2EGenerationJob, token *oauth2.Token) error {
@@ -446,7 +514,9 @@ func markMissingE2EFailed(scenario *models.TestScenario, targetIDs []string, fai
 				tc.AutomationType = models.AutomationCategoryPtr(models.AutomationCategoryE2E)
 				tc.AutomationTest.Category = models.AutomationCategoryE2E
 				tc.AutomationTest.Status = models.AutomationStatusFail
-				tc.AutomationTest.ErrorMessage = "Failed to generate e2e automation for this test case."
+				if strings.TrimSpace(tc.AutomationTest.ErrorMessage) == "" {
+					tc.AutomationTest.ErrorMessage = "Failed to generate e2e automation for this test case."
+				}
 			}
 		}
 	}
@@ -485,6 +555,24 @@ func shouldRetryE2EGenerationJob(job *E2EGenerationJob) bool {
 		maxAttempts = 1
 	}
 	return job.Attempts < maxAttempts
+}
+
+// GenerationSingleTestTimeout is the maximum processing time for one generated automation test.
+func GenerationSingleTestTimeout() time.Duration {
+	return envDuration("GENERATION_SINGLE_TEST_TIMEOUT", 5*time.Minute)
+}
+
+// GenerationBulkTimeout scales the generation processing budget by target test-case count.
+func GenerationBulkTimeout(testCaseCount int) time.Duration {
+	if testCaseCount <= 0 {
+		testCaseCount = 1
+	}
+	return time.Duration(testCaseCount) * GenerationSingleTestTimeout()
+}
+
+// GenerationJobWaitTimeout includes queue/inflight/cache headroom around processing time.
+func GenerationJobWaitTimeout(testCaseCount int) time.Duration {
+	return generationJobLease() + generationRepoCacheTimeout() + GenerationBulkTimeout(testCaseCount)
 }
 
 func generationRepoCacheTimeout() time.Duration {

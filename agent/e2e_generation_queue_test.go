@@ -49,3 +49,45 @@ func TestGenerationRepoCacheTimeoutFromEnv(t *testing.T) {
 		t.Fatalf("generationRepoCacheTimeout() = %s, want 9m", got)
 	}
 }
+
+func TestGenerationSingleTestTimeoutDefaultsToFiveMinutes(t *testing.T) {
+	t.Setenv("GENERATION_SINGLE_TEST_TIMEOUT", "")
+
+	if got := GenerationSingleTestTimeout(); got != 5*time.Minute {
+		t.Fatalf("GenerationSingleTestTimeout() = %s, want 5m", got)
+	}
+}
+
+func TestGenerationSingleTestTimeoutFromEnv(t *testing.T) {
+	t.Setenv("GENERATION_SINGLE_TEST_TIMEOUT", "2m30s")
+
+	if got := GenerationSingleTestTimeout(); got != 150*time.Second {
+		t.Fatalf("GenerationSingleTestTimeout() = %s, want 2m30s", got)
+	}
+}
+
+func TestGenerationBulkTimeoutScalesByCaseCount(t *testing.T) {
+	t.Setenv("GENERATION_SINGLE_TEST_TIMEOUT", "5m")
+
+	if got := GenerationBulkTimeout(3); got != 15*time.Minute {
+		t.Fatalf("GenerationBulkTimeout(3) = %s, want 15m", got)
+	}
+}
+
+func TestGenerationBulkTimeoutNormalizesEmptyCount(t *testing.T) {
+	t.Setenv("GENERATION_SINGLE_TEST_TIMEOUT", "5m")
+
+	if got := GenerationBulkTimeout(0); got != 5*time.Minute {
+		t.Fatalf("GenerationBulkTimeout(0) = %s, want 5m", got)
+	}
+}
+
+func TestGenerationJobWaitTimeoutIncludesQueueAndCacheHeadroom(t *testing.T) {
+	t.Setenv("GENERATION_SINGLE_TEST_TIMEOUT", "5m")
+	t.Setenv("GENERATION_REPO_CACHE_TIMEOUT", "8m")
+	t.Setenv("GENERATION_JOB_LEASE_SECONDS", "900")
+
+	if got := GenerationJobWaitTimeout(2); got != 33*time.Minute {
+		t.Fatalf("GenerationJobWaitTimeout(2) = %s, want 33m", got)
+	}
+}

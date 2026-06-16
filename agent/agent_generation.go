@@ -48,10 +48,10 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input AutomationAgent
 		return nil, fmt.Errorf("failed to create agent runner: %w", err)
 	}
 
-	// Use a fresh context with a per-call timeout so a stale parent (e.g. expired
-	// appProjectScenarioSyncTimeout) never kills individual agent calls.
-	agentCtx, agentCancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer agentCancel()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	agentCtx := ctx
 	agentCtx = context.WithValue(agentCtx, "token", token)
 	if input.AuthSessionID != "" {
 		agentCtx = context.WithValue(agentCtx, "session_id", input.AuthSessionID)

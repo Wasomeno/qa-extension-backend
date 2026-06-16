@@ -87,10 +87,15 @@ func runProjectAutoGeneration(
 			log.Printf("[ProjectGeneration] failed to enqueue generation job for scenario=%s err=%v", scenario.ID, err)
 			services.SetTestCaseBatchStatus(ctx, scenario.ID, allCaseIDs, models.AutomationStatusFail)
 		} else {
-			resultJob, err := agent.WaitE2EGenerationJob(ctx, job.ID, 2*time.Second)
+			waitCtx, waitCancel := context.WithTimeout(ctx, agent.GenerationJobWaitTimeout(len(allCaseIDs)))
+			resultJob, err := agent.WaitE2EGenerationJob(waitCtx, job.ID, 2*time.Second)
+			waitTimedOut := waitCtx.Err() != nil
+			waitCancel()
 			if err != nil {
 				log.Printf("[ProjectGeneration] generation job wait failed for scenario=%s job=%s err=%v", scenario.ID, job.ID, err)
-				services.SetTestCaseBatchStatus(ctx, scenario.ID, allCaseIDs, models.AutomationStatusFail)
+				if !waitTimedOut {
+					services.SetTestCaseBatchStatus(ctx, scenario.ID, allCaseIDs, models.AutomationStatusFail)
+				}
 			} else {
 				batchGenerated = resultJob.GeneratedCount
 				generatedTestCases += resultJob.GeneratedCount
