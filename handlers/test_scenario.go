@@ -1013,11 +1013,21 @@ func GenerateScenarioAutomations(c *gin.Context) {
 				}
 			}
 		}
-		_, _, err := generateAPIAutomationPromptsForTestCases(ctx, &scenario, apiIDs, backendRepoID, backendRepoName)
+		apiPrompts, _, err := generateAPIAutomationPromptsForTestCases(ctx, &scenario, apiIDs, backendRepoID, backendRepoName)
 		if err != nil {
 			log.Printf("[GenerateScenarioAutomations] api generation failed scenario=%s err=%v", scenarioID, err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate api automation prompts"})
-			return
+			if len(e2eIDs) == 0 {
+				scenario.UpdatedAt = time.Now()
+				scenario.ComputeStats()
+				if saveErr := saveScenario(ctx, &scenario); saveErr != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save scenario"})
+					return
+				}
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate api automation prompts"})
+				return
+			}
+		} else if len(apiPrompts) > 0 {
+			log.Printf("[GenerateScenarioAutomations] generated api automation prompts scenario=%s count=%d", scenarioID, len(apiPrompts))
 		}
 	}
 
@@ -1121,6 +1131,12 @@ func generateAPIAutomationPrompts(c *gin.Context, scenario *models.TestScenario,
 	prompts, found, err := generateAPIAutomationPromptsForTestCases(ctx, scenario, req.TestCaseIDs, req.BackendRepoID, backendRepoName)
 	if err != nil {
 		log.Printf("[GenerateAPIAutomationPrompts] failed to generate API test prompt: %v", err)
+		scenario.UpdatedAt = time.Now()
+		scenario.ComputeStats()
+		if saveErr := saveScenario(ctx, scenario); saveErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save scenario"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate API test prompt"})
 		return
 	}
@@ -1158,9 +1174,27 @@ func generateAPIAutomationPromptsForTestCases(
 				continue
 			}
 			found++
-			prompt, err := services.GenerateAPITestPromptWithLLM(ctx, *scenario, *tc, backendRepoID, backendRepoName)
+			caseCtx, cancel := context.WithTimeout(ctx, agent.GenerationSingleTestTimeout())
+			prompt, err := services.GenerateAPITestPromptWithLLM(caseCtx, *scenario, *tc, backendRepoID, backendRepoName)
+			caseErr := caseCtx.Err()
+			cancel()
 			if err != nil {
-				return prompts, found, fmt.Errorf("test case %s: %w", tc.ID, err)
+				message := fmt.Sprintf("Failed to generate API automation prompt: %v", err)
+				if errors.Is(caseErr, context.DeadlineExceeded) {
+					message = fmt.Sprintf("API automation prompt generation timed out after %s", agent.GenerationSingleTestTimeout())
+				}
+				tc.AutomationType = models.AutomationCategoryPtr(models.AutomationCategoryAPI)
+				tc.AutomationTest = &models.AutomationTest{
+					ID:           fmt.Sprintf("api-prompt-%s", tc.ID),
+					Name:         fmt.Sprintf("%s API test prompt", tc.Code),
+					Category:     models.AutomationCategoryAPI,
+					Status:       models.AutomationStatusFail,
+					RepoID:       backendRepoID,
+					LastRunAt:    now,
+					ErrorMessage: message,
+				}
+				log.Printf("[GenerateAPIAutomationPrompts] test case failed scenario=%s testCase=%s err=%s", scenario.ID, tc.ID, message)
+				continue
 			}
 			tc.AutomationType = models.AutomationCategoryPtr(models.AutomationCategoryAPI)
 			tc.AutomationTest = &models.AutomationTest{
@@ -1174,6 +1208,9 @@ func generateAPIAutomationPromptsForTestCases(
 			}
 			prompts = append(prompts, gin.H{"testCaseId": tc.ID, "prompt": prompt})
 		}
+	}
+	if found > 0 && len(prompts) == 0 {
+		return prompts, found, fmt.Errorf("failed to generate API automation prompts for all selected test cases")
 	}
 	return prompts, found, nil
 }
