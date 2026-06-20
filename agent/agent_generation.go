@@ -236,11 +236,8 @@ drainLoop:
 // buildAgentGenerationPrompt creates the prompt for the agent to generate automations
 func buildAgentGenerationPrompt(scenario *models.TestScenario, scenarioID string, repoID string, targetTestCaseIDs []string) string {
 	var prompt strings.Builder
-	if repoID == "" {
-		repoID = scenario.GitLabSpecsProjectID()
-	}
 
-	prompt.WriteString(`You are tasked with generating automation tests from a test scenario. 
+	prompt.WriteString(`You are tasked with generating automation tests from a test scenario.
 
 ## Your Task
 For EACH test case in the scenario below:
@@ -256,7 +253,7 @@ For EACH test case in the scenario below:
 
 ## Handling Preconditions & Login
 - **PreConditions**: When evaluating the test case 'preCondition' (e.g. "User is logged in", "Invoice exists"), generate the necessary UI navigation steps to set this up. Do not use API calls for precondition setup.
-- **Login Flow**: If authentication is required, navigate to the Login URL provided below. Use the provided Username and Password to perform login through the UI (type credentials into the appropriate fields, click the login/submit button). Each test runs in an isolated browser context, so every automation must include its own login flow if needed.
+- **Login Flow**: If authentication is required, navigate to the provided Login URL below . Use the provided Username and Password to perform login through the UI (type credentials into the appropriate fields, click the login/submit button). Each test runs in an isolated browser context, so every automation must include its own login flow if needed.
 - **Framework Detection**: Detect if the project uses Vite ("vite.config.ts") or Next.js ("next.config.js") and pass "vite" or "nextjs" to the Framework argument of "save_automation_test".
 
 ## Allowed Actions (CRITICAL)
@@ -286,10 +283,7 @@ The automation framework only supports these action values. Do NOT use any other
 	}
 
 	prompt.WriteString(fmt.Sprintf("- Scenario ID: %s\n", scenarioID))
-	prompt.WriteString(fmt.Sprintf("- Project ID: %s\n", scenario.ProjectID))
-	prompt.WriteString(fmt.Sprintf("- GitLab Specs Repo ID: %s\n", scenario.GitLabSpecsProjectID()))
 	prompt.WriteString(fmt.Sprintf("- GitLab Frontend Repo ID: %s\n", repoID))
-	prompt.WriteString(fmt.Sprintf("- Creator ID: %d\n", scenario.CreatorID))
 	prompt.WriteString(fmt.Sprintf("- Base URL: %s\n", baseURL))
 	prompt.WriteString(fmt.Sprintf("- Login URL: %s\n", loginURL))
 	prompt.WriteString(fmt.Sprintf("- Username: %s\n", username))
