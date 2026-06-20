@@ -38,11 +38,11 @@ func TestValidateRepoPath(t *testing.T) {
 	}
 }
 
-func TestRepoCacheLocalGitReadAndSearch(t *testing.T) {
+func TestRepoCacheLocalReadAndSearch(t *testing.T) {
 	ctx := context.Background()
 	tmp := t.TempDir()
 	src := filepath.Join(tmp, "src")
-	mirror := filepath.Join(tmp, "repo.git")
+	cloneDir := filepath.Join(tmp, "clone")
 
 	runTestGit(t, "", "init", "-b", "main", src)
 	runTestGit(t, src, "config", "user.email", "test@example.com")
@@ -55,7 +55,7 @@ func TestRepoCacheLocalGitReadAndSearch(t *testing.T) {
 	}
 	runTestGit(t, src, "add", ".")
 	runTestGit(t, src, "commit", "-m", "initial")
-	runTestGit(t, "", "clone", "--bare", src, mirror)
+	runTestGit(t, "", "clone", src, cloneDir)
 
 	cache := &RepoCacheService{
 		enabled:        true,
@@ -63,23 +63,15 @@ func TestRepoCacheLocalGitReadAndSearch(t *testing.T) {
 		searchLimit:    10,
 	}
 
-	ref, err := cache.resolveRef(ctx, mirror, "main")
+	content, err := cache.readFileFromClone(cloneDir, "app/page.tsx")
 	if err != nil {
-		t.Fatalf("resolveRef: %v", err)
-	}
-	if ref != "refs/heads/main" {
-		t.Fatalf("ref = %q, want refs/heads/main", ref)
-	}
-
-	content, err := cache.showFile(ctx, mirror, ref, "app/page.tsx")
-	if err != nil {
-		t.Fatalf("showFile: %v", err)
+		t.Fatalf("readFileFromClone: %v", err)
 	}
 	if content != "export const button = 'Submit'\n" {
 		t.Fatalf("unexpected content: %q", content)
 	}
 
-	paths, err := cache.grepPaths(ctx, mirror, ref, "Submit", "app", 10)
+	paths, err := cache.grepPaths(ctx, cloneDir, "Submit", "app", 10)
 	if err != nil {
 		t.Fatalf("grepPaths: %v", err)
 	}
@@ -92,7 +84,7 @@ func TestRepoCacheListTreeReturnsChildrenForScopedPath(t *testing.T) {
 	ctx := context.Background()
 	tmp := t.TempDir()
 	src := filepath.Join(tmp, "src")
-	mirror := filepath.Join(tmp, "repo.git")
+	cloneDir := filepath.Join(tmp, "clone")
 
 	runTestGit(t, "", "init", "-b", "main", src)
 	runTestGit(t, src, "config", "user.email", "test@example.com")
@@ -108,26 +100,23 @@ func TestRepoCacheListTreeReturnsChildrenForScopedPath(t *testing.T) {
 	}
 	runTestGit(t, src, "add", ".")
 	runTestGit(t, src, "commit", "-m", "initial")
-	runTestGit(t, "", "clone", "--bare", src, mirror)
+	runTestGit(t, "", "clone", src, cloneDir)
 
+	_ = ctx
 	cache := &RepoCacheService{enabled: true, commandTimeout: time.Minute}
-	ref, err := cache.resolveRef(ctx, mirror, "main")
-	if err != nil {
-		t.Fatalf("resolveRef: %v", err)
-	}
 
-	entries, err := cache.listTreeFromMirror(ctx, mirror, ref, "docs", false)
+	entries, err := cache.listTreeFromClone(cloneDir, "docs", false)
 	if err != nil {
-		t.Fatalf("listTreeFromMirror non-recursive: %v", err)
+		t.Fatalf("listTreeFromClone non-recursive: %v", err)
 	}
 	assertRepoTreeEntries(t, entries, []RepoTreeEntry{
 		{Name: "intro.md", Path: "docs/intro.md", Type: "blob"},
 		{Name: "nested", Path: "docs/nested", Type: "tree"},
 	})
 
-	recursiveEntries, err := cache.listTreeFromMirror(ctx, mirror, ref, "docs", true)
+	recursiveEntries, err := cache.listTreeFromClone(cloneDir, "docs", true)
 	if err != nil {
-		t.Fatalf("listTreeFromMirror recursive: %v", err)
+		t.Fatalf("listTreeFromClone recursive: %v", err)
 	}
 	tree := repoEntriesToFileTree(recursiveEntries, true, "docs")
 	if len(tree) != 2 {
