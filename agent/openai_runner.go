@@ -134,6 +134,9 @@ func (r *OpenAIAgentRunner) run(ctx context.Context, req AgentRunRequest, ch cha
 
 	var lastUsage *AgentUsage
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		messages := buildOpenAIChatMessages(r.instructionRole, systemInstruction, sess.Messages)
 		resp, err := retryOpenAIChatCompletion(ctx, func() (*openAIChatResponse, error) {
 			return r.createChatCompletion(ctx, messages)

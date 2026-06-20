@@ -94,24 +94,40 @@ func RunAgentForTestGenerationWithLLM(ctx context.Context, input AutomationAgent
 		Input:     prompt,
 	})
 
-	// Process events
+	// Process events; also select on agentCtx so we don't block forever if the
+	// goroutine is stuck in a tool call that ignores context cancellation.
 	var finalResponse string
 	var lastUsage *AgentUsage
 	var agentErr error
-	for event := range eventCh {
-		if event.Err != nil {
-			log.Printf("[AgentGeneration] Agent error: %v", event.Err)
-			agentErr = event.Err
-			continue
-		}
-		if event.Usage != nil {
-			lastUsage = event.Usage
-		}
-		if event.ToolName != "" {
-			log.Printf("[AgentGeneration] Tool event: %s (%s)", event.ToolName, event.Type)
-		}
-		if event.Final {
-			finalResponse = event.Content
+drainLoop:
+	for {
+		select {
+		case event, ok := <-eventCh:
+			if !ok {
+				break drainLoop
+			}
+			if event.Err != nil {
+				log.Printf("[AgentGeneration] Agent error: %v", event.Err)
+				agentErr = event.Err
+				continue
+			}
+			if event.Usage != nil {
+				lastUsage = event.Usage
+			}
+			if event.ToolName != "" {
+				log.Printf("[AgentGeneration] Tool event: %s (%s)", event.ToolName, event.Type)
+			}
+			if event.Final {
+				finalResponse = event.Content
+			}
+		case <-agentCtx.Done():
+			agentErr = agentCtx.Err()
+			// Drain the channel in the background so the runner goroutine can exit.
+			go func() {
+				for range eventCh {
+				}
+			}()
+			break drainLoop
 		}
 	}
 

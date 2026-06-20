@@ -98,6 +98,9 @@ func isTransientOpenAIError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "429") ||
 		strings.Contains(msg, "rate limit") ||
@@ -107,8 +110,7 @@ func isTransientOpenAIError(err error) bool {
 		strings.Contains(msg, "503") ||
 		strings.Contains(msg, "504") ||
 		strings.Contains(msg, "timeout") ||
-		strings.Contains(msg, "connection reset") ||
-		errors.Is(err, context.DeadlineExceeded)
+		strings.Contains(msg, "connection reset")
 }
 
 func retryAfterDelay(err error) time.Duration {
