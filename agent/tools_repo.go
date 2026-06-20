@@ -13,8 +13,6 @@ import (
 	"unicode/utf8"
 
 	"qa-extension-backend/services"
-
-	gitlab "gitlab.com/gitlab-org/api/client-go"
 )
 
 const (
@@ -38,7 +36,6 @@ const (
 type RepoLSArgs struct {
 	ProjectID string `json:"projectId"`
 	Path      string `json:"path,omitempty"`
-	Ref       string `json:"ref,omitempty"`
 	Depth     int    `json:"depth,omitempty"`
 	Limit     int    `json:"limit,omitempty"`
 }
@@ -53,12 +50,11 @@ type RepoLSResponse struct {
 	Entries   []RepoEntry `json:"entries"`
 	Count     int         `json:"count"`
 	Truncated bool        `json:"truncated"`
-	Ref       string      `json:"ref"`
 	Path      string      `json:"path"`
 }
 
 func repoLS(ctx context.Context, args RepoLSArgs) (*RepoLSResponse, error) {
-	log.Printf("[AgentTool] repo_ls called: project=%s path=%s ref=%s depth=%d limit=%d", args.ProjectID, args.Path, args.Ref, args.Depth, args.Limit)
+	log.Printf("[AgentTool] repo_ls called: project=%s path=%s depth=%d limit=%d", args.ProjectID, args.Path, args.Depth, args.Limit)
 	if strings.TrimSpace(args.ProjectID) == "" {
 		return nil, fmt.Errorf("projectId is required")
 	}
@@ -70,10 +66,6 @@ func repoLS(ctx context.Context, args RepoLSArgs) (*RepoLSResponse, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get GitLab client: %w", err)
 	}
-	ref, err := resolveRepoToolRef(ctx, glClient, args.ProjectID, args.Ref)
-	if err != nil {
-		return nil, err
-	}
 	if err := ensureRepoMirrorForAgentTool(ctx, glClient, args.ProjectID); err != nil {
 		return nil, err
 	}
@@ -82,7 +74,7 @@ func repoLS(ctx context.Context, args RepoLSArgs) (*RepoLSResponse, error) {
 	limit := clampIntDefault(args.Limit, repoLSDefaultLimit, 1, repoLSMaxLimit)
 	path := normalizeAgentRepoPath(args.Path)
 	recursive := depth > 1
-	entries, err := services.DefaultRepoCache().ListTree(ctx, glClient, args.ProjectID, ref, path, recursive)
+	entries, err := services.DefaultRepoCache().ListTree(ctx, glClient, args.ProjectID, "", path, recursive)
 	if err != nil {
 		return nil, fmt.Errorf("repo_ls requires local repo cache: %w", err)
 	}
@@ -106,14 +98,13 @@ func repoLS(ctx context.Context, args RepoLSArgs) (*RepoLSResponse, error) {
 	}
 
 	logRepoToolResult("repo_ls", len(filtered), truncated, approxJSONBytes(filtered))
-	return &RepoLSResponse{Entries: filtered, Count: len(filtered), Truncated: truncated, Ref: ref, Path: path}, nil
+	return &RepoLSResponse{Entries: filtered, Count: len(filtered), Truncated: truncated, Path: path}, nil
 }
 
 type RepoFindArgs struct {
 	ProjectID string `json:"projectId"`
 	Pattern   string `json:"pattern"`
 	Path      string `json:"path,omitempty"`
-	Ref       string `json:"ref,omitempty"`
 	Limit     int    `json:"limit,omitempty"`
 }
 
@@ -121,11 +112,10 @@ type RepoFindResponse struct {
 	Files     []string `json:"files"`
 	Count     int      `json:"count"`
 	Truncated bool     `json:"truncated"`
-	Ref       string   `json:"ref"`
 }
 
 func repoFind(ctx context.Context, args RepoFindArgs) (*RepoFindResponse, error) {
-	log.Printf("[AgentTool] repo_find called: project=%s pattern=%q path=%s ref=%s limit=%d", args.ProjectID, args.Pattern, args.Path, args.Ref, args.Limit)
+	log.Printf("[AgentTool] repo_find called: project=%s pattern=%q path=%s limit=%d", args.ProjectID, args.Pattern, args.Path, args.Limit)
 	if strings.TrimSpace(args.ProjectID) == "" {
 		return nil, fmt.Errorf("projectId is required")
 	}
@@ -140,15 +130,11 @@ func repoFind(ctx context.Context, args RepoFindArgs) (*RepoFindResponse, error)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get GitLab client: %w", err)
 	}
-	ref, err := resolveRepoToolRef(ctx, glClient, args.ProjectID, args.Ref)
-	if err != nil {
-		return nil, err
-	}
 	if err := ensureRepoMirrorForAgentTool(ctx, glClient, args.ProjectID); err != nil {
 		return nil, err
 	}
 
-	allFiles, err := services.DefaultRepoCache().ListFiles(ctx, glClient, args.ProjectID, ref)
+	allFiles, err := services.DefaultRepoCache().ListFiles(ctx, glClient, args.ProjectID, "")
 	if err != nil {
 		return nil, fmt.Errorf("repo_find requires local repo cache: %w", err)
 	}
@@ -162,14 +148,13 @@ func repoFind(ctx context.Context, args RepoFindArgs) (*RepoFindResponse, error)
 	}
 
 	logRepoToolResult("repo_find", len(matched), truncated, approxJSONBytes(matched))
-	return &RepoFindResponse{Files: matched, Count: len(matched), Truncated: truncated, Ref: ref}, nil
+	return &RepoFindResponse{Files: matched, Count: len(matched), Truncated: truncated}, nil
 }
 
 type RepoGrepArgs struct {
 	ProjectID    string `json:"projectId"`
 	Pattern      string `json:"pattern"`
 	Path         string `json:"path,omitempty"`
-	Ref          string `json:"ref,omitempty"`
 	ContextLines int    `json:"contextLines,omitempty"`
 	FixedString  bool   `json:"fixedString,omitempty"`
 	Limit        int    `json:"limit,omitempty"`
@@ -185,11 +170,10 @@ type RepoGrepResponse struct {
 	Matches   []RepoGrepMatch `json:"matches"`
 	Count     int             `json:"count"`
 	Truncated bool            `json:"truncated"`
-	Ref       string          `json:"ref"`
 }
 
 func repoGrep(ctx context.Context, args RepoGrepArgs) (*RepoGrepResponse, error) {
-	log.Printf("[AgentTool] repo_grep called: project=%s pattern=%q path=%s ref=%s context=%d limit=%d", args.ProjectID, args.Pattern, args.Path, args.Ref, args.ContextLines, args.Limit)
+	log.Printf("[AgentTool] repo_grep called: project=%s pattern=%q path=%s context=%d limit=%d", args.ProjectID, args.Pattern, args.Path, args.ContextLines, args.Limit)
 	if strings.TrimSpace(args.ProjectID) == "" {
 		return nil, fmt.Errorf("projectId is required")
 	}
@@ -201,17 +185,13 @@ func repoGrep(ctx context.Context, args RepoGrepArgs) (*RepoGrepResponse, error)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get GitLab client: %w", err)
 	}
-	ref, err := resolveRepoToolRef(ctx, glClient, args.ProjectID, args.Ref)
-	if err != nil {
-		return nil, err
-	}
 	if err := ensureRepoMirrorForAgentTool(ctx, glClient, args.ProjectID); err != nil {
 		return nil, err
 	}
 
 	contextLines := clampIntDefault(args.ContextLines, repoGrepDefaultContext, 0, repoGrepMaxContext)
 	limit := clampIntDefault(args.Limit, repoGrepDefaultLimit, 1, repoGrepMaxLimit)
-	cached, err := services.DefaultRepoCache().GrepLines(ctx, glClient, args.ProjectID, ref, args.Pattern, args.Path, contextLines, args.FixedString)
+	cached, err := services.DefaultRepoCache().GrepLines(ctx, glClient, args.ProjectID, "", args.Pattern, args.Path, contextLines, args.FixedString)
 	if err != nil {
 		return nil, fmt.Errorf("repo_grep requires local repo cache: %w", err)
 	}
@@ -225,13 +205,12 @@ func repoGrep(ctx context.Context, args RepoGrepArgs) (*RepoGrepResponse, error)
 		matches = append(matches, RepoGrepMatch{File: m.FilePath, Line: m.Line, Content: m.Content})
 	}
 	logRepoToolResult("repo_grep", len(matches), truncated, approxJSONBytes(matches))
-	return &RepoGrepResponse{Matches: matches, Count: len(matches), Truncated: truncated, Ref: ref}, nil
+	return &RepoGrepResponse{Matches: matches, Count: len(matches), Truncated: truncated}, nil
 }
 
 type RepoReadArgs struct {
 	ProjectID string `json:"projectId"`
 	Path      string `json:"path"`
-	Ref       string `json:"ref,omitempty"`
 	StartLine int    `json:"startLine,omitempty"`
 	LineCount int    `json:"lineCount,omitempty"`
 }
@@ -244,11 +223,10 @@ type RepoReadResponse struct {
 	TotalLines int    `json:"totalLines"`
 	Size       int    `json:"size"`
 	Truncated  bool   `json:"truncated"`
-	Ref        string `json:"ref"`
 }
 
 func repoRead(ctx context.Context, args RepoReadArgs) (*RepoReadResponse, error) {
-	log.Printf("[AgentTool] repo_read called: project=%s path=%s ref=%s start=%d lines=%d", args.ProjectID, args.Path, args.Ref, args.StartLine, args.LineCount)
+	log.Printf("[AgentTool] repo_read called: project=%s path=%s start=%d lines=%d", args.ProjectID, args.Path, args.StartLine, args.LineCount)
 	if strings.TrimSpace(args.ProjectID) == "" {
 		return nil, fmt.Errorf("projectId is required")
 	}
@@ -260,15 +238,11 @@ func repoRead(ctx context.Context, args RepoReadArgs) (*RepoReadResponse, error)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get GitLab client: %w", err)
 	}
-	ref, err := resolveRepoToolRef(ctx, glClient, args.ProjectID, args.Ref)
-	if err != nil {
-		return nil, err
-	}
 	if err := ensureRepoMirrorForAgentTool(ctx, glClient, args.ProjectID); err != nil {
 		return nil, err
 	}
 
-	content, meta, err := services.DefaultRepoCache().ReadFile(ctx, glClient, args.ProjectID, ref, args.Path)
+	content, meta, err := services.DefaultRepoCache().ReadFile(ctx, glClient, args.ProjectID, "", args.Path)
 	if err != nil {
 		return nil, fmt.Errorf("repo_read requires local repo cache: %w", err)
 	}
@@ -286,7 +260,6 @@ func repoRead(ctx context.Context, args RepoReadArgs) (*RepoReadResponse, error)
 		TotalLines: window.TotalLines,
 		Size:       int(meta.Size),
 		Truncated:  window.Truncated,
-		Ref:        meta.Ref,
 	}, nil
 }
 
@@ -326,7 +299,7 @@ func repoBranches(ctx context.Context, args RepoBranchesArgs) (*RepoBranchesResp
 		return nil, fmt.Errorf("failed to get project: %w", err)
 	}
 
-	branches, err := listMirrorBranches(ctx, repo.MirrorDir, strings.TrimSpace(args.Search), project.DefaultBranch)
+	branches, err := listCloneBranches(ctx, repo.CloneDir, strings.TrimSpace(args.Search), project.DefaultBranch)
 	if err != nil {
 		return nil, err
 	}
@@ -419,27 +392,13 @@ func repoEntryDepth(basePath string, entryPath string) int {
 	return strings.Count(rel, "/") + 1
 }
 
-func resolveRepoToolRef(ctx context.Context, glClient *gitlab.Client, projectID string, requested string) (string, error) {
-	requested = strings.TrimSpace(requested)
-	if requested != "" {
-		return requested, nil
-	}
-	project, _, err := glClient.Projects.GetProject(projectID, nil)
-	if err != nil {
-		return "", fmt.Errorf("failed to get project: %w", err)
-	}
-	if project.DefaultBranch != "" {
-		return project.DefaultBranch, nil
-	}
-	return "main", nil
-}
 
-func listMirrorBranches(ctx context.Context, mirrorDir string, search string, defaultBranch string) ([]RepoBranchInfo, error) {
+func listCloneBranches(ctx context.Context, cloneDir string, search string, defaultBranch string) ([]RepoBranchInfo, error) {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(timeoutCtx, "git", "for-each-ref", "--format=%(refname:short)", "refs/heads")
-	cmd.Dir = mirrorDir
+	cmd := exec.CommandContext(timeoutCtx, "git", "for-each-ref", "--format=%(refname:short)", "refs/remotes/origin/")
+	cmd.Dir = cloneDir
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -449,8 +408,9 @@ func listMirrorBranches(ctx context.Context, mirrorDir string, search string, de
 	search = strings.ToLower(search)
 	var branches []RepoBranchInfo
 	for _, line := range strings.Split(string(out), "\n") {
-		name := strings.TrimSpace(line)
-		if name == "" {
+		// strip "origin/" prefix; skip the synthetic HEAD pointer
+		name := strings.TrimPrefix(strings.TrimSpace(line), "origin/")
+		if name == "" || name == "HEAD" {
 			continue
 		}
 		if search != "" && !strings.Contains(strings.ToLower(name), search) {
