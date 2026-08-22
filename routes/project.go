@@ -8,8 +8,6 @@ import (
 	"qa-extension-backend/client"
 	"qa-extension-backend/auth"
 	"qa-extension-backend/database"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -143,94 +141,6 @@ func GetProjectMembers(ginContext *gin.Context) {
 }
 
 
-func GetProjectIssues(ginContext *gin.Context) {
-	token := ginContext.MustGet("token").(*oauth2.Token)
-	sessionID := ginContext.MustGet("session_id").(string)
-
-	projectID := ginContext.Param("id")
-	issueIds := ginContext.Query("issue_ids")
-	labels := ginContext.Query("labels")
-	search := ginContext.Query("search")
-	assigneeId := ginContext.Query("assignee_id")
-	authorId := ginContext.Query("author_id")
-	state := ginContext.Query("state")
-
-
-	opts := &gitlab.ListProjectIssuesOptions{
-		WithLabelDetails: gitlab.Ptr(true),
-	}
-
-	if issueIds != "" {
-		splitIssueIds := strings.Split(issueIds, ",")
-		iids := make([]int64, len(splitIssueIds))
-		for i, id := range splitIssueIds {
-			parsedId, err := strconv.ParseInt(id, 10, 64)
-			if err != nil {
-				ginContext.JSON(http.StatusBadRequest, gin.H{"error": "Invalid issue IDs"})
-				ginContext.Abort()
-				return
-			}
-			iids[i] = parsedId
-		}
-		opts.IIDs = &iids
-	}
-
-	if authorId != "" {
-		id, err := strconv.ParseInt(authorId, 10, 64)
-		if err != nil {
-			ginContext.JSON(http.StatusBadRequest, gin.H{"error": "Invalid author ID"})
-			ginContext.Abort()
-			return
-		}
-		opts.AuthorID = &id
-	}
-
-	if assigneeId != "" {
-		id, err := strconv.ParseInt(assigneeId, 10, 64)
-		if err != nil {
-			ginContext.JSON(http.StatusBadRequest, gin.H{"error": "Invalid assignee ID"})
-			ginContext.Abort()
-			return
-		}
-		assigneeID := gitlab.AssigneeID(id)
-		opts.AssigneeID = assigneeID
-	}
-
-	tokenSaver := func(ctx context.Context, t *oauth2.Token) error {
-		return auth.UpdateSession(ctx, sessionID, t)
-	}
-
-	gitlabClient, err := client.GetClient(ginContext, token, tokenSaver)
-	if err != nil {
-		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create GitLab client: " + err.Error()})
-		ginContext.Abort()
-		return
-	}
-
-	if search != "" {
-		opts.Search = &search
-	}
-
-	if labels != "" {
-		splitLabels := strings.Split(labels, ",")
-		l := gitlab.LabelOptions(splitLabels)
-		opts.Labels = &l
-	}
-
-	if state != "" {
-		opts.State = &state
-	}
-
-	issues, _, err := gitlabClient.Issues.ListProjectIssues(projectID, opts)
-
-	if err != nil {
-		ginContext.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		ginContext.Abort()
-		return
-	}
-
-	ginContext.JSON(http.StatusOK, issues)
-}
 
 // GetGitLabClient is a variable to allow mocking in tests
 var GetGitLabClient = client.GetClient

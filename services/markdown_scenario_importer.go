@@ -26,61 +26,6 @@ import (
 
 const defaultTestScenarioDir = "docs/test-scenarios"
 
-// SyncSingleMarkdownScenario re-fetches and re-parses one markdown-sourced scenario from
-// its GitLab source file, preserving all existing automation tests and notes.
-func SyncSingleMarkdownScenario(ctx context.Context, glClient *gitlab.Client, project *models.AppProject, scenarioID string, actorID int) (*models.TestScenario, error) {
-	val, err := database.RedisClient.Get(ctx, fmt.Sprintf("scenario:%s", scenarioID)).Result()
-	if err != nil {
-		return nil, fmt.Errorf("scenario not found: %w", err)
-	}
-	var existing models.TestScenario
-	if err := json.Unmarshal([]byte(val), &existing); err != nil {
-		return nil, fmt.Errorf("failed to read scenario: %w", err)
-	}
-	if existing.SourceType != "markdown" || existing.SourcePath == "" {
-		return nil, fmt.Errorf("scenario was not imported from a markdown file")
-	}
-
-	specsRepoID := existing.SpecsRepoID
-	if specsRepoID == "" {
-		specsRepoID = strconv.FormatInt(project.SpecsRepoID, 10)
-	}
-
-	branch := "main"
-	if repo, _, err := glClient.Projects.GetProject(specsRepoID, nil); err == nil && repo != nil && repo.DefaultBranch != "" {
-		branch = repo.DefaultBranch
-	}
-
-	file, _, err := glClient.RepositoryFiles.GetFile(specsRepoID, existing.SourcePath, &gitlab.GetFileOptions{Ref: gitlab.Ptr(branch)})
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch %s from GitLab: %w", existing.SourcePath, err)
-	}
-	content, err := base64.StdEncoding.DecodeString(file.Content)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode content of %s: %w", existing.SourcePath, err)
-	}
-
-	scenario, ok := BuildScenarioFromMarkdown(existing.SourcePath, string(content), project, actorID)
-	if !ok {
-		return nil, fmt.Errorf("failed to parse markdown scenario at %s", existing.SourcePath)
-	}
-	scenario.ID = deterministicID("scn", project.ID, existing.SourcePath)
-	scenario.SpecsRepoID = specsRepoID
-	scenario.IssueRepoID = strconv.FormatInt(project.IssueRepoID, 10)
-	scenario.SourceType = "markdown"
-	scenario.SourcePath = existing.SourcePath
-	scenario.SourceSHA = file.BlobID
-
-	mergeExistingScenarioState(ctx, &scenario)
-
-	if err := SaveImportedScenario(ctx, &scenario); err != nil {
-		return nil, fmt.Errorf("failed to save scenario: %w", err)
-	}
-
-	log.Printf("[ScenarioSync] synced single scenario projectID=%s scenarioID=%s path=%s", project.ID, scenario.ID, existing.SourcePath)
-	return &scenario, nil
-}
-
 // SyncMarkdownTestScenarios imports the direct Markdown children from docs/test-scenarios
 // in the project's specs repo and upserts them as stored test scenarios.
 func SyncMarkdownTestScenarios(ctx context.Context, glClient *gitlab.Client, project *models.AppProject, actorID int) ([]models.TestScenario, error) {
@@ -182,20 +127,6 @@ func SyncMarkdownTestScenarios(ctx context.Context, glClient *gitlab.Client, pro
 		scenario.SourcePath = node.Path
 		scenario.SourceSHA = node.ID
 		mergeExistingScenarioState(ctx, &scenario)
-
-		// Generate a concise LLM description for new scenarios
-		if scenario.Description == "" {
-			descStart := time.Now()
-			log.Printf("[ProjectCreation] LLM description start projectID=%s scenarioID=%s path=%s title=%q contentBytes=%d", project.ID, scenario.ID, node.Path, scenario.Title, len(content))
-			if desc, err := GenerateScenarioDescription(ctx, scenario.Title, string(content)); err == nil {
-				scenario.Description = desc
-				log.Printf("[ProjectCreation] LLM description success projectID=%s scenarioID=%s path=%s duration=%s descriptionLen=%d", project.ID, scenario.ID, node.Path, time.Since(descStart), len(desc))
-			} else {
-				log.Printf("[ProjectCreation] LLM description failed projectID=%s scenarioID=%s path=%s duration=%s error=%v", project.ID, scenario.ID, node.Path, time.Since(descStart), err)
-			}
-		} else {
-			log.Printf("[ProjectCreation] LLM description skipped projectID=%s scenarioID=%s path=%s reason=description_present", project.ID, scenario.ID, node.Path)
-		}
 
 		if err := SaveImportedScenario(ctx, &scenario); err != nil {
 			log.Printf("[ProjectCreation] failed to save imported scenario projectID=%s scenarioID=%s path=%s error=%v", project.ID, scenario.ID, node.Path, err)

@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"qa-extension-backend/client"
+	gitlab "gitlab.com/gitlab-org/api/client-go"
+	"golang.org/x/oauth2"
 	"time"
 	"unicode/utf8"
 
@@ -501,4 +504,14 @@ func approxJSONBytes(value any) int {
 
 func logRepoToolResult(tool string, count int, truncated bool, bytes int) {
 	log.Printf("[AgentTool] %s returned count=%d truncated=%v approxBytes=%d", tool, count, truncated, bytes)
+}
+
+// getGitLabClient is the shared helper for the LLM agent tools that need a
+// GitLab client pulled from the per-request OAuth token in the context.
+func getGitLabClient(ctx context.Context) (*gitlab.Client, error) {
+	token, ok := ctx.Value("token").(*oauth2.Token)
+	if !ok {
+		return nil, fmt.Errorf("unauthorized: missing GitLab token in context")
+	}
+	return client.GetClient(ctx, token, nil)
 }

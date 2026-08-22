@@ -22,21 +22,17 @@ type EventEmitter struct {
 	totalSteps    int
 }
 
-// Event types - these are the only valid values
+// Event types - these are the only valid values used by the live worker.
 const (
 	EventTypeGeneration = "generation"
-	EventTypeExecution  = "execution"
-	EventTypeAgent      = "agent"
 )
 
-// Resource types - these are the only valid values
+// Resource types - these are the only valid values used by the live worker.
 const (
-	ResourceTypeScenario  = "scenario"
-	ResourceTypeRecording = "recording"
-	ResourceTypeSession   = "session"
+	ResourceTypeScenario = "scenario"
 )
 
-// Stages - standardized across all event types
+// Stages - standardized across all event types.
 const (
 	StageStart    = "start"
 	StageProgress = "progress"
@@ -47,24 +43,6 @@ const (
 // NewGenerationEmitter creates an emitter for test generation events.
 func NewGenerationEmitter(ctx context.Context, scenarioID string) *EventEmitter {
 	return newEmitter(ctx, EventTypeGeneration, ResourceTypeScenario, scenarioID)
-}
-
-// NewExecutionEmitter creates an emitter for test execution events.
-func NewExecutionEmitter(ctx context.Context, recordingID string) *EventEmitter {
-	return newEmitter(ctx, EventTypeExecution, ResourceTypeRecording, recordingID)
-}
-
-// NewAgentEmitter creates an emitter for agent tool/chat events.
-func NewAgentEmitter(ctx context.Context, sessionID string) *EventEmitter {
-	if sessionID == "" {
-		return newEmitter(ctx, EventTypeAgent, "", "")
-	}
-	return newEmitter(ctx, EventTypeAgent, ResourceTypeSession, sessionID)
-}
-
-// NewAgentToolEmitter creates an emitter for agent tool execution (no specific resource).
-func NewAgentToolEmitter(ctx context.Context) *EventEmitter {
-	return newEmitter(ctx, EventTypeAgent, "", "")
 }
 
 func newEmitter(ctx context.Context, eventType, resourceType, resourceID string) *EventEmitter {
@@ -82,11 +60,6 @@ func newEmitter(ctx context.Context, eventType, resourceType, resourceID string)
 func (e *EventEmitter) SetTotalSteps(total int) *EventEmitter {
 	e.totalSteps = total
 	return e
-}
-
-// Elapsed returns the time since the emitter was created.
-func (e *EventEmitter) Elapsed() time.Duration {
-	return time.Since(e.startTime)
 }
 
 // Start emits a start event with a formatted message.
@@ -163,44 +136,4 @@ func (e *EventEmitter) emit(stage, message string, stepInfo *database.StreamStep
 		Timestamp:     time.Now().Format(time.RFC3339),
 	}
 	return database.PublishStreamEvent(e.ctx, event)
-}
-
-// ============================================================================
-// Convenience functions for quick one-off events
-// ============================================================================
-
-// EmitQuickStart emits a simple start event without creating an emitter.
-func EmitQuickStart(ctx context.Context, eventType, resourceType, resourceID, message string) error {
-	return database.PublishStreamEvent(ctx, database.StreamEvent{
-		Type:          eventType,
-		ResourceType:  resourceType,
-		ResourceID:    resourceID,
-		Stage:         StageStart,
-		Message:       message,
-		CorrelationID: uuid.New().String(),
-	})
-}
-
-// EmitQuickDone emits a simple done event.
-func EmitQuickDone(ctx context.Context, eventType, resourceType, resourceID, message string) error {
-	return database.PublishStreamEvent(ctx, database.StreamEvent{
-		Type:          eventType,
-		ResourceType:  resourceType,
-		ResourceID:    resourceID,
-		Stage:         StageDone,
-		Message:       message,
-		CorrelationID: uuid.New().String(),
-	})
-}
-
-// EmitQuickError emits a simple error event.
-func EmitQuickError(ctx context.Context, eventType, resourceType, resourceID, message string) error {
-	return database.PublishStreamEvent(ctx, database.StreamEvent{
-		Type:          eventType,
-		ResourceType:  resourceType,
-		ResourceID:    resourceID,
-		Stage:         StageError,
-		Message:       message,
-		CorrelationID: uuid.New().String(),
-	})
 }

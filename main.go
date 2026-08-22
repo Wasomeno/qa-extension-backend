@@ -52,7 +52,6 @@ func main() {
 		<-c
 		fmt.Println("\nShutting down...")
 		workerCancel()
-		agent.StopPlaywright()
 		os.Exit(0)
 	}()
 
@@ -67,69 +66,15 @@ func main() {
 	api.GET("/auth/gitlab/callback", routes.AuthCallbackEndpoint)
 	api.GET("/auth/session", routes.GetSessionEndpoint)
 
+	// Public SSE stream - no auth required, the connection will be authenticated via session_id cookie
+	api.GET("/stream", handlers.StreamEvents)
+
 	protected := api.Group("")
 	protected.Use(middleware.AuthMiddleware())
 	{
-		protected.POST("/recordings", handlers.SaveRecording)
-		protected.GET("/recordings", handlers.ListRecordings)
-		protected.GET("/recordings/:id", handlers.GetRecording)
-		protected.PUT("/recordings/:id", handlers.UpdateRecording)
-		protected.PATCH("/recordings/:id", handlers.UpdateRecording)
-		protected.DELETE("/recordings/:id", handlers.DeleteRecording)
-		protected.POST("/recordings/bulk-delete", handlers.BulkDeleteRecordings)
-
-		protected.GET("/test-scenarios", handlers.ListScenarios)
-		protected.GET("/test-scenarios/:id", handlers.GetScenario)
-		protected.PATCH("/test-scenarios/:id", handlers.UpdateScenario)
-		protected.DELETE("/test-scenarios/:id", handlers.DeleteScenario)
-		protected.GET("/test-scenarios/:id/stream", handlers.StreamEvents)
-		protected.POST("/test-scenarios/bulk-delete", handlers.BulkDeleteScenarios)
-
-		// Project-scoped recordings and test scenarios.
-		protected.POST("/projects/:id/recordings", handlers.SaveRecording)
-		protected.GET("/projects/:id/recordings", handlers.ListRecordings)
-		protected.GET("/projects/:id/recordings/:recording_id", handlers.GetRecording)
-		protected.PUT("/projects/:id/recordings/:recording_id", handlers.UpdateRecording)
-		protected.PATCH("/projects/:id/recordings/:recording_id", handlers.UpdateRecording)
-		protected.DELETE("/projects/:id/recordings/:recording_id", handlers.DeleteRecording)
-		protected.POST("/projects/:id/recordings/bulk-delete", handlers.BulkDeleteRecordings)
-		protected.POST("/projects/:id/recordings/:recording_id/run", handlers.RunRecording)
-
-		protected.POST("/projects/:id/test-scenarios/sync", routes.SyncAppProjectTestScenarios)
-		protected.GET("/projects/:id/test-scenarios/import-status", routes.GetAppProjectTestScenarioImportStatus)
-		protected.GET("/projects/:id/test-scenarios", handlers.ListScenarios)
-		protected.GET("/projects/:id/test-scenarios/:scenario_id", handlers.GetScenario)
-		protected.PATCH("/projects/:id/test-scenarios/:scenario_id", handlers.UpdateScenario)
-		protected.DELETE("/projects/:id/test-scenarios/:scenario_id", handlers.DeleteScenario)
-		protected.POST("/projects/:id/test-scenarios/:scenario_id/automations", handlers.GenerateTestCaseAutomations)
-		protected.POST("/projects/:id/test-scenarios/:scenario_id/automations/generate", handlers.GenerateScenarioAutomations)
-		protected.POST("/projects/:id/test-scenarios/:scenario_id/sync", handlers.SyncScenario)
-		protected.GET("/projects/:id/test-scenarios/:scenario_id/stream", handlers.StreamEvents)
-		protected.POST("/projects/:id/test-scenarios/bulk-delete", handlers.BulkDeleteScenarios)
-
-		// Test case CRUD endpoints
-		protected.POST("/test-scenarios/:id/sections/:sectionId/test-cases", handlers.AddTestCase)
-		protected.PATCH("/test-scenarios/:id/sections/:sectionId/test-cases/reorder", handlers.ReorderTestCases)
-		protected.PATCH("/test-scenarios/:id/sections/:sectionId/test-cases/:tcId", handlers.UpdateTestCase)
-		protected.PATCH("/test-scenarios/:id/test-cases/:tcId/automation-category", handlers.UpdateTestCaseAutomationCategory)
-		protected.PATCH("/test-scenarios/:id/sections/:sectionId/test-cases/:tcId/automation-category", handlers.UpdateTestCaseAutomationCategory)
-		protected.POST("/test-scenarios/:id/sections/:sectionId/test-cases/:tcId/run", handlers.RunScenarioTestCase)
-		protected.POST("/projects/:id/test-scenarios/:scenario_id/sections/:sectionId/test-cases", handlers.AddTestCase)
-		protected.PATCH("/projects/:id/test-scenarios/:scenario_id/sections/:sectionId/test-cases/reorder", handlers.ReorderTestCases)
-		protected.PATCH("/projects/:id/test-scenarios/:scenario_id/sections/:sectionId/test-cases/:tcId", handlers.UpdateTestCase)
-		protected.PATCH("/projects/:id/test-scenarios/:scenario_id/test-cases/:tcId/automation-category", handlers.UpdateTestCaseAutomationCategory)
-		protected.PATCH("/projects/:id/test-scenarios/:scenario_id/sections/:sectionId/test-cases/:tcId/automation-category", handlers.UpdateTestCaseAutomationCategory)
-		protected.POST("/projects/:id/test-scenarios/:scenario_id/sections/:sectionId/test-cases/:tcId/run", handlers.RunScenarioTestCase)
-		protected.GET("/projects/:id/test-scenarios/:scenario_id/test-cases/:tcId/manual-results", handlers.ListManualTestResults)
-		protected.POST("/projects/:id/test-scenarios/:scenario_id/test-cases/:tcId/manual-results", handlers.CreateManualTestResult)
-
-		protected.POST("/recordings/:id/run", handlers.RunRecording)
-
-		// Public SSE stream - no auth required, the connection will be authenticated via session_id cookie
-		api.GET("/stream", handlers.StreamEvents)
-
 		protected.POST("/auth/logout", routes.LogoutEndpoint)
 		protected.GET("/current-user", routes.GetUser)
+
 		// GitLab repository selection and repository-specific helpers
 		protected.GET("/gitlab/projects", routes.GetProjects)
 		protected.GET("/gitlab/projects/:id", routes.GetProject)
@@ -154,32 +99,11 @@ func main() {
 		protected.POST("/projects/:id/uploads", routes.UploadFile)
 		protected.GET("/files/proxy", routes.ProxyFile)
 
-		// Project-scoped GitLab issue and board operations use the project's issueRepoId.
-		protected.GET("/projects/:id/labels", routes.WithIssueRepo(routes.GetProjectLabels))
-		protected.GET("/projects/:id/issues", routes.WithIssueRepo(routes.GetProjectIssues))
-		protected.POST("/projects/:id/issues", routes.WithIssueRepo(routes.CreateIssue))
-		protected.POST("/projects/:id/issues-with-child", routes.WithIssueRepo(routes.CreateIssueWithChild))
+		// Project-scoped FSD issues
 		protected.POST("/projects/:id/fsd-issues/preview", routes.PreviewFSDIssues)
 		protected.POST("/projects/:id/fsd-issues", routes.CreateFSDIssues)
-		protected.PUT("/projects/:id/issues/:issue_id", routes.WithIssueRepo(routes.UpdateIssue))
-		protected.GET("/projects/:id/issues/:issue_id", routes.WithIssueRepo(routes.GetIssue))
-		protected.GET("/projects/:id/issues/:issue_id/comments", routes.WithIssueRepo(routes.GetIssueComments))
-		protected.POST("/projects/:id/issues/:issue_id/comments", routes.WithIssueRepo(routes.CreateIssueComment))
-		protected.POST("/projects/:id/issues/:issue_id/evidence", routes.WithIssueRepo(routes.CreateIssueEvidence))
-		protected.PUT("/projects/:id/issues/:issue_id/comments/:note_id", routes.WithIssueRepo(routes.UpdateIssueComment))
-		protected.DELETE("/projects/:id/issues/:issue_id/comments/:note_id", routes.WithIssueRepo(routes.DeleteIssueComment))
-		protected.GET("/projects/:id/issues/:issue_id/links", routes.WithIssueRepo(routes.GetIssueLinks))
-		protected.POST("/projects/:id/issues/:issue_id/links", routes.WithIssueRepo(routes.CreateIssueLink))
-		protected.DELETE("/projects/:id/issues/:issue_id/links/:link_id", routes.WithIssueRepo(routes.DeleteIssueLink))
-		protected.POST("/projects/:id/issues/:issue_id/children", routes.WithIssueRepo(routes.CreateChildIssue))
-		protected.DELETE("/projects/:id/issues/:issue_id/children/:child_id", routes.WithIssueRepo(routes.UnlinkChildIssue))
-		protected.GET("/projects/:id/boards", routes.WithIssueRepo(routes.GetProjectBoards))
 
-		// Project-scoped knowledge graph and specs use the project's specsRepoId.
-		protected.GET("/projects/:id/knowledge-graphs", routes.WithSpecsRepo(routes.ListKnowledgeGraphs))
-		protected.GET("/projects/:id/knowledge-graph", routes.WithSpecsRepo(routes.GetKnowledgeGraph))
-		protected.GET("/projects/:id/knowledge-graph/coverage", routes.WithSpecsRepo(routes.GetKnowledgeGraphCoverage))
-		protected.DELETE("/projects/:id/knowledge-graph", routes.WithSpecsRepo(routes.InvalidateKnowledgeGraph))
+		// Project-scoped specs use the project's specsRepoId.
 		protected.GET("/projects/:id/specs/tree", routes.WithSpecsRepo(routes.GetSpecsTree))
 		protected.GET("/projects/:id/specs/file", routes.WithSpecsRepo(routes.GetSpecsFile))
 		protected.PUT("/projects/:id/specs/file", routes.WithSpecsRepo(routes.SaveSpecsFile))
@@ -190,31 +114,6 @@ func main() {
 		protected.GET("/projects/:id/specs/search", routes.WithSpecsRepo(routes.SearchSpecs))
 		protected.GET("/projects/:id/specs/blame", routes.WithSpecsRepo(routes.GetSpecsFileBlame))
 
-		protected.GET("/issues", routes.GetIssues)
-		protected.GET("/issues/:id", routes.GetIssue)
-		protected.GET("/issues/open-ai-test", routes.SmartAutoCompleteIssueDescription)
-		protected.GET("/agent/chat-sessions", routes.ListSessions)
-		protected.GET("/agent/chat-sessions/:session_id", routes.GetSession)
-		protected.DELETE("/agent/chat-sessions/:session_id", routes.DeleteSession)
-		protected.POST("/agent/chat", routes.ChatWithAgent)
-		protected.POST("/agent/fix-issue", routes.FixIssueWithAgent)
-		protected.GET("/agent/fix-sessions", routes.ListFixSessions)
-		protected.GET("/agent/fix-status/:session_id", routes.GetFixStatus)
-		protected.DELETE("/agent/fix-sessions/:session_id", routes.DeleteFixSession)
-		protected.POST("/agent/fix-sessions/:session_id/retry", routes.RetryFixSession)
-		protected.POST("/projects/:id/fix-issue", routes.FixIssueWithAgent)
-		protected.GET("/projects/:id/fix-sessions", routes.ListFixSessions)
-		protected.GET("/projects/:id/fix-sessions/:session_id", routes.GetFixStatus)
-		protected.DELETE("/projects/:id/fix-sessions/:session_id", routes.DeleteFixSession)
-		protected.POST("/projects/:id/fix-sessions/:session_id/retry", routes.RetryFixSession)
-		protected.POST("/agent/commands", routes.CreateCustomCommand)
-		protected.GET("/agent/commands", routes.ListCustomCommands)
-		protected.DELETE("/agent/commands/:id", routes.DeleteCustomCommand)
-
-		// Token Usage
-		protected.GET("/token-usage", routes.GetTokenUsage)
-		protected.GET("/token-usage/summary", routes.GetTokenUsageSummary)
-		protected.GET("/token-usage/call/:request_id", routes.GetTokenCallDetail)
 		protected.GET("/debug/notes/:project_id/:issue_iid", routes.DebugIssueNotes)
 	}
 

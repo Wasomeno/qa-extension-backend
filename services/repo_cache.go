@@ -67,7 +67,17 @@ type RepoSearchResult struct {
 	Content  string
 }
 
-var defaultRepoCache = NewRepoCacheServiceFromEnv()
+var (
+	defaultRepoCache     *RepoCacheService
+	defaultRepoCacheOnce sync.Once
+)
+
+func DefaultRepoCache() *RepoCacheService {
+	defaultRepoCacheOnce.Do(func() {
+		defaultRepoCache = NewRepoCacheServiceFromEnv()
+	})
+	return defaultRepoCache
+}
 
 func NewRepoCacheServiceFromEnv() *RepoCacheService {
 	root := strings.TrimSpace(os.Getenv("REPO_CACHE_DIR"))
@@ -120,10 +130,6 @@ func NewRepoCacheServiceFromEnv() *RepoCacheService {
 		searchLimit:    searchLimit,
 		syncSlots:      make(chan struct{}, concurrency),
 	}
-}
-
-func DefaultRepoCache() *RepoCacheService {
-	return defaultRepoCache
 }
 
 func (s *RepoCacheService) Enabled() bool {

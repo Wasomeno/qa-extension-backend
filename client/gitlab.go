@@ -2,125 +2,19 @@ package client
 
 import (
 	"context"
-	"errors"
-	"log"
-	"net/http"
-	"sort"
-	"strings"
-	"sync"
-	"time"
 
 	"qa-extension-backend/config"
-	"qa-extension-backend/internal/models"
 
 	gitlab "gitlab.com/gitlab-org/api/client-go"
 	"gitlab.com/gitlab-org/api/client-go/gitlaboauth2"
 	"golang.org/x/oauth2"
-	"github.com/sony/gobreaker"
 )
 
-// Circuit breaker names for different GitLab API operations
-const (
-	CircuitBreakerGraphQL = "gitlab-graphql"
-	CircuitBreakerBoards  = "gitlab-boards"
-	CircuitBreakerIssues  = "gitlab-issues"
-)
-
-// Circuit breaker settings for GitLab API calls
-// These prevent cascade failures when GitLab API is experiencing issues
-var (
-	// GraphQL circuit breaker - protects batched GraphQL operations
-	graphqlCircuitBreaker = gobreaker.NewCircuitBreaker(gobreaker.Settings{
-		Name:        CircuitBreakerGraphQL,
-		MaxRequests: 5,              // Max requests in half-open state before closing
-		Interval:    30 * time.Second, // Time between state checks when closed
-		Timeout:     60 * time.Second, // Time circuit stays open before half-open
-		ReadyToTrip: func(counts gobreaker.Counts) bool {
-			// Open if failure rate > 60% over 10+ requests
-			failureRatio := float64(counts.TotalFailures) / float64(counts.Requests)
-			return counts.Requests >= 10 && failureRatio >= 0.6
-		},
-		OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
-			if from == gobreaker.StateClosed && to == gobreaker.StateOpen {
-				log.Printf("[CIRCUIT BREAKER] %s: Circuit OPENED - GitLab API experiencing issues", name)
-			} else if from == gobreaker.StateOpen && to == gobreaker.StateHalfOpen {
-				log.Printf("[CIRCUIT BREAKER] %s: Circuit HALF-OPEN - Testing GitLab API recovery", name)
-			} else if from == gobreaker.StateHalfOpen && to == gobreaker.StateClosed {
-				log.Printf("[CIRCUIT BREAKER] %s: Circuit CLOSED - GitLab API recovered", name)
-			}
-		},
-	})
-
-	// Boards circuit breaker - protects board listing operations
-	boardsCircuitBreaker = gobreaker.NewCircuitBreaker(gobreaker.Settings{
-		Name:        CircuitBreakerBoards,
-		MaxRequests: 3,
-		Interval:    30 * time.Second,
-		Timeout:     60 * time.Second,
-		ReadyToTrip: func(counts gobreaker.Counts) bool {
-			failureRatio := float64(counts.TotalFailures) / float64(counts.Requests)
-			return counts.Requests >= 5 && failureRatio >= 0.5
-		},
-		OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
-			if from == gobreaker.StateClosed && to == gobreaker.StateOpen {
-				log.Printf("[CIRCUIT BREAKER] %s: Circuit OPENED", name)
-			}
-		},
-	})
-
-	// Issues circuit breaker - protects issue listing operations
-	issuesCircuitBreaker = gobreaker.NewCircuitBreaker(gobreaker.Settings{
-		Name:        CircuitBreakerIssues,
-		MaxRequests: 5,
-		Interval:    30 * time.Second,
-		Timeout:     60 * time.Second,
-		ReadyToTrip: func(counts gobreaker.Counts) bool {
-			failureRatio := float64(counts.TotalFailures) / float64(counts.Requests)
-			return counts.Requests >= 10 && failureRatio >= 0.6
-		},
-		OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
-			if from == gobreaker.StateClosed && to == gobreaker.StateOpen {
-				log.Printf("[CIRCUIT BREAKER] %s: Circuit OPENED", name)
-			}
-		},
-	})
-)
-
-// ErrCircuitOpen is returned when the circuit breaker is open
-var ErrCircuitOpen = errors.New("circuit breaker is open - GitLab API temporarily unavailable")
-
-// GetCircuitBreaker returns the circuit breaker for the given operation type
-func GetCircuitBreaker(name string) *gobreaker.CircuitBreaker {
-	switch name {
-	case CircuitBreakerGraphQL:
-		return graphqlCircuitBreaker
-	case CircuitBreakerBoards:
-		return boardsCircuitBreaker
-	case CircuitBreakerIssues:
-		return issuesCircuitBreaker
-	default:
-		return graphqlCircuitBreaker
-	}
-}
-
-// Singleton HTTP client for GraphQL requests - connection pooled for performance
-// Previously each sendGraphQLRequest created a new client, causing TCP handshake overhead
-var graphqlHTTPClient = &http.Client{
-	Timeout: 10 * time.Second,
-	Transport: &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10, // Crucial: keeps warm connections per host
-		IdleConnTimeout:     90 * time.Second,
-	},
-}
-
-// GetGraphQLHTTPClient returns the singleton GraphQL HTTP client
-func GetGraphQLHTTPClient() *http.Client {
-	return graphqlHTTPClient
-}
-
+// TokenSaver persists refreshed OAuth tokens (per-request).
 type TokenSaver func(context.Context, *oauth2.Token) error
 
+// NotifyTokenSource wraps an oauth2.TokenSource so each refresh is written
+// back through the per-request TokenSaver (session store).
 type NotifyTokenSource struct {
 	ctx    context.Context
 	source oauth2.TokenSource
@@ -138,6 +32,9 @@ func (s *NotifyTokenSource) Token() (*oauth2.Token, error) {
 	return t, nil
 }
 
+// GetClient builds an authenticated *gitlab.Client. The optional saver is
+// invoked every time the underlying token is refreshed, which is how the
+// session store stays in sync with the GitLab OAuth state.
 func GetClient(ctx context.Context, token *oauth2.Token, saver TokenSaver) (*gitlab.Client, error) {
 	baseURL := config.GetEnv("GITLAB_BASE_URL")
 	clientID := config.GetEnv("GITLAB_APPLICATION_ID")
@@ -152,12 +49,12 @@ func GetClient(ctx context.Context, token *oauth2.Token, saver TokenSaver) (*git
 		source: configMap.TokenSource(ctx, token),
 		saver:  saver,
 	}
-	
+
 	var options []gitlab.ClientOptionFunc
 	if baseURL != "" {
 		apiURL := baseURL
-		if !strings.HasSuffix(apiURL, "/api/v4") && !strings.HasSuffix(apiURL, "/api/v4/") {
-			apiURL = strings.TrimRight(apiURL, "/") + "/api/v4/"
+		if !endsWith(apiURL, "/api/v4") && !endsWith(apiURL, "/api/v4/") {
+			apiURL = trimRight(apiURL, "/") + "/api/v4/"
 		}
 		options = append(options, gitlab.WithBaseURL(apiURL))
 	}
@@ -168,76 +65,6 @@ func GetClient(ctx context.Context, token *oauth2.Token, saver TokenSaver) (*git
 	}
 
 	return client, nil
-}
-
-// ListIssuesRelatedToMe fetches issues assigned to me OR created by me.
-func ListIssuesRelatedToMe(client *gitlab.Client, opts *gitlab.ListIssuesOptions) ([]*gitlab.Issue, error) {
-	// Clone options to avoid side effects
-	assignedOpts := *opts
-	assignedOpts.Scope = gitlab.Ptr("assigned_to_me")
-	assignedOpts.ListOptions = gitlab.ListOptions{PerPage: 50}
-	assigned, _, err := client.Issues.ListIssues(&assignedOpts)
-	if err != nil {
-		return nil, err
-	}
-
-	createdOpts := *opts
-	createdOpts.Scope = gitlab.Ptr("created_by_me")
-	createdOpts.ListOptions = gitlab.ListOptions{PerPage: 50}
-	created, _, err := client.Issues.ListIssues(&createdOpts)
-	if err != nil {
-		return nil, err
-	}
-
-	// Deduplicate
-	issueMap := make(map[int64]*gitlab.Issue)
-	for _, iss := range assigned {
-		issueMap[iss.ID] = iss
-	}
-	for _, iss := range created {
-		issueMap[iss.ID] = iss
-	}
-
-	var issues []*gitlab.Issue
-	for _, iss := range issueMap {
-		issues = append(issues, iss)
-	}
-
-	return issues, nil
-}
-
-// ListProjectIssuesRelatedToMe fetches project issues assigned to me OR created by me.
-func ListProjectIssuesRelatedToMe(client *gitlab.Client, projectID interface{}, opts *gitlab.ListProjectIssuesOptions) ([]*gitlab.Issue, error) {
-	// Clone options to avoid side effects
-	assignedOpts := *opts
-	assignedOpts.Scope = gitlab.Ptr("assigned_to_me")
-	assigned, _, err := client.Issues.ListProjectIssues(projectID, &assignedOpts)
-	if err != nil {
-		return nil, err
-	}
-
-	createdOpts := *opts
-	createdOpts.Scope = gitlab.Ptr("created_by_me")
-	created, _, err := client.Issues.ListProjectIssues(projectID, &createdOpts)
-	if err != nil {
-		return nil, err
-	}
-
-	// Deduplicate
-	issueMap := make(map[int64]*gitlab.Issue)
-	for _, iss := range assigned {
-		issueMap[iss.ID] = iss
-	}
-	for _, iss := range created {
-		issueMap[iss.ID] = iss
-	}
-
-	var issues []*gitlab.Issue
-	for _, iss := range issueMap {
-		issues = append(issues, iss)
-	}
-
-	return issues, nil
 }
 
 // FetchRecentIssueNotes retrieves the last N notes for an issue.
@@ -261,157 +88,19 @@ func FetchRecentIssueNotes(client *gitlab.Client, projectID int, issueID int, li
 	return notes, nil
 }
 
-// FetchUnifiedActivities fetches the last activity note for multiple issues concurrently.
-func FetchUnifiedActivities(gitlabClient *gitlab.Client, issues []*gitlab.Issue) []models.ActivityFeedItem {
-	var wg sync.WaitGroup
-	results := make([]models.ActivityFeedItem, len(issues))
-
-	for i, issue := range issues {
-		wg.Add(1)
-		go func(idx int, iss *gitlab.Issue) {
-			defer wg.Done()
-
-			item := models.ActivityFeedItem{
-				IssueID:   int(iss.ID),
-				IssueIID:  int(iss.IID),
-				ProjectID: int(iss.ProjectID),
-				Title:     iss.Title,
-				WebURL:    iss.WebURL,
-			}
-			if iss.UpdatedAt != nil {
-				item.CreatedAt = *iss.UpdatedAt
-			}
-
-			// Parallel fetch of Notes and Label Events
-			var notes []*gitlab.Note
-			var labelEvents []*gitlab.LabelEvent
-			var nErr, lErr error
-			var subWg sync.WaitGroup
-
-			subWg.Add(2)
-			go func() {
-				defer subWg.Done()
-				notes, nErr = FetchRecentIssueNotes(gitlabClient, int(iss.ProjectID), int(iss.IID), 20)
-			}()
-			go func() {
-				defer subWg.Done()
-				opt := &gitlab.ListLabelEventsOptions{ListOptions: gitlab.ListOptions{Page: 1, PerPage: 10}}
-				labelEvents, _, lErr = gitlabClient.ResourceLabelEvents.ListIssueLabelEvents(int(iss.ProjectID), int64(iss.IID), opt)
-			}()
-			subWg.Wait()
-
-			if nErr != nil || lErr != nil {
-				log.Printf("Activity fetch failed for issue %d: notesErr=%v, labelErr=%v", iss.IID, nErr, lErr)
-				item.ActionType = "issue_update"
-				item.Description = "Activity fetch partially failed"
-			}
-
-			bestNote := SelectBestActivity(notes, labelEvents)
-
-			if bestNote != nil {
-				item.ActionType = bestNote.ActionType
-				item.ActorName = bestNote.ActorName
-				item.ActorAvatar = bestNote.ActorAvatar
-				item.Description = bestNote.Description
-				item.CreatedAt = bestNote.CreatedAt
-			} else if nErr == nil {
-				item.ActionType = "issue_update"
-				item.Description = "No recent activity"
-			}
-			
-			results[idx] = item
-		}(i, issue)
+func endsWith(s, suffix string) bool {
+	if len(s) < len(suffix) {
+		return false
 	}
-
-	wg.Wait()
-	return results
+	return s[len(s)-len(suffix):] == suffix
 }
 
-type InternalActivity struct {
-	ActionType  string
-	ActorName   string
-	ActorAvatar string
-	Description string
-	CreatedAt   time.Time
-	IsSystem    bool
-	Priority    int // Higher is better
-}
-
-func SelectBestActivity(notes []*gitlab.Note, labels []*gitlab.LabelEvent) *InternalActivity {
-	var activities []InternalActivity
-
-	for _, n := range notes {
-		act := InternalActivity{
-			ActionType:  "comment",
-			ActorName:   n.Author.Name,
-			ActorAvatar: n.Author.AvatarURL,
-			Description: n.Body,
-			CreatedAt:   *n.CreatedAt,
-			IsSystem:    n.System,
-			Priority:    1,
-		}
-		if n.System {
-			act.ActionType = "system_note"
-			act.Priority = 0
-			if isImportantSystemNote(n) {
-				act.Priority = 2
-			}
-		} else {
-			act.Priority = 3 // User comment
-		}
-		activities = append(activities, act)
+func trimRight(s, cut string) string {
+	if len(s) < len(cut) {
+		return s
 	}
-
-	for _, l := range labels {
-		desc := "added label " + l.Label.Name
-		if l.Action == "remove" {
-			desc = "removed label " + l.Label.Name
-		}
-		act := InternalActivity{
-			ActionType:  "label_event",
-			ActorName:   l.User.Name,
-			ActorAvatar: l.User.AvatarURL,
-			Description: desc,
-			CreatedAt:   *l.CreatedAt,
-			IsSystem:    true,
-			Priority:    2, // Label events are important
-		}
-		activities = append(activities, act)
+	if s[len(s)-len(cut):] == cut {
+		return s[:len(s)-len(cut)]
 	}
-
-	if len(activities) == 0 {
-		return nil
-	}
-
-	// Sort by priority (desc) then by time (desc)
-	sort.Slice(activities, func(i, j int) bool {
-		if activities[i].Priority != activities[j].Priority {
-			return activities[i].Priority > activities[j].Priority
-		}
-		return activities[i].CreatedAt.After(activities[j].CreatedAt)
-	})
-
-	return &activities[0]
-}
-
-func isImportantSystemNote(note *gitlab.Note) bool {
-	body := strings.ToLower(note.Body)
-	// Check for closure/reopening
-	if strings.Contains(body, "closed") || strings.Contains(body, "reopened") {
-		return true
-	}
-	// Check for label changes
-	// GitLab format: "added ~LabelName label" or "changed label from X to Y"
-	if strings.Contains(body, "label") {
-		return true
-	}
-	// Check for mentions
-	if strings.Contains(body, "mentioned in") {
-		return true
-	}
-	// Check for title changes
-	if strings.Contains(body, "changed title") {
-		return true
-	}
-	return false
+	return s
 }

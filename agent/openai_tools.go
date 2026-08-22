@@ -82,38 +82,18 @@ func toolAllowedInContext(ctx context.Context, name string) bool {
 	return allowlist[name]
 }
 
+// NewQAToolRegistry exposes the tools that the background test-generation
+// worker actually invokes. The historical LLM toolkit (app/specs/issue CRUD,
+// recordings, scenarios, GitLab writes, etc.) was retired together with the
+// scenario/recording/chat endpoints and no longer needs to be wired in here.
 func NewQAToolRegistry() *ToolRegistry {
 	r := NewToolRegistry()
 
-	registerTypedTool(r, "listGitLabProjects", "List available GitLab projects. Call this without arguments to see all projects the authenticated user can access.", listGitLabProjects)
-	registerTypedTool(r, "listAppProjects", "List QA app projects. App projects connect an issue GitLab repo, a specs GitLab repo, test scenarios, recordings, and fix sessions.", listAppProjects)
-	registerTypedTool(r, "getAppProject", "Get one QA app project by appProjectId, including issueRepoId, specsRepoId, and test context.", getAppProject)
-	registerTypedTool(r, "getProjectTestContext", "Read the project-level testing context markdown for an app project.", getProjectTestContext)
-	registerTypedTool(r, "updateProjectTestContext", "Replace the project-level testing context markdown for an app project.", updateProjectTestContext)
-	registerTypedTool(r, "createGitLabIssue", "Create a new issue in a raw GitLab issue repo. Use an app project's issueRepoId when working inside a QA app project.", createGitLabIssue)
-	registerTypedTool(r, "listGitLabIssues", "List issues from a raw GitLab project/repo. Use an app project's issueRepoId for project-scoped issue work.", listGitLabIssues)
-	registerTypedTool(r, "listAllGitLabIssues", "List all GitLab issues assigned to or created by the authenticated user across all projects.", listAllGitLabIssues)
-	registerTypedTool(r, "updateGitLabIssue", "Update an existing GitLab issue title, description, or state in a raw GitLab issue repo.", updateGitLabIssue)
-	registerTypedTool(r, "getIssueComments", "List comments/notes for a GitLab issue IID in a raw GitLab issue repo.", getIssueComments)
-	registerTypedTool(r, "createIssueComment", "Create a comment/note on a GitLab issue IID in a raw GitLab issue repo.", createIssueComment)
-	registerTypedTool(r, "createIssueEvidence", "Create an evidence-formatted comment on a GitLab issue IID.", createIssueEvidence)
-	registerTypedTool(r, "getIssueLinks", "List issue relations/links for a GitLab issue IID.", getIssueLinks)
 	registerTypedTool(r, "repo_ls", "List bounded files and directories from a repository mirror. Use path, shallow depth, and limits to navigate incrementally.", repoLS)
 	registerTypedTool(r, "repo_find", "Find repository files by path substring or glob pattern using the local mirror. Returns bounded file paths only.", repoFind)
 	registerTypedTool(r, "repo_grep", "Search repository text using the local mirror. Returns bounded matching lines with optional surrounding context.", repoGrep)
 	registerTypedTool(r, "repo_read", "Read a bounded line window from one repository file. Use startLine and lineCount instead of reading full files.", repoRead)
 	registerTypedTool(r, "repo_branches", "List bounded branch names from the repository mirror.", repoBranches)
-	registerTypedTool(r, "listSpecsTree", "List files and folders from an app project's specs repo. Uses appProjectId and resolves specsRepoId automatically.", listSpecsTree)
-	registerTypedTool(r, "getSpecsFile", "Read a file from an app project's specs repo. Uses appProjectId and resolves specsRepoId automatically.", getSpecsFile)
-	registerTypedTool(r, "searchSpecs", "Search file names/paths in an app project's specs repo tree.", searchSpecs)
-	registerTypedTool(r, "getSpecsFileBlame", "Get Git blame information for a specs repo file.", getSpecsFileBlame)
-	registerTypedTool(r, "listSpecsCommits", "List commit history for an app project's specs repo, optionally scoped to a file path.", listSpecsCommits)
-	registerTypedTool(r, "commitSpecsFiles", "Commit one or more create/update/delete/move file actions to an app project's specs repo.", commitSpecsFiles)
-	registerTypedTool(r, "listRecordedTests", "List available recorded automation tests. Optionally filter by projectID/app project or issueID.", listRecordedTests)
-	registerTypedTool(r, "runRecordedTest", "Run a recorded automation test by ID. Optional overrides can replace input values.", runRecordedTest)
-	registerTypedTool(r, "listTestScenarios", "List imported test scenarios for one QA app project. Requires appProjectId; use listAppProjects or getAppProject first if the project ID is unknown. Returns compact summaries, not full test case bodies.", listTestScenarios)
-	registerTypedTool(r, "runTestScenario", "Run generated automation tests for a specific scenario. Supports optional sheet filtering and chained execution.", runTestScenario)
-	registerTypedTool(r, "runScenarioTestCase", "Run one generated automation test case from a scenario.", runScenarioTestCase)
 	registerTypedTool(r, "save_automation_test", "Save a generated E2E automation test into a test scenario. Use one call per test case with complete steps, selectors, selectorCandidates, xpath, xpathCandidates, and elementHints.", saveAutomation)
 	return r
 }
@@ -213,7 +193,7 @@ func schemaForField(t reflect.Type) map[string]any {
 
 func jsonRawMessageFromString(s string) json.RawMessage {
 	if strings.TrimSpace(s) == "" {
-		return json.RawMessage(`{}`)
+		return json.RawMessage("{}")
 	}
 	return json.RawMessage(s)
 }

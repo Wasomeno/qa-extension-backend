@@ -261,49 +261,6 @@ func UpdateAppProject(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"project": project.ToResponse(repoNames.issue, repoNames.specs, repoNames.backend, repoNames.frontend), "scenariosImported": importedCount})
 }
 
-func SyncAppProjectTestScenarios(c *gin.Context) {
-	project, err := services.GetAppProject(c.Request.Context(), c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
-		return
-	}
-	glClient, ok := gitLabClientFromContext(c)
-	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
-	}
-	actorID, _ := identity.GetCurrentUserID(c)
-	status, err := services.BeginScenarioImportSyncing(c.Request.Context(), project.ID, "Syncing specs repository")
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	projectCopy := *project
-	go func() {
-		ctx := context.Background()
-		if _, err := services.SyncMarkdownTestScenarios(ctx, glClient, &projectCopy, actorID); err != nil {
-			log.Printf("[ProjectScenarioSync] async import failed projectID=%s error=%v", projectCopy.ID, err)
-		}
-	}()
-
-	c.JSON(http.StatusAccepted, gin.H{"started": true, "status": status})
-}
-
-func GetAppProjectTestScenarioImportStatus(c *gin.Context) {
-	project, err := services.GetAppProject(c.Request.Context(), c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
-		return
-	}
-	status, err := services.GetScenarioImportStatus(c.Request.Context(), project.ID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, status)
-}
-
 func gitLabClientFromContext(c *gin.Context) (*gitlab.Client, bool) {
 	token, ok := c.Get("token")
 	if !ok {
@@ -340,10 +297,6 @@ func ListAppProjectActivity(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"activity": activity})
-}
-
-func WithIssueRepo(handler gin.HandlerFunc) gin.HandlerFunc {
-	return withAppProjectRepo(handler, true)
 }
 
 func WithSpecsRepo(handler gin.HandlerFunc) gin.HandlerFunc {
