@@ -6,10 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	gitlab "gitlab.com/gitlab-org/api/client-go"
+	"golang.org/x/sync/errgroup"
 )
 
 // SpecsService provides GitLab-backed operations for managing spec files
@@ -24,10 +28,11 @@ func NewSpecsService() *SpecsService {
 
 // FileTreeNode represents a node in the specs file tree.
 type FileTreeNode struct {
-	Path     string          `json:"path"`
-	Name     string          `json:"name"`
-	Type     string          `json:"type"` // "tree" or "blob"
-	Children []*FileTreeNode `json:"children,omitempty"`
+	Path       string          `json:"path"`
+	Name       string          `json:"name"`
+	Type       string          `json:"type"` // "tree" or "blob"
+	Children   []*FileTreeNode `json:"children,omitempty"`
+	LastCommit *SpecCommit     `json:"lastCommit,omitempty"`
 }
 
 // FileContent holds the content of a spec file.
@@ -437,13 +442,239 @@ func (s *SpecsService) GetCommitDetail(client *gitlab.Client, projectID string, 
 
 // --- Search ---
 
-// SearchTree searches for files matching a query in the tree.
+// SearchTree searches for files matching a query in the tree (path/name).
 func (s *SpecsService) SearchTree(ctx context.Context, client *gitlab.Client, projectID string, path string, ref string, query string) ([]*FileTreeNode, error) {
 	nodes, err := s.GetFileTree(ctx, client, projectID, path, ref, true)
 	if err != nil {
 		return nil, err
 	}
 	return filterTree(nodes, query), nil
+}
+
+// SearchResult is a tree hit that may include a content-match preview.
+type SearchResult struct {
+	*FileTreeNode
+	MatchLine    int    `json:"matchLine,omitempty"`
+	MatchPreview string `json:"matchPreview,omitempty"`
+	MatchSource  string `json:"matchSource,omitempty"` // "path" | "content"
+}
+
+// SearchSpecs combines path/name tree filtering with GitLab blob search when available.
+// degraded is true when blob search failed and only path matches are returned.
+func (s *SpecsService) SearchSpecs(ctx context.Context, client *gitlab.Client, projectID string, path string, ref string, query string) (results []*SearchResult, degraded bool, err error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, false, fmt.Errorf("query is required")
+	}
+
+	pathHits, err := s.SearchTree(ctx, client, projectID, path, ref, query)
+	if err != nil {
+		return nil, false, err
+	}
+
+	seen := map[string]*SearchResult{}
+	for _, n := range pathHits {
+		if n == nil || n.Type != "blob" {
+			continue
+		}
+		seen[n.Path] = &SearchResult{FileTreeNode: n, MatchSource: "path"}
+	}
+
+	blobHits, blobErr := s.searchBlobs(ctx, client, projectID, path, ref, query)
+	if blobErr != nil {
+		log.Printf("[specs] blob search degraded for project %s: %v", projectID, blobErr)
+		degraded = true
+	} else {
+		for _, hit := range blobHits {
+			if existing, ok := seen[hit.Path]; ok {
+				if existing.MatchPreview == "" && hit.MatchPreview != "" {
+					existing.MatchLine = hit.MatchLine
+					existing.MatchPreview = hit.MatchPreview
+					existing.MatchSource = "content"
+				}
+				continue
+			}
+			seen[hit.Path] = hit
+		}
+	}
+
+	out := make([]*SearchResult, 0, len(seen))
+	for _, r := range seen {
+		out = append(out, r)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Path < out[j].Path
+	})
+	return out, degraded, nil
+}
+
+func (s *SpecsService) searchBlobs(ctx context.Context, client *gitlab.Client, projectID string, path string, ref string, query string) ([]*SearchResult, error) {
+	// GitLab project search with scope=blobs (content search).
+	// client-go exposes this as Search.BlobsByProject in recent versions.
+	opts := &gitlab.SearchOptions{
+		ListOptions: gitlab.ListOptions{PerPage: 50, Page: 1},
+	}
+	if strings.TrimSpace(ref) != "" {
+		opts.Ref = gitlab.Ptr(ref)
+	}
+
+	blobs, _, err := client.Search.BlobsByProject(projectID, query, opts, gitlab.WithContext(ctx))
+	if err != nil {
+		return nil, err
+	}
+
+	base := strings.Trim(strings.TrimSpace(path), "/")
+	out := make([]*SearchResult, 0, len(blobs))
+	for _, b := range blobs {
+		if b == nil {
+			continue
+		}
+		filePath := strings.TrimSpace(b.Filename)
+		if filePath == "" {
+			filePath = strings.TrimSpace(b.Path)
+		}
+		if filePath == "" {
+			continue
+		}
+		if base != "" && !strings.HasPrefix(filePath, base+"/") && filePath != base {
+			continue
+		}
+		name := filepath.Base(filePath)
+		preview := strings.TrimSpace(b.Data)
+		if len(preview) > 200 {
+			preview = preview[:200] + "…"
+		}
+		out = append(out, &SearchResult{
+			FileTreeNode: &FileTreeNode{Path: filePath, Name: name, Type: "blob"},
+			MatchLine:    int(b.Startline),
+			MatchPreview: preview,
+			MatchSource:  "content",
+		})
+	}
+	return out, nil
+}
+
+const (
+	specsEnrichMaxBlobs   = 100
+	specsEnrichConcurrency = 8
+	specsEnrichCacheTTL   = 10 * time.Minute
+)
+
+// EnrichTreeLastCommits attaches last-commit metadata to blob nodes (spec-like files).
+// Caps work to specsEnrichMaxBlobs and uses a short in-process cache.
+func (s *SpecsService) EnrichTreeLastCommits(ctx context.Context, client *gitlab.Client, projectID string, ref string, nodes []*FileTreeNode) {
+	if ref == "" {
+		ref = "main"
+	}
+	blobs := collectSpecBlobs(nodes)
+	if len(blobs) > specsEnrichMaxBlobs {
+		blobs = blobs[:specsEnrichMaxBlobs]
+	}
+	if len(blobs) == 0 {
+		return
+	}
+
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(specsEnrichConcurrency)
+	var mu sync.Mutex
+
+	for _, node := range blobs {
+		node := node
+		g.Go(func() error {
+			commit, err := s.lastCommitForPath(gctx, client, projectID, node.Path, ref)
+			if err != nil || commit == nil {
+				return nil
+			}
+			mu.Lock()
+			node.LastCommit = commit
+			mu.Unlock()
+			return nil
+		})
+	}
+	_ = g.Wait()
+}
+
+func collectSpecBlobs(nodes []*FileTreeNode) []*FileTreeNode {
+	var out []*FileTreeNode
+	var walk func([]*FileTreeNode)
+	walk = func(list []*FileTreeNode) {
+		for _, n := range list {
+			if n == nil {
+				continue
+			}
+			if n.Type == "blob" && isSpecLikePath(n.Path) {
+				out = append(out, n)
+			}
+			if len(n.Children) > 0 {
+				walk(n.Children)
+			}
+		}
+	}
+	walk(nodes)
+	return out
+}
+
+func isSpecLikePath(path string) bool {
+	lower := strings.ToLower(path)
+	return strings.HasSuffix(lower, ".md") ||
+		strings.HasSuffix(lower, ".feature") ||
+		strings.HasSuffix(lower, ".gherkin")
+}
+
+var (
+	specsMetaCache   = map[string]specsMetaCacheEntry{}
+	specsMetaCacheMu sync.Mutex
+)
+
+type specsMetaCacheEntry struct {
+	commit    *SpecCommit
+	expiresAt time.Time
+}
+
+func (s *SpecsService) lastCommitForPath(ctx context.Context, client *gitlab.Client, projectID, path, ref string) (*SpecCommit, error) {
+	cacheKey := projectID + "|" + ref + "|" + path
+	specsMetaCacheMu.Lock()
+	if ent, ok := specsMetaCache[cacheKey]; ok && time.Now().Before(ent.expiresAt) {
+		commit := ent.commit
+		specsMetaCacheMu.Unlock()
+		return commit, nil
+	}
+	specsMetaCacheMu.Unlock()
+
+	opts := &gitlab.ListCommitsOptions{
+		Path:    gitlab.Ptr(path),
+		RefName: gitlab.Ptr(ref),
+		ListOptions: gitlab.ListOptions{
+			PerPage: 1,
+			Page:    1,
+		},
+	}
+	commits, _, err := client.Commits.ListCommits(projectID, opts, gitlab.WithContext(ctx))
+	if err != nil {
+		return nil, err
+	}
+	if len(commits) == 0 {
+		specsMetaCacheMu.Lock()
+		specsMetaCache[cacheKey] = specsMetaCacheEntry{commit: nil, expiresAt: time.Now().Add(specsEnrichCacheTTL)}
+		specsMetaCacheMu.Unlock()
+		return nil, nil
+	}
+	c := commits[0]
+	out := &SpecCommit{
+		Hash:        c.ID,
+		ShortHash:   c.ShortID,
+		Message:     strings.TrimSpace(c.Title),
+		AuthorName:  c.AuthorName,
+		AuthorEmail: c.AuthorEmail,
+		WebURL:      c.WebURL,
+	}
+	if c.CommittedDate != nil {
+		out.CommittedDate = c.CommittedDate.Format(time.RFC3339)
+	}
+	specsMetaCacheMu.Lock()
+	specsMetaCache[cacheKey] = specsMetaCacheEntry{commit: out, expiresAt: time.Now().Add(specsEnrichCacheTTL)}
+	specsMetaCacheMu.Unlock()
+	return out, nil
 }
 
 func repoEntriesToFileTree(entries []RepoTreeEntry, recursive bool, basePath string) []*FileTreeNode {

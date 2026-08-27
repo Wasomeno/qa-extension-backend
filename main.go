@@ -66,12 +66,14 @@ func main() {
 	api.GET("/auth/gitlab/callback", routes.AuthCallbackEndpoint)
 	api.GET("/auth/session", routes.GetSessionEndpoint)
 
-	// Public SSE stream - no auth required, the connection will be authenticated via session_id cookie
-	api.GET("/stream", handlers.StreamEvents)
-
 	protected := api.Group("")
 	protected.Use(middleware.AuthMiddleware())
 	{
+		// The browser EventSource API cannot send custom headers, so the
+		// authenticated session may be supplied as a query parameter. Keep the
+		// stream behind the same middleware as every other app endpoint.
+		protected.GET("/stream", handlers.StreamEvents)
+
 		protected.POST("/auth/logout", routes.LogoutEndpoint)
 		protected.GET("/current-user", routes.GetUser)
 
@@ -94,6 +96,7 @@ func main() {
 		protected.DELETE("/projects/:id", routes.DeleteAppProject)
 		protected.GET("/projects/:id/activity", routes.ListAppProjectActivity)
 		protected.GET("/projects/:id/dashboard", routes.GetProjectDashboard)
+		protected.GET("/projects/:id/boards", routes.WithIssueRepo(routes.GetProjectBoards))
 
 		// File uploads
 		protected.POST("/projects/:id/uploads", routes.UploadFile)

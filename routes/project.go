@@ -200,8 +200,12 @@ func GetProjectBoards(ginContext *gin.Context) {
 	if cachedData, ok := database.GetCachedBoardResponse(ctx, projectID); ok {
 		var cached []*BoardResponse
 		if err := json.Unmarshal(cachedData, &cached); err == nil {
+			summary := ginContext.Query("summary") == "1" || ginContext.Query("summary") == "true"
+			if summary {
+				cached = summarizeBoards(cached, 3)
+			}
 			ginContext.Header("X-Cache", "HIT")
-			ginContext.JSON(http.StatusOK, gin.H{"boards": cached})
+			ginContext.JSON(http.StatusOK, gin.H{"boards": cached, "summary": summary})
 			return
 		}
 	}
@@ -432,16 +436,57 @@ func GetProjectBoards(ginContext *gin.Context) {
 		})
 	}
 
-	// Cache the response asynchronously
-	go func() {
-		if data, err := json.Marshal(boardResponses); err == nil {
-			database.SetCachedBoardResponse(context.Background(), projectID, data)
-		}
-	}()
+	summary := ginContext.Query("summary") == "1" || ginContext.Query("summary") == "true"
+	if summary {
+		boardResponses = summarizeBoards(boardResponses, 3)
+	}
+
+	// Cache the response asynchronously (full payload only — summary is cheap to derive)
+	if !summary {
+		go func() {
+			if data, err := json.Marshal(boardResponses); err == nil {
+				database.SetCachedBoardResponse(context.Background(), projectID, data)
+			}
+		}()
+	}
 
 	ginContext.JSON(http.StatusOK, gin.H{
-		"boards": boardResponses,
+		"boards":  boardResponses,
+		"summary": summary,
 	})
+}
+
+// summarizeBoards keeps the first board and truncates each list to maxIssues titles.
+func summarizeBoards(boards []*BoardResponse, maxIssues int) []*BoardResponse {
+	if len(boards) == 0 {
+		return boards
+	}
+	if maxIssues <= 0 {
+		maxIssues = 3
+	}
+	src := boards[0]
+	out := &BoardResponse{
+		ID:    src.ID,
+		Name:  src.Name,
+		Lists: make([]*BoardListResponse, 0, len(src.Lists)),
+	}
+	for _, list := range src.Lists {
+		if list == nil {
+			continue
+		}
+		trimmed := &BoardListResponse{
+			ID:       list.ID,
+			Label:    list.Label,
+			Position: list.Position,
+		}
+		if len(list.Issues) > maxIssues {
+			trimmed.Issues = list.Issues[:maxIssues]
+		} else {
+			trimmed.Issues = list.Issues
+		}
+		out.Lists = append(out.Lists, trimmed)
+	}
+	return []*BoardResponse{out}
 }
 
 func GetProjectBranches(ginContext *gin.Context) {

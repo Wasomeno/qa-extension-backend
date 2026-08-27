@@ -6,9 +6,13 @@ import (
 	"net/http"
 	"qa-extension-backend/auth"
 	"qa-extension-backend/client"
+	"qa-extension-backend/identity"
+	"qa-extension-backend/internal/models"
 	"qa-extension-backend/services"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 )
 
@@ -39,11 +43,16 @@ func GetSpecsTree(c *gin.Context) {
 	specsPath := c.Query("path")
 	ref := c.Query("ref")
 	recursive := c.Query("recursive") == "true"
+	enrich := c.Query("enrich") == "1" || c.Query("enrich") == "true"
 
 	tree, err := specsService.GetFileTree(c, glClient, projectID, specsPath, ref, recursive)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+
+	if enrich {
+		specsService.EnrichTreeLastCommits(c.Request.Context(), glClient, projectID, ref, tree)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"tree": tree})
@@ -140,6 +149,7 @@ func SaveSpecsFile(c *gin.Context) {
 		return
 	}
 
+	recordSpecActivity(c, req.Path, req.Action)
 	c.JSON(http.StatusOK, gin.H{"success": true, "path": req.Path, "action": req.Action})
 }
 
@@ -178,6 +188,7 @@ func DeleteSpecsFile(c *gin.Context) {
 		return
 	}
 
+	recordSpecActivity(c, req.Path, "delete")
 	c.JSON(http.StatusOK, gin.H{"success": true, "path": req.Path})
 }
 
@@ -216,7 +227,37 @@ func CommitSpecsFiles(c *gin.Context) {
 		return
 	}
 
+	pathHint := ""
+	if len(req.Actions) > 0 {
+		pathHint = req.Actions[0].FilePath
+	}
+	recordSpecActivity(c, pathHint, "commit")
 	c.JSON(http.StatusOK, gin.H{"success": true, "commit": commit})
+}
+
+// recordSpecActivity writes a project audit row when the handler was mounted
+// via WithSpecsRepo (app_project is on the gin context).
+func recordSpecActivity(c *gin.Context, path, action string) {
+	raw, ok := c.Get("app_project")
+	if !ok {
+		return
+	}
+	project, ok := raw.(*models.AppProject)
+	if !ok || project == nil {
+		return
+	}
+	actorID, _ := identity.GetCurrentUserID(c)
+	_ = services.AppendAppProjectActivity(c.Request.Context(), project.ID, models.AppProjectActivity{
+		ID:        uuid.NewString(),
+		ProjectID: project.ID,
+		ActorID:   actorID,
+		Action:    models.AppProjectActivitySpecSaved,
+		Changes: map[string]models.AppProjectChange{
+			"path":   {New: path},
+			"action": {New: action},
+		},
+		CreatedAt: time.Now().UTC(),
+	})
 }
 
 // --- GET /projects/:id/specs/commits ---
@@ -309,13 +350,25 @@ func SearchSpecs(c *gin.Context) {
 	specsPath := c.Query("path")
 	ref := c.Query("ref")
 
-	results, err := specsService.SearchTree(c, glClient, projectID, specsPath, ref, query)
+	results, degraded, err := specsService.SearchSpecs(c.Request.Context(), glClient, projectID, specsPath, ref, query)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"results": results})
+	// Keep a flat tree-compatible list for older clients while exposing rich hits.
+	nodes := make([]*services.FileTreeNode, 0, len(results))
+	for _, r := range results {
+		if r != nil && r.FileTreeNode != nil {
+			nodes = append(nodes, r.FileTreeNode)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"results":  nodes,
+		"hits":     results,
+		"degraded": degraded,
+	})
 }
 
 // --- GET /projects/:id/specs/blame ---

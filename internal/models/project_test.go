@@ -26,4 +26,7 @@ func TestAppProjectToResponseIncludesAutomationRepos(t *testing.T) {
 	if response.FrontendRepoName != "frontend/repo" {
 		t.Fatalf("FrontendRepoName = %q, want frontend/repo", response.FrontendRepoName)
 	}
+	if response.IssueRepoID != 11 || response.SpecsRepoID != 22 || response.BackendRepoID != 33 || response.FrontendRepoID != 44 {
+		t.Fatalf("repo ids missing from response: %+v", response)
+	}
 }

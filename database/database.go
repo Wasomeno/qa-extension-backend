@@ -67,8 +67,9 @@ func InvalidateBoardCache(ctx context.Context, projectID string) {
 // Follows AG-UI-inspired event patterns for agent-to-frontend real-time communication.
 type StreamEvent struct {
 	Type          string           `json:"type"`                    // "generation" | "execution" | "agent"
-	ResourceType  string           `json:"resourceType,omitempty"`  // "scenario" | "recording" | "session"
+	ResourceType  string           `json:"resourceType,omitempty"`  // "scenario" | "recording" | "session" | "project"
 	ResourceID    string           `json:"resourceId,omitempty"`    // ID of the resource being operated on
+	ProjectID     string           `json:"projectId,omitempty"`     // App project UUID for project-scoped filtering
 	Stage         string           `json:"stage"`                   // "start", "progress", "done", "error"
 	Message       string           `json:"message"`                 // Human-readable contextual message
 	StepInfo      *StreamStepInfo  `json:"stepInfo,omitempty"`      // For execution step progress

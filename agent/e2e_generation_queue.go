@@ -259,7 +259,7 @@ func retryOrFailE2EGenerationJob(ctx context.Context, job *E2EGenerationJob, err
 			return saveErr
 		}
 		_ = database.RedisClient.LRem(ctx, e2eGenerationProcessingKey, 0, job.ID).Err()
-		events := NewGenerationEmitter(ctx, job.ScenarioID)
+		events := generationEmitterForJob(ctx, job)
 		_ = events.Progressf("Generation attempt %d/%d failed; retrying...", job.Attempts, job.MaxAttempts)
 		backoff := time.Duration(job.Attempts*job.Attempts) * time.Second
 		go func(jobID string, delay time.Duration) {
@@ -289,7 +289,7 @@ func retryOrFailE2EGenerationJob(ctx context.Context, job *E2EGenerationJob, err
 }
 
 func executeE2EGenerationJob(ctx context.Context, job *E2EGenerationJob) error {
-	events := NewGenerationEmitter(ctx, job.ScenarioID)
+	events := generationEmitterForJob(ctx, job)
 	events.SetTotalSteps(len(job.TestCaseIDs))
 	_ = events.Start("Generating %d e2e automation test%s...", len(job.TestCaseIDs), pluralizeCount(len(job.TestCaseIDs)))
 
@@ -438,7 +438,7 @@ func prewarmE2ERepoCache(ctx context.Context, job *E2EGenerationJob, token *oaut
 		return fmt.Errorf("failed to prepare repository cache: missing GitLab token")
 	}
 
-	events := NewGenerationEmitter(ctx, job.ScenarioID)
+	events := generationEmitterForJob(ctx, job)
 	_ = events.Progressf("Preparing repository cache for project %s...", repoID)
 
 	repoCtx, cancel := context.WithTimeout(ctx, generationRepoCacheTimeout())
@@ -473,8 +473,20 @@ func markE2EJobFailed(ctx context.Context, job *E2EGenerationJob, message string
 	scenario.Error = message
 	scenario.ComputeStats()
 	_ = services.SaveScenarioToRedis(ctx, scenario)
-	events := NewGenerationEmitter(ctx, job.ScenarioID)
+	events := generationEmitterForJob(ctx, job)
 	_ = events.Error(message)
+}
+
+func generationEmitterForJob(ctx context.Context, job *E2EGenerationJob) *EventEmitter {
+	events := NewGenerationEmitter(ctx, job.ScenarioID)
+	if job == nil {
+		return events
+	}
+	scenario, err := services.GetScenarioFromRedis(ctx, job.ScenarioID)
+	if err == nil && scenario != nil && strings.TrimSpace(scenario.ProjectID) != "" {
+		return events.WithProjectID(scenario.ProjectID)
+	}
+	return events
 }
 
 func setGeneratedE2ERepo(scenario *models.TestScenario, targetIDs []string, frontendRepoID string) {

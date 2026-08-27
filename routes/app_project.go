@@ -89,8 +89,13 @@ func ListAppProjects(c *gin.Context) {
 		return
 	}
 
-	// Convert to response format with repo names
-	var responses []models.AppProjectResponse
+	// Convert to response format with repo names.
+	//
+	// IMPORTANT: pre-allocate an empty slice (not `var responses ...` which
+	// would be a nil slice). Go marshals a nil slice to JSON `null`, which
+	// the frontend would then have to special-case. An initialized empty
+	// slice marshals to `[]` — the shape every consumer expects.
+	responses := []models.AppProjectResponse{}
 	glClient, hasGitLab := gitLabClientFromContext(c)
 
 	for _, project := range projects {
@@ -301,6 +306,13 @@ func ListAppProjectActivity(c *gin.Context) {
 
 func WithSpecsRepo(handler gin.HandlerFunc) gin.HandlerFunc {
 	return withAppProjectRepo(handler, false)
+}
+
+// WithIssueRepo adapts a project-scoped handler that talks to GitLab so the
+// handler receives the configured issue repository ID instead of the app
+// project's UUID.
+func WithIssueRepo(handler gin.HandlerFunc) gin.HandlerFunc {
+	return withAppProjectRepo(handler, true)
 }
 
 func withAppProjectRepo(handler gin.HandlerFunc, issueRepo bool) gin.HandlerFunc {

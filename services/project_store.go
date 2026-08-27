@@ -105,6 +105,7 @@ func publishProjectScenarioSyncEvent(ctx context.Context, projectID, stage, mess
 		Type:         "generation",
 		ResourceType: "project",
 		ResourceID:   projectID,
+		ProjectID:    projectID,
 		Stage:        stage,
 		Message:      message,
 		ErrorInfo:    errInfo,

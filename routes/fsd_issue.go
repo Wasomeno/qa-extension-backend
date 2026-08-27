@@ -6,12 +6,15 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"qa-extension-backend/auth"
 	"qa-extension-backend/identity"
+	"qa-extension-backend/internal/models"
 	"qa-extension-backend/services"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	gitlab "gitlab.com/gitlab-org/api/client-go"
 	"golang.org/x/oauth2"
 )
@@ -169,11 +172,26 @@ func CreateFSDIssues(c *gin.Context) {
 	if successCount != len(req.Issues) {
 		status = http.StatusMultiStatus
 	}
+
+	actorID, _ := getCurrentUserIDForFSDIssues(c)
+	failedCount := len(req.Issues) - successCount
+	_ = services.AppendAppProjectActivity(c.Request.Context(), project.ID, models.AppProjectActivity{
+		ID:        uuid.NewString(),
+		ProjectID: project.ID,
+		ActorID:   actorID,
+		Action:    models.AppProjectActivityFSDIssuesCreated,
+		Changes: map[string]models.AppProjectChange{
+			"createdCount": {New: successCount},
+			"failedCount":  {New: failedCount},
+		},
+		CreatedAt: time.Now().UTC(),
+	})
+
 	c.JSON(status, gin.H{
 		"projectId":    project.ID,
 		"issueRepoId":  project.IssueRepoID,
 		"createdCount": successCount,
-		"failedCount":  len(req.Issues) - successCount,
+		"failedCount":  failedCount,
 		"results":      results,
 	})
 }

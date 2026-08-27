@@ -27,13 +27,18 @@ type AppProject struct {
 	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
-// AppProjectResponse is the API response for app projects, with repo names
-// instead of repo IDs. Repo names are in the format "group/subgroup/repo-name".
+// AppProjectResponse is the API response for app projects. It includes both
+// GitLab numeric repo IDs and path-with-namespace names so clients can call
+// GitLab helpers (members, labels, branches) without a second lookup.
 type AppProjectResponse struct {
 	ID                  string    `json:"id"`
 	Name                string    `json:"name"`
 	Description         string    `json:"description"`
 	TestContextMarkdown string    `json:"testContextMarkdown,omitempty"`
+	IssueRepoID         int64     `json:"issueRepoId"`
+	SpecsRepoID         int64     `json:"specsRepoId"`
+	BackendRepoID       int64     `json:"backendRepoId"`
+	FrontendRepoID      int64     `json:"frontendRepoId"`
 	IssueRepoName       string    `json:"issueRepoName"`
 	SpecsRepoName       string    `json:"specsRepoName"`
 	BackendRepoName     string    `json:"backendRepoName"`
@@ -64,6 +69,10 @@ func (p *AppProject) ToResponse(issueRepoName, specsRepoName, backendRepoName, f
 		Name:                p.Name,
 		Description:         p.Description,
 		TestContextMarkdown: p.TestContextMarkdown,
+		IssueRepoID:         p.IssueRepoID,
+		SpecsRepoID:         p.SpecsRepoID,
+		BackendRepoID:       p.BackendRepoID,
+		FrontendRepoID:      p.FrontendRepoID,
 		IssueRepoName:       issueRepoName,
 		SpecsRepoName:       specsRepoName,
 		BackendRepoName:     backendRepoName,
@@ -112,6 +121,8 @@ const (
 	AppProjectActivityScenarioSyncStarted   AppProjectActivityAction = "scenario_sync_started"
 	AppProjectActivityScenarioSyncCompleted AppProjectActivityAction = "scenario_sync_completed"
 	AppProjectActivityScenarioSyncFailed    AppProjectActivityAction = "scenario_sync_failed"
+	AppProjectActivitySpecSaved             AppProjectActivityAction = "spec_saved"
+	AppProjectActivityFSDIssuesCreated      AppProjectActivityAction = "fsd_issues_created"
 )
 
 // AppProjectChange stores old/new values for an audited project field change.

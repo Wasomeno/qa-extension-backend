@@ -12,11 +12,11 @@ RUN apt-get update && apt-get install -y nodejs npm && rm -rf /var/lib/apt/lists
 
 # Run the Playwright installer ONLY to get the driver JS files
 # (We skip browsers because the Microsoft image already has them)
-RUN PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 go run github.com/playwright-community/playwright-go/cmd/playwright@v0.5700.1 install
+RUN PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 go run github.com/mxschmitt/playwright-go/cmd/playwright@v0.6100.0 install
 
 # Stage 2: The Official Playwright Environment
-# We use the exact version of Playwright that playwright-go v0.5700.1 wraps (v1.57.0)
-FROM mcr.microsoft.com/playwright:v1.57.0-jammy
+# We use the exact version of Playwright that playwright-go v0.6100.0 wraps (v1.61.1)
+FROM mcr.microsoft.com/playwright:v1.61.0-jammy
 
 WORKDIR /app
 

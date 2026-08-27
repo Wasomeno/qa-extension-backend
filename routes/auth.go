@@ -76,7 +76,13 @@ func AuthCallbackEndpoint(ginContext *gin.Context) {
 	// Check if a custom redirect was encoded in the state
 	oauthState := ginContext.Query("state")
 	redirectTarget := "/static/auth_success.html"
-	
+	// If the requested redirect URL is rejected by isValidRedirectURL
+	// (e.g. unknown dev hostname, 127.0.0.1 instead of localhost), we
+	// fall back to the success page but pass the original app origin
+	// through so the static page can still bridge the session back to
+	// the SPA. The rejected URL is held here and appended below.
+	var rejectedRedirect string
+
 	if oauthState != "" && oauthState != "default" {
 		decodedBytes, decodeErr := base64.URLEncoding.DecodeString(oauthState)
 		if decodeErr == nil {
@@ -84,6 +90,8 @@ func AuthCallbackEndpoint(ginContext *gin.Context) {
 			// Security: only allow localhost and known domains
 			if isValidRedirectURL(decodedURL) {
 				redirectTarget = decodedURL
+			} else {
+				rejectedRedirect = decodedURL
 			}
 		}
 	}
@@ -96,6 +104,12 @@ func AuthCallbackEndpoint(ginContext *gin.Context) {
 			sep = "&"
 		}
 		redirectTarget = redirectTarget + sep + "session_id=" + sessionID
+	} else if rejectedRedirect != "" {
+		// Fall-back path: hand the original app origin to the static
+		// bridge page via ?app= so it knows where to redirect.
+		if u, parseErr := url.Parse(rejectedRedirect); parseErr == nil && u.Scheme != "" && u.Host != "" {
+			redirectTarget = redirectTarget + "?app=" + u.Scheme + "://" + u.Host
+		}
 	}
 
 	ginContext.Redirect(http.StatusFound, redirectTarget)
@@ -108,11 +122,19 @@ func isValidRedirectURL(target string) bool {
 		return false
 	}
 	
-	// Allow localhost for development
+	// Allow localhost / 127.0.0.1 for development (any port).
+	// These never reach the open internet, so they're safe to allow.
 	if strings.HasPrefix(u.Host, "localhost:") || u.Host == "localhost" {
 		return true
 	}
-	
+	if strings.HasPrefix(u.Host, "127.0.0.1:") || u.Host == "127.0.0.1" {
+		return true
+	}
+	// IPv6 loopback.
+	if u.Host == "[::1]" || strings.HasPrefix(u.Host, "[::1]:") {
+		return true
+	}
+
 	// Add your production domain here
 	if u.Host == "playground-qa-extension.online" || strings.HasSuffix(u.Host, ".playground-qa-extension.online") {
 		return true
@@ -122,7 +144,7 @@ func isValidRedirectURL(target string) bool {
 	if u.Host == "flowg.arndev.nl" || strings.HasSuffix(u.Host, ".arndev.nl") {
 		return true
 	}
-	
+
 	return false
 }
 

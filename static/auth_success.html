@@ -3,126 +3,219 @@
 <head>
 <meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
-<title>Authentication Successful | Flowg</title>
-<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
-<link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@300;400;600;700&amp;display=swap" rel="stylesheet"/>
-<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght@100..700,0..1&amp;display=swap" rel="stylesheet"/>
-<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
-<script id="tailwind-config">
-        tailwind.config = {
-          darkMode: "class",
-          theme: {
-            extend: {
-              colors: {
-                "primary": "#1e293b",
-                "background-light": "#f8f6f6",
-                "background-dark": "#221610",
-              },
-              fontFamily: {
-                "display": ["Public Sans", "sans-serif"]
-              },
-              borderRadius: {"DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px"},
-            },
-          },
-        }
-      </script>
+<title>Authentication Successful</title>
 <style>
-        body {
-            font-family: "Public Sans", sans-serif;
-        }
-        
-        /* Subtle animation for the success icon */
-        @keyframes scaleIn {
-            0% { transform: scale(0.8); opacity: 0; }
-            100% { transform: scale(1); opacity: 1; }
-        }
-        
-        @keyframes pulseGlow {
-            0% { transform: scale(1.5); opacity: 0.1; }
-            50% { transform: scale(1.8); opacity: 0.2; }
-            100% { transform: scale(1.5); opacity: 0.1; }
-        }
-
-        .animate-scale-in {
-            animation: scaleIn 0.5s ease-out forwards;
-        }
-        
-        .animate-pulse-glow {
-            animation: pulseGlow 3s infinite ease-in-out;
-        }
-
-        /* Ensure material symbols load instantly if possible or provide fallback */
-        .material-symbols-outlined {
-          font-variation-settings:
-          'FILL' 0,
-          'wght' 300,
-          'GRAD' 0,
-          'opsz' 24;
-        }
-    </style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f8fafc;
+    color: #0f172a;
+    min-height: 100vh;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .card {
+    max-width: 480px;
+    width: 100%;
+    background: white;
+    border: 1px solid #e2e8f0;
+    border-radius: 16px;
+    padding: 40px;
+    text-align: center;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  .icon {
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    background: #d1fae5;
+    color: #065f46;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 24px;
+  }
+  h1 {
+    font-size: 24px;
+    font-weight: 600;
+    margin: 0 0 8px;
+  }
+  p {
+    color: #64748b;
+    font-size: 14px;
+    line-height: 1.5;
+    margin: 0 0 24px;
+  }
+  a {
+    display: inline-block;
+    background: #0f172a;
+    color: white;
+    text-decoration: none;
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+  }
+  a:hover { background: #1e293b; }
+  .countdown {
+    margin-top: 16px;
+    font-size: 12px;
+    color: #94a3b8;
+  }
+  code {
+    background: #f1f5f9;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 12px;
+    word-break: break-all;
+    display: inline-block;
+    margin-top: 8px;
+    max-width: 100%;
+  }
+  .error {
+    background: #fef2f2;
+    color: #991b1b;
+    padding: 12px;
+    border-radius: 8px;
+    font-size: 13px;
+    margin-top: 16px;
+    text-align: left;
+  }
+</style>
 </head>
-<body class="bg-slate-50 dark:bg-slate-950 min-h-screen flex flex-col font-display selection:bg-slate-200 dark:selection:bg-slate-800">
-<div class="relative flex h-full min-h-screen w-full flex-col group/design-root overflow-x-hidden">
-<div class="layout-container flex h-full grow flex-col">
-<!-- Main Content -->
-<main class="flex-1 flex items-center justify-center p-6">
-<div class="layout-content-container flex flex-col max-w-[480px] w-full bg-white/70 dark:bg-slate-900/70 backdrop-blur-md shadow-[0_8px_30px_rgb(0,0,0,0.04)] dark:shadow-[0_8px_30px_rgb(0,0,0,0.2)] border border-slate-200/50 dark:border-slate-800/50 rounded-2xl p-8 md:p-12 text-center relative overflow-hidden">
-<div class="absolute -top-24 -left-24 w-48 h-48 bg-slate-200/40 dark:bg-slate-800/40 rounded-full blur-3xl"></div>
-<div class="absolute -bottom-24 -right-24 w-48 h-48 bg-slate-200/40 dark:bg-slate-800/40 rounded-full blur-3xl"></div>
-<!-- Success Icon Section -->
-<div class="flex justify-center mb-10">
-<div class="relative animate-scale-in">
-<div class="absolute inset-0 bg-slate-400/20 rounded-full scale-150 blur-xl animate-pulse-glow"></div>
-<div class="relative size-24 md:size-32 bg-slate-100 dark:bg-slate-800 rounded-full flex items-center justify-center text-primary shadow-sm ring-1 ring-slate-900/5 dark:ring-white/10">
-<!-- Use SVG for instant loading instead of relying on external font, which fixes the delay issue -->
-<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-12 h-12 md:w-16 md:h-16 text-slate-800 dark:text-slate-200">
-  <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
-</svg>
+<body>
+<div class="card">
+  <div class="icon">
+    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M9 12l2 2 4-4"/>
+      <circle cx="12" cy="12" r="10"/>
+    </svg>
+  </div>
+  <h1>Authentication successful</h1>
+  <p id="message">Redirecting you back to the app…</p>
+  <a id="redirectLink" href="#" style="display:none;">Return to app</a>
+  <div class="countdown" id="countdown" style="display:none;">
+    Redirecting in <span id="timer">3</span>s
+  </div>
+  <div id="errorBox" class="error" style="display:none;"></div>
 </div>
-</div>
-</div>
-<!-- Text Content -->
-<h1 class="text-slate-900 dark:text-slate-100 tracking-tight text-3xl md:text-3xl font-semibold leading-tight mb-3">
-                        Authentication Successful
-                    </h1>
-<p class="text-slate-500 dark:text-slate-400 text-sm md:text-base font-normal leading-relaxed mb-10 max-w-sm mx-auto">
-                        You have been successfully logged into Flowg. You can now close this tab and return to the application.
-                    </p>
-<!-- Action Button -->
-<div class="flex flex-col gap-5 items-center">
-<button onclick="window.close()" class="w-full md:w-auto min-w-[200px] flex cursor-pointer items-center justify-center rounded-lg h-12 px-6 bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-sm font-semibold tracking-wide hover:opacity-90 transition-all shadow-sm ring-1 ring-slate-900/10 dark:ring-white/10 hover:shadow-md hover:-translate-y-0.5">
-<span>Return to Application</span>
-</button>
-<div class="flex items-center gap-2 text-slate-400 dark:text-slate-500 text-xs tracking-wide">
-<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4">
-  <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
-</svg>
-<span>Redirecting in <span id="timer" class="font-medium">5</span>s</span>
-</div>
-</div>
-</div>
-</main>
-<!-- Footer -->
-<footer class="py-6 px-6 text-center border-t border-slate-200/50 dark:border-slate-800/50 backdrop-blur-sm">
-<p class="text-slate-400 dark:text-slate-600 text-xs">
-                    © 2024 Flowg Inc. All rights reserved. | <a class="hover:text-primary transition-colors" href="#">Security Overview</a>
-</p>
-</footer>
-</div>
-</div>
+
 <script>
-    let timeLeft = 5;
-    const timerElement = document.getElementById('timer');
-    const interval = setInterval(() => {
-        timeLeft--;
-        if (timerElement) {
-            timerElement.textContent = timeLeft;
-        }
-        if (timeLeft <= 0) {
-            clearInterval(interval);
-            window.close();
-        }
-    }, 1000);
+  // ─────────────────────────────────────────────────────────────────
+  // Bridge page: GitLab OAuth lands here with ?session_id=... and
+  // (optionally) ?app=<frontend-origin>. We forward the session id to
+  // the SPA so its `extractSessionIdFromUrl()` can pick it up and
+  // store it in localStorage.
+  //
+  // Query params:
+  //   session_id   — required, the backend-issued session id
+  //   app          — optional, the frontend origin to redirect to
+  //                  (e.g. http://localhost:3010). If omitted, falls
+  //                  back to a known list of local dev origins.
+  // ─────────────────────────────────────────────────────────────────
+
+  const params = new URLSearchParams(window.location.search);
+  const sessionId = params.get('session_id');
+  const appParam = params.get('app');
+
+  // Default dev origins the codetest SPA is likely running on.
+  // Production deployments should always pass `?app=...` explicitly.
+  const FALLBACK_APP_ORIGINS = [
+    'http://localhost:3000',
+    'http://localhost:3010',
+    'http://localhost:3001',
+    'http://localhost:3002',
+    'http://127.0.0.1:3000',
+    'http://127.0.0.1:3010',
+    'http://127.0.0.1:3001',
+    'http://127.0.0.1:3002',
+  ];
+
+  const messageEl = document.getElementById('message');
+  const linkEl = document.getElementById('redirectLink');
+  const countdownEl = document.getElementById('countdown');
+  const errorEl = document.getElementById('errorBox');
+  const timerEl = document.getElementById('timer');
+
+  function pickAppOrigin() {
+    if (appParam) return appParam;
+    // Try `window.opener` first — if the login was opened as a popup
+    // from the SPA, the opener is the SPA origin.
+    try {
+      if (window.opener && !window.opener.closed && window.opener.location) {
+        const origin = window.opener.location.origin;
+        if (origin) return origin;
+      }
+    } catch (_) {
+      // Cross-origin opener — fall through.
+    }
+    // If we're inside an iframe, use the parent's origin.
+    try {
+      if (window.parent !== window && window.parent.location) {
+        return window.parent.location.origin;
+      }
+    } catch (_) {
+      // ignore
+    }
+    // Otherwise, fall back to the first dev origin that's responding.
+    // We can't actually probe the server here without async, so just
+    // pick the most common one (3010 is the typical override).
+    return FALLBACK_APP_ORIGINS[0];
+  }
+
+  function buildRedirectUrl(appOrigin) {
+    const target = new URL(appOrigin);
+    // Always land on the SPA's /login route — it has the AuthBootstrap
+    // that picks up ?session_id= and stores it in localStorage. The
+    // route's useEffect then forwards to /dashboard (or the original
+    // ?redirect= target) once the session query resolves.
+    target.pathname = '/login';
+    // Preserve any existing query on the app origin so we don't drop
+    // e.g. ?redirect=/projects/foo the user was trying to reach.
+    const incoming = new URLSearchParams(window.location.search);
+    for (const [k, v] of incoming) {
+      if (k === 'app') continue;
+      if (k === 'session_id') {
+        target.searchParams.set('session_id', v);
+      } else {
+        target.searchParams.set(k, v);
+      }
+    }
+    return target.toString();
+  }
+
+  function fail(msg) {
+    messageEl.textContent = 'Sign-in completed, but the app could not be reached.';
+    errorEl.style.display = 'block';
+    errorEl.innerHTML = msg + '<br><br>Copy this session id and paste it on the app\'s login page:<br><code>' + (sessionId || '(none)') + '</code>';
+  }
+
+  if (!sessionId) {
+    fail('No session id was provided by the backend.');
+  } else {
+    const appOrigin = pickAppOrigin();
+    const redirectUrl = buildRedirectUrl(appOrigin);
+
+    linkEl.href = redirectUrl;
+    linkEl.textContent = 'Return to app';
+    linkEl.style.display = 'inline-block';
+    countdownEl.style.display = 'block';
+
+    // 3-second auto-redirect. If the SPA is on a different origin
+    // than expected, the user can click the link manually.
+    let timeLeft = 3;
+    const tick = () => {
+      timeLeft -= 1;
+      if (timerEl) timerEl.textContent = String(Math.max(0, timeLeft));
+      if (timeLeft <= 0) {
+        clearInterval(interval);
+        window.location.replace(redirectUrl);
+      }
+    };
+    const interval = setInterval(tick, 1000);
+  }
 </script>
 </body>
 </html>

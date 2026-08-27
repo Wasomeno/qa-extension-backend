@@ -17,6 +17,7 @@ type EventEmitter struct {
 	eventType     string
 	resourceType  string
 	resourceID    string
+	projectID     string
 	correlationID string
 	startTime     time.Time
 	totalSteps    int
@@ -45,6 +46,13 @@ func NewGenerationEmitter(ctx context.Context, scenarioID string) *EventEmitter 
 	return newEmitter(ctx, EventTypeGeneration, ResourceTypeScenario, scenarioID)
 }
 
+// NewGenerationEmitterForProject scopes generation events to an app project.
+func NewGenerationEmitterForProject(ctx context.Context, scenarioID, projectID string) *EventEmitter {
+	e := newEmitter(ctx, EventTypeGeneration, ResourceTypeScenario, scenarioID)
+	e.projectID = projectID
+	return e
+}
+
 func newEmitter(ctx context.Context, eventType, resourceType, resourceID string) *EventEmitter {
 	return &EventEmitter{
 		ctx:           ctx,
@@ -54,6 +62,12 @@ func newEmitter(ctx context.Context, eventType, resourceType, resourceID string)
 		correlationID: uuid.New().String(),
 		startTime:     time.Now(),
 	}
+}
+
+// WithProjectID attaches the app project UUID so SSE clients can filter by project.
+func (e *EventEmitter) WithProjectID(projectID string) *EventEmitter {
+	e.projectID = projectID
+	return e
 }
 
 // SetTotalSteps configures the total step count for progress tracking.
@@ -128,6 +142,7 @@ func (e *EventEmitter) emit(stage, message string, stepInfo *database.StreamStep
 		Type:          e.eventType,
 		ResourceType:  e.resourceType,
 		ResourceID:    e.resourceID,
+		ProjectID:     e.projectID,
 		Stage:         stage,
 		Message:       message,
 		StepInfo:      stepInfo,
